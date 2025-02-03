@@ -13,13 +13,13 @@ import enum
 
 from sqlalchemy import (
     ForeignKey, String, Text, DECIMAL, JSON, Enum as SQLAlchemyEnum,
-    UniqueConstraint, CheckConstraint, Index, Column
+    UniqueConstraint, CheckConstraint, Index, Column, DateTime
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.sql import expression
 
-from backend.core.models.base import Base
+from core.models.base import Base
 
 class DealStatus(str, enum.Enum):
     """Deal status types."""
@@ -41,16 +41,18 @@ class DealSource(str, enum.Enum):
 
 class DealBase(BaseModel):
     """Base deal model."""
-    product_name: str = Field(..., min_length=1, max_length=255)
+    title: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    price: Decimal = Field(..., gt=0)
-    original_price: Optional[Decimal] = Field(None, gt=0)
-    currency: str = Field(default="USD", min_length=3, max_length=3)
-    source: DealSource
     url: HttpUrl
+    price: Decimal
+    original_price: Optional[Decimal] = None
+    currency: str = Field(default="USD", min_length=3, max_length=3)
+    source: str = Field(..., min_length=1, max_length=50)
     image_url: Optional[HttpUrl] = None
+    deal_metadata: Optional[Dict[str, Any]] = None
+    price_metadata: Optional[Dict[str, Any]] = None
     expires_at: Optional[datetime] = None
-    metadata: Optional[Dict[str, Any]] = None
+    status: DealStatus = Field(default=DealStatus.ACTIVE)
 
     @validator('original_price')
     def validate_original_price(cls, v: Optional[Decimal], values: Dict[str, Any]) -> Optional[Decimal]:
@@ -80,7 +82,7 @@ class DealUpdate(BaseModel):
     original_price: Optional[Decimal] = Field(None, gt=0)
     status: Optional[DealStatus] = None
     expires_at: Optional[datetime] = None
-    metadata: Optional[Dict[str, Any]] = None
+    deal_metadata: Optional[Dict[str, Any]] = None
     availability: Optional[Dict[str, Any]] = None
 
     @validator('original_price')
@@ -129,37 +131,28 @@ class Deal(Base):
         Index('ix_deals_market_status', 'market_id', 'status'),
     )
 
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    goal_id: Mapped[UUID] = mapped_column(ForeignKey("goals.id", ondelete="CASCADE"))
-    market_id: Mapped[UUID] = mapped_column(ForeignKey("markets.id", ondelete="CASCADE"))
-    product_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text)
-    price: Mapped[Decimal] = mapped_column(DECIMAL(10, 2), nullable=False)
-    original_price: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(10, 2))
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    goal_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("goals.id", ondelete="CASCADE"), nullable=True)
+    market_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    url: Mapped[str] = mapped_column(Text)
+    price: Mapped[Decimal] = mapped_column(DECIMAL(10, 2))
+    original_price: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(10, 2), nullable=True)
     currency: Mapped[str] = mapped_column(String(3), default="USD")
-    source: Mapped[DealSource] = mapped_column(SQLAlchemyEnum(DealSource), nullable=False)
-    url: Mapped[str] = mapped_column(Text, nullable=False)
-    image_url: Mapped[Optional[str]] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(50))
+    image_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     category: Mapped[Optional[str]] = mapped_column(String(50))
     found_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    expires_at: Mapped[Optional[datetime]]
-    status: Mapped[DealStatus] = mapped_column(
-        SQLAlchemyEnum(DealStatus),
-        default=DealStatus.ACTIVE,
-        server_default=DealStatus.ACTIVE.value
-    )
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[DealStatus] = mapped_column(SQLAlchemyEnum(DealStatus), default=DealStatus.ACTIVE)
     seller_info: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     availability: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
-    metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
-    created_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
-        server_default=expression.func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        server_default=expression.func.now()
-    )
+    deal_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+    price_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
     goal = relationship("Goal", back_populates="deals")
@@ -169,34 +162,7 @@ class Deal(Base):
 
     def __repr__(self) -> str:
         """String representation of the deal."""
-        return f"<Deal {self.product_name} ({self.price} {self.currency})>"
-
-class DealScore(Base):
-    """Deal score database model."""
-    __tablename__ = "deal_scores"
-    __table_args__ = (
-        CheckConstraint('score >= 0 AND score <= 1', name='ch_score_range'),
-        Index('ix_deal_scores_deal_time', 'deal_id', 'analysis_time'),
-    )
-    
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    deal_id: Mapped[UUID] = mapped_column(ForeignKey("deals.id", ondelete="CASCADE"))
-    score: Mapped[float] = mapped_column(DECIMAL(3, 2), nullable=False)
-    analysis_time: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    moving_average: Mapped[Optional[float]] = mapped_column(DECIMAL(10, 2))
-    std_dev: Mapped[Optional[float]] = mapped_column(DECIMAL(10, 2))
-    volatility: Mapped[Optional[float]] = mapped_column(DECIMAL(5, 4))
-    trend: Mapped[Optional[float]] = mapped_column(DECIMAL(5, 4))
-    is_anomaly: Mapped[bool] = mapped_column(default=False)
-    confidence: Mapped[float] = mapped_column(DECIMAL(3, 2), default=1.0)
-    metrics: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
-    
-    # Relationships
-    deal = relationship("Deal", back_populates="scores")
-
-    def __repr__(self) -> str:
-        """String representation of the deal score."""
-        return f"<DealScore {self.score:.2f} (confidence: {self.confidence:.2f})>"
+        return f"<Deal {self.title} ({self.price} {self.currency})>"
 
 class PriceHistory(Base):
     """Price history database model."""
@@ -207,14 +173,14 @@ class PriceHistory(Base):
         Index('ix_price_histories_deal_time', 'deal_id', 'timestamp'),
     )
 
-    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    deal_id: Mapped[UUID] = mapped_column(ForeignKey("deals.id", ondelete="CASCADE"))
-    market_id: Mapped[UUID] = mapped_column(ForeignKey("markets.id", ondelete="CASCADE"))
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    deal_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"))
+    market_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"))
     price: Mapped[Decimal] = mapped_column(DECIMAL(10, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     timestamp: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     source: Mapped[str] = mapped_column(String(50))
-    metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+    price_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
 
     # Relationships
     deal = relationship("Deal", back_populates="price_histories")

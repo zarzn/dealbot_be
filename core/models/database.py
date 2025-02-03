@@ -16,8 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker, Mapped, mapped_column
 from sqlalchemy.sql import Select
 
-from backend.core.config import settings
-from backend.core.exceptions import DatabaseError, ValidationError, NotFoundError
+from core.config import settings
+from core.exceptions import DatabaseError, ValidationError, NotFoundError
 
 logger = logging.getLogger(__name__)
 

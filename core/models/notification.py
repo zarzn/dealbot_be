@@ -19,8 +19,8 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.sql import expression
 
-from backend.core.models.base import Base
-from backend.core.exceptions import NotificationError
+from core.models.base import Base
+from core.exceptions import NotificationError
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class NotificationBase(BaseModel):
     channels: List[NotificationChannel] = Field(default=[NotificationChannel.IN_APP])
     priority: NotificationPriority = Field(default=NotificationPriority.MEDIUM)
     data: Optional[Dict[str, Any]] = Field(default=None)
-    metadata: Optional[Dict[str, Any]] = Field(default=None)
+    notification_metadata: Optional[Dict[str, Any]] = Field(default=None)
     action_url: Optional[HttpUrl] = None
     expires_at: Optional[datetime] = None
 
@@ -99,7 +99,7 @@ class NotificationUpdate(BaseModel):
     channels: Optional[List[NotificationChannel]] = None
     priority: Optional[NotificationPriority] = None
     data: Optional[Dict[str, Any]] = None
-    metadata: Optional[Dict[str, Any]] = None
+    notification_metadata: Optional[Dict[str, Any]] = None
     action_url: Optional[HttpUrl] = None
     status: Optional[NotificationStatus] = None
     error: Optional[str] = None
@@ -172,7 +172,7 @@ class Notification(Base):
         server_default=NotificationStatus.PENDING.value
     )
     data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
-    metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+    notification_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     action_url: Mapped[Optional[str]] = mapped_column(Text)
     schedule_for: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
@@ -195,30 +195,43 @@ class Notification(Base):
         """String representation of the notification."""
         return f"<Notification {self.type.value}: {self.title}>"
 
-    def to_json(self) -> str:
-        """Convert notification to JSON string."""
-        return json.dumps({
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert notification to dictionary."""
+        return {
             'id': str(self.id),
             'user_id': str(self.user_id),
-            'goal_id': str(self.goal_id) if self.goal_id else None,
-            'deal_id': str(self.deal_id) if self.deal_id else None,
             'title': self.title,
             'message': self.message,
-            'type': self.type.value,
-            'channels': [ch.value for ch in self.channels],
-            'priority': self.priority.value,
-            'status': self.status.value,
+            'type': self.type,
+            'channels': self.channels,
+            'priority': self.priority,
             'data': self.data,
-            'metadata': self.metadata,
-            'action_url': str(self.action_url) if self.action_url else None,
-            'schedule_for': self.schedule_for.isoformat() if self.schedule_for else None,
-            'created_at': self.created_at.isoformat(),
-            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
-            'sent_at': self.sent_at.isoformat() if self.sent_at else None,
-            'delivered_at': self.delivered_at.isoformat() if self.delivered_at else None,
+            'notification_metadata': self.notification_metadata,
+            'action_url': self.action_url,
+            'status': self.status,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
             'read_at': self.read_at.isoformat() if self.read_at else None,
+            'sent_at': self.sent_at.isoformat() if self.sent_at else None,
+            'schedule_for': self.schedule_for.isoformat() if self.schedule_for else None,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
             'error': self.error
-        })
+        }
+
+    def to_json(self) -> str:
+        """Convert notification to JSON string."""
+        data = self.to_dict()
+        # Convert enum values to strings
+        data['type'] = self.type.value
+        data['channels'] = [ch.value for ch in self.channels]
+        data['priority'] = self.priority.value
+        data['status'] = self.status.value
+        # Convert URLs to strings
+        data['action_url'] = str(self.action_url) if self.action_url else None
+        # Add optional IDs
+        data['goal_id'] = str(self.goal_id) if self.goal_id else None
+        data['deal_id'] = str(self.deal_id) if self.deal_id else None
+        return json.dumps(data)
 
     async def mark_sent(self, error: Optional[str] = None) -> None:
         """Mark notification as sent."""
@@ -341,7 +354,7 @@ class Notification(Base):
         goal_id: Optional[UUID] = None,
         deal_id: Optional[UUID] = None,
         data: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        notification_metadata: Optional[Dict[str, Any]] = None,
         action_url: Optional[str] = None,
         schedule_for: Optional[datetime] = None,
         expires_at: Optional[datetime] = None
@@ -369,7 +382,7 @@ class Notification(Base):
                 goal_id=goal_id,
                 deal_id=deal_id,
                 data=data,
-                metadata=metadata,
+                notification_metadata=notification_metadata,
                 action_url=action_url,
                 schedule_for=schedule_for,
                 expires_at=expires_at
@@ -476,8 +489,8 @@ class Notification(Base):
             for n in recent_notifications:
                 if n.data:
                     combined_data.update(n.data)
-                if n.metadata:
-                    combined_metadata.update(n.metadata)
+                if n.notification_metadata:
+                    combined_metadata.update(n.notification_metadata)
                 notification_ids.append(str(n.id))
 
             # Create new aggregated notification
@@ -495,7 +508,7 @@ class Notification(Base):
                     "notification_ids": notification_ids,
                     **combined_data
                 },
-                metadata={
+                notification_metadata={
                     "aggregated": True,
                     "original_notifications": notification_ids,
                     **combined_metadata
@@ -506,8 +519,8 @@ class Notification(Base):
             for notification in recent_notifications:
                 notification.status = NotificationStatus.DELIVERED
                 notification.delivered_at = datetime.utcnow()
-                notification.metadata = {
-                    **(notification.metadata or {}),
+                notification.notification_metadata = {
+                    **(notification.notification_metadata or {}),
                     "aggregated_into": str(aggregated.id)
                 }
 

@@ -2,9 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
-from backend.core.config import settings
-from backend.core.database import init_db
-from backend.api.v1.router import router as api_v1_router
+from core.config import settings
+from core.database import init_db
+from api.v1.router import router as api_v1_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -13,9 +13,9 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(
-    title=settings.PROJECT_NAME,
-    version=settings.VERSION,
-    description=settings.DESCRIPTION,
+    title=settings.APP_NAME,
+    version=settings.APP_VERSION,
+    description="AI-powered deal monitoring system",
     lifespan=lifespan
 )
 
@@ -29,13 +29,13 @@ app.add_middleware(
 )
 
 # Include API router
-app.include_router(api_v1_router, prefix=settings.API_V1_STR)
+app.include_router(api_v1_router, prefix=settings.API_PREFIX)
 
 @app.get("/")
 async def root():
     """Root endpoint for health check"""
     return {
         "status": "ok",
-        "version": settings.VERSION,
+        "version": settings.APP_VERSION,
         "environment": settings.ENVIRONMENT
     }

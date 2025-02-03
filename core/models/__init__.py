@@ -21,8 +21,13 @@ from .goal import (
 
 # Deal models
 from .deal import (
-    Deal, DealBase, DealCreate, DealUpdate, DealResponse,
-    DealStatus, DealSource, DealScore, PriceHistory
+    Deal,
+    DealCreate,
+    DealUpdate,
+    DealResponse,
+    DealStatus,
+    DealSource,
+    PriceHistory
 )
 
 # Token models
@@ -49,7 +54,10 @@ from .notification import (
 
 # Deal score models
 from .deal_score import (
-    DealScore, DealScoreCreate, DealScoreUpdate, DealScoreResponse
+    DealScore,
+    DealScoreCreate,
+    DealScoreUpdate,
+    DealScoreResponse
 )
 
 __all__ = [
@@ -78,13 +86,11 @@ __all__ = [
 
     # Deal
     'Deal',
-    'DealBase',
     'DealCreate',
     'DealUpdate',
     'DealResponse',
     'DealStatus',
     'DealSource',
-    'DealScore',
     'PriceHistory',
 
     # Token

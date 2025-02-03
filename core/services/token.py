@@ -15,14 +15,14 @@ from solana.rpc.commitment import Commitment
 from solana.transaction import Transaction
 from solana.system_program import TransactionInstruction
 
-from backend.core.database import get_db
-from backend.core.repositories.token import TokenRepository
-from backend.core.models import (
+from core.database import get_db
+from core.repositories.token import TokenRepository
+from core.models import (
     TokenTransaction,
     TokenPricing,
     TokenBalanceHistory
 )
-from backend.core.exceptions import (
+from core.exceptions import (
     InsufficientBalanceError,
     InvalidWalletAddressError,
     TransactionProcessingError,
@@ -33,8 +33,8 @@ from backend.core.exceptions import (
     NetworkError,
     RepositoryError
 )
-from backend.core.config import settings
-from backend.core.utils.logger import get_logger
+from core.config import settings
+from core.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

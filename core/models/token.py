@@ -4,9 +4,11 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 from enum import Enum
-from sqlalchemy import Column, String, Float, DateTime, Enum as SQLEnum, ForeignKey, JSON, BigInteger
+from sqlalchemy import (
+    Column, String, Float, DateTime, Enum as SQLEnum, 
+    ForeignKey, JSON, BigInteger, Boolean
+)
 from sqlalchemy.orm import relationship
-from pydantic import BaseModel
 
 from .base import Base
 from .user import User

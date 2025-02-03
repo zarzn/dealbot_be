@@ -4,9 +4,9 @@ from datetime import datetime
 import httpx
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
-from backend.core.exceptions import CrawlerError
-from backend.core.utils.redis import get_redis
-from backend.core.config import settings
+from core.exceptions import CrawlerError
+from core.utils.redis import get_redis
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 

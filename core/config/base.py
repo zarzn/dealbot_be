@@ -1,16 +1,25 @@
+"""Base configuration for the AI Agentic Deals System."""
+
 from typing import Any, Dict, Optional
 from pydantic_settings import BaseSettings
-from pydantic import validator, PostgresDsn, RedisDsn
+from pydantic import model_validator, PostgresDsn, RedisDsn
+import os
+from pathlib import Path
+
+# Get the backend directory path
+BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
 
 class BaseConfig(BaseSettings):
     # Application
-    PROJECT_NAME: str = "AI Agentic Deals System"
-    VERSION: str = "1.0.0"
+    APP_NAME: str = "AI Deals System"
+    APP_VERSION: str = "1.0.0"
+    API_PREFIX: str = "/api/v1"
     DEBUG: bool = False
-    API_V1_STR: str = "/api/v1"
+    ENVIRONMENT: str = "development"
     
     # Security
     SECRET_KEY: str
+    JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -20,38 +29,55 @@ class BaseConfig(BaseSettings):
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
     POSTGRES_HOST: str
-    POSTGRES_PORT: str = "5432"
-    DATABASE_URL: Optional[PostgresDsn] = None
+    POSTGRES_PORT: int = 5432
+    DATABASE_URL: Optional[str] = None
+    DB_POOL_SIZE: int = 5
+    DB_POOL_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 1800
+    DB_ECHO: bool = False
+    DB_STATEMENT_TIMEOUT: int = 30
+    DB_IDLE_TIMEOUT: int = 300
+    DB_MAX_OVERFLOW: int = 10
+    DB_MAX_RETRIES: int = 3
+    DB_RETRY_DELAY: int = 1
 
-    @validator("DATABASE_URL", pre=True)
-    def assemble_db_url(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
-        if isinstance(v, str):
-            return v
-        return PostgresDsn.build(
-            scheme="postgresql+asyncpg",
-            username=values.get("POSTGRES_USER"),
-            password=values.get("POSTGRES_PASSWORD"),
-            host=values.get("POSTGRES_HOST"),
-            port=values.get("POSTGRES_PORT"),
-            path=f"/{values.get('POSTGRES_DB')}"
-        )
+    @model_validator(mode='before')
+    @classmethod
+    def assemble_db_url(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(data.get("DATABASE_URL"), str):
+            return data
+        
+        port = data.get("POSTGRES_PORT")
+        if isinstance(port, str):
+            port = int(port)
+        
+        data["DATABASE_URL"] = f"postgresql+asyncpg://{data.get('POSTGRES_USER')}:{data.get('POSTGRES_PASSWORD')}@{data.get('POSTGRES_HOST')}:{port}/{data.get('POSTGRES_DB')}"
+        return data
 
     # Redis
     REDIS_HOST: str
     REDIS_PORT: int
     REDIS_DB: int = 0
     REDIS_PASSWORD: Optional[str] = None
-    REDIS_SSL: bool = False
     REDIS_POOL_SIZE: int = 10
     REDIS_TIMEOUT: int = 5
     REDIS_URL: Optional[RedisDsn] = None
+    REDIS_SSL: bool = False
 
-    @validator("REDIS_URL", pre=True)
-    def assemble_redis_url(cls, v: Optional[str], values: Dict[str, Any]) -> Any:
-        if isinstance(v, str):
-            return v
-        password_part = f":{values.get('REDIS_PASSWORD')}@" if values.get("REDIS_PASSWORD") else ""
-        return f"redis://{password_part}{values.get('REDIS_HOST')}:{values.get('REDIS_PORT')}/{values.get('REDIS_DB')}"
+    @model_validator(mode='before')
+    @classmethod
+    def assemble_redis_url(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        if isinstance(data.get("REDIS_URL"), str):
+            return data
+        
+        port = data.get("REDIS_PORT")
+        if isinstance(port, str):
+            port = int(port)
+            
+        password_part = f":{data.get('REDIS_PASSWORD')}@" if data.get("REDIS_PASSWORD") else ""
+        data["REDIS_URL"] = f"redis://{password_part}{data.get('REDIS_HOST')}:{port}/{data.get('REDIS_DB')}"
+        return data
 
     # Market Integration
     MARKET_DEFAULT_RATE_LIMIT: int = 100
@@ -67,9 +93,14 @@ class BaseConfig(BaseSettings):
     # AI Services
     DEEPSEEK_API_KEY: str
     OPENAI_API_KEY: Optional[str] = None
+    LLM_MODEL: str = "deepseek"
+    LLM_TEMPERATURE: float = 0.7
+    LLM_MAX_TOKENS: int = 1000
 
     # Token System
     ETH_NETWORK_RPC: str
+    SOL_NETWORK_RPC: str
+    SOL_NETWORK: str = "devnet"
     TOKEN_CONTRACT_ADDRESS: str
     TOKEN_REQUIRED_BALANCE: float = 10.0
     TOKEN_SEARCH_COST: float = 1.0
@@ -101,5 +132,9 @@ class BaseConfig(BaseSettings):
     RATE_LIMIT_PER_SECOND: int = 10
     RATE_LIMIT_PER_MINUTE: int = 200
 
-    class Config:
-        case_sensitive = True 
+    model_config = {
+        "case_sensitive": True,
+        "env_file": os.path.join(BACKEND_DIR, ".env.development"),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore"
+    }

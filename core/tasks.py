@@ -22,22 +22,22 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from sqlalchemy.exc import SQLAlchemyError
 
-from backend.core.services.deal import DealService
-from backend.core.services.goal import GoalService
-from backend.core.services.token import TokenService
-from backend.core.services.notification import NotificationService
-from backend.core.exceptions import (
+from core.services.deal import DealService
+from core.services.goal import GoalService
+from core.services.token import TokenService
+from core.services.notification import NotificationService
+from core.exceptions import (
     DealMonitoringError,
     InsufficientTokensError,
     PriceAnalysisError,
     ExternalServiceError,
     DatabaseError
 )
-from backend.core.utils.redis import RedisClient
-from backend.core.models.deal import DealScore
-from backend.core.models.goal import GoalStatus
-from backend.core.metrics.tasks import TaskMetrics
-from backend.core.config import settings
+from core.utils.redis import RedisClient
+from core.models.deal_score import DealScore
+from core.models.goal import GoalStatus
+from core.metrics.tasks import TaskMetrics
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 metrics = TaskMetrics()

@@ -2,8 +2,8 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from fastapi import HTTPException, status
-from backend.core.models.user import User
-from backend.core.exceptions import (
+from core.models.user import User
+from core.exceptions import (
     DatabaseError,
     UserNotFoundError,
     DuplicateUserError,

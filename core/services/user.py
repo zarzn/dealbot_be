@@ -1,10 +1,15 @@
+"""User service module.
+
+This module provides user-related services and database operations.
+"""
+
 from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.models.user import User
-from backend.core.exceptions import DatabaseError
-from backend.core.database import async_session
+from core.models.user import User
+from core.exceptions import DatabaseError
+from core.database import get_db_session
 
 async def get_user_by_email(email: str) -> Optional[User]:
     """Retrieve a user by their email address.
@@ -19,7 +24,7 @@ async def get_user_by_email(email: str) -> Optional[User]:
         DatabaseError: If there's an issue with the database connection
     """
     try:
-        async with async_session() as session:
+        async with get_db_session() as session:
             result = await session.execute(
                 select(User).where(User.email == email)
             )

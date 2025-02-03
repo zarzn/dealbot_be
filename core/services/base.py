@@ -1,8 +1,8 @@
 from typing import Any, Generic, TypeVar
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
-from backend.core.repositories.base import BaseRepository
-from backend.core.exceptions import ServiceError
+from core.repositories.base import BaseRepository
+from core.exceptions import ServiceError
 
 ModelType = TypeVar('ModelType')
 CreateSchemaType = TypeVar('CreateSchemaType', bound=BaseModel)

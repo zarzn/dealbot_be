@@ -117,14 +117,19 @@ async def process_deal(
                 title=deal_data["title"],
                 description=deal_data.get("description", ""),
                 price=float(deal_data["price"]),
+                original_price=deal_data.get("original_price"),
                 currency=deal_data.get("currency", "USD"),
+                source=deal_data["source"],
                 url=deal_data["url"],
                 image_url=deal_data.get("image_url"),
+                deal_metadata=deal_data.get("deal_metadata", {}),
+                price_metadata=deal_data.get("price_metadata", {}),
+                expires_at=deal_data.get("expires_at"),
+                status=DealStatus.ACTIVE,
                 price_history=[{
                     "price": float(deal_data["price"]),
                     "timestamp": datetime.utcnow().isoformat()
                 }],
-                metadata=deal_data.get("metadata", {}),
                 created_at=datetime.utcnow(),
                 last_checked=datetime.utcnow()
             )

@@ -1,4 +1,9 @@
-from typing import List, Optional, Dict, Any
+"""Deal service module.
+
+This module provides deal-related services for the AI Agentic Deals System.
+"""
+
+from typing import List, Optional, Dict, Any, Union
 from datetime import datetime, timedelta
 import logging
 import json
@@ -6,8 +11,9 @@ import asyncio
 from fastapi import BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from redis import Redis
+from sqlalchemy import func, select, and_, or_
+from sqlalchemy.ext.asyncio import AsyncSession
+from redis.asyncio import Redis
 from ratelimit import limits, sleep_and_retry
 from tenacity import retry, stop_after_attempt, wait_exponential
 from langchain.chains import LLMChain
@@ -15,37 +21,29 @@ from langchain.prompts import PromptTemplate
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import httpx
+from uuid import UUID
+from decimal import Decimal
 
-from backend.core.models.deal import Deal
-from backend.core.repositories.deal import DealRepository
-from backend.core.utils.redis import get_redis, RedisError
-from backend.core.exceptions import (
+from core.models.deal import Deal, DealCreate, DealUpdate, DealStatus
+from core.models.goal import Goal
+from core.repositories.deal import DealRepository
+from core.utils.redis import get_redis, RedisError, get_redis_pool
+from core.exceptions import (
     DealNotFoundError,
     InvalidDealDataError,
     ExternalServiceError,
     RateLimitExceededError,
     AIServiceError
 )
-from backend.core.config import settings
-from backend.core.utils.ecommerce import (
+from core.config import settings
+from core.utils.ecommerce import (
     AmazonAPI,
     WalmartAPI,
     EcommerceAPIError
 )
-from backend.core.services.token import TokenService
-from backend.core.services.crawler import WebCrawler
-
-logger = logging.getLogger(__name__)
-
-# Ensure all required packages are installed
-try:
-    from redis import Redis
-    from ratelimit import limits, sleep_and_retry
-    from apscheduler.schedulers.asyncio import AsyncIOScheduler
-    from apscheduler.triggers.interval import IntervalTrigger
-except ImportError as e:
-    logger.error(f"Missing required package: {str(e)}")
-    raise
+from core.services.token import TokenService
+from core.services.crawler import WebCrawler
+from core.utils.llm import get_llm_instance
 
 logger = logging.getLogger(__name__)
 
@@ -60,18 +58,6 @@ CACHE_TTL_SEARCH = 600  # 10 minutes
 MAX_BATCH_SIZE = 100
 MIN_RETRY_DELAY = 4  # seconds
 MAX_RETRY_DELAY = 10  # seconds
-
-class DealCreate(BaseModel):
-    product_name: str
-    description: Optional[str]
-    price: float
-    original_price: Optional[float]
-    currency: str = "USD"
-    source: str
-    url: str
-    image_url: Optional[str]
-    expires_at: Optional[datetime]
-    metadata: Optional[dict]
 
 class DealService:
     def __init__(self, db: Session):
@@ -130,35 +116,49 @@ class DealService:
             Provide score and brief reasoning:
             """
         )
-        return LLMChain(llm=settings.LLM, prompt=prompt_template)
+        return LLMChain(llm=get_llm_instance(), prompt=prompt_template)
 
     @sleep_and_retry
     @limits(calls=API_CALLS_PER_MINUTE, period=60)
-    async def create_deal(self, deal_data: DealCreate) -> Deal:
-        """Create a new deal with validation, caching, and AI scoring
-        
-        Args:
-            deal_data: DealCreate model containing deal information
-            
-        Returns:
-            Deal: The created deal object
-            
-        Raises:
-            InvalidDealDataError: If deal data is invalid
-            RateLimitExceededError: If API rate limit is exceeded
-            ExternalServiceError: If external service fails
-            AIServiceError: If AI scoring fails
-        """
+    async def create_deal(
+        self,
+        goal_id: UUID,
+        title: str,
+        description: Optional[str],
+        price: Decimal,
+        original_price: Optional[Decimal],
+        currency: str,
+        source: str,
+        url: str,
+        image_url: Optional[str],
+        deal_metadata: Optional[Dict[str, Any]] = None,
+        price_metadata: Optional[Dict[str, Any]] = None,
+        expires_at: Optional[datetime] = None,
+        status: DealStatus = DealStatus.ACTIVE
+    ) -> Deal:
+        """Create a new deal"""
         try:
-            # Validate deal data
-            if deal_data.price <= 0:
-                raise InvalidDealDataError("Price must be positive")
+            deal = Deal(
+                goal_id=goal_id,
+                title=title,
+                description=description,
+                price=price,
+                original_price=original_price,
+                currency=currency,
+                source=source,
+                url=url,
+                image_url=image_url,
+                deal_metadata=deal_metadata,
+                price_metadata=price_metadata,
+                expires_at=expires_at,
+                status=status
+            )
             
             # Calculate AI score with retry mechanism
-            score = await self._calculate_deal_score(deal_data)
+            score = await self._calculate_deal_score(deal)
             
             # Add score to deal data
-            deal_data_dict = deal_data.dict()
+            deal_data_dict = deal.dict()
             deal_data_dict['score'] = score
             
             # Create deal in database

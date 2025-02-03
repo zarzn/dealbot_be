@@ -21,8 +21,8 @@ from sqlalchemy import Column, String, DateTime, Numeric, Boolean, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column
-from backend.core.models.base import Base
-from backend.core.exceptions import InvalidPricingError
+from core.models.base import Base
+from core.exceptions import InvalidPricingError
 
 class ServiceType(str, Enum):
     SEARCH = "search"

@@ -1,32 +1,76 @@
+"""API dependencies."""
+
+from typing import AsyncGenerator
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.core.database import get_db
-from backend.core.services.goal import GoalService
-from backend.core.services.user import UserService
-from backend.core.services.token import TokenService
-from backend.core.services.auth import get_current_user
+from core.database import get_db_session as get_db
+from core.services.token_service import TokenService
+from core.services.analytics import AnalyticsService
+from core.services.market import MarketService
+from core.services.deal import DealService
+from core.services.goal import GoalService
+from core.services.market_search import MarketSearchService
+from core.services.deal_analysis import DealAnalysisService
+from core.services.auth import get_current_user, get_current_active_user
 
-async def get_goal_service(
-    db: AsyncSession = Depends(get_db)
-) -> GoalService:
-    """Dependency that provides GoalService instance"""
-    return GoalService(db)
+from core.repositories.market import MarketRepository
+from core.repositories.deal import DealRepository
+from core.repositories.goal import GoalRepository
+from core.repositories.token import TokenRepository
+from core.repositories.analytics import AnalyticsRepository
 
-async def get_user_service(
-    db: AsyncSession = Depends(get_db)
-) -> UserService:
-    """Dependency that provides UserService instance"""
-    return UserService(db)
+async def get_token_service(db: AsyncSession = Depends(get_db)) -> TokenService:
+    """Get token service instance."""
+    return TokenService(TokenRepository(db))
 
-async def get_token_service(
-    db: AsyncSession = Depends(get_db)
-) -> TokenService:
-    """Dependency that provides TokenService instance"""
-    return TokenService(db)
+async def get_analytics_service(
+    db: AsyncSession = Depends(get_db),
+    market_repository: MarketRepository = Depends(lambda db=Depends(get_db): MarketRepository(db)),
+    deal_repository: DealRepository = Depends(lambda db=Depends(get_db): DealRepository(db))
+) -> AnalyticsService:
+    """Get analytics service instance."""
+    return AnalyticsService(
+        AnalyticsRepository(db),
+        market_repository,
+        deal_repository
+    )
 
-async def get_current_active_user(
-    current_user: dict = Depends(get_current_user)
-):
-    """Dependency that returns current active user"""
-    return current_user
+async def get_market_service(db: AsyncSession = Depends(get_db)) -> MarketService:
+    """Get market service instance."""
+    return MarketService(MarketRepository(db))
+
+async def get_deal_service(db: AsyncSession = Depends(get_db)) -> DealService:
+    """Get deal service instance."""
+    return DealService(DealRepository(db))
+
+async def get_goal_service(db: AsyncSession = Depends(get_db)) -> GoalService:
+    """Get goal service instance."""
+    return GoalService(GoalRepository(db))
+
+async def get_market_search_service(
+    db: AsyncSession = Depends(get_db),
+    market_service: MarketService = Depends(get_market_service)
+) -> MarketSearchService:
+    """Get market search service instance."""
+    return MarketSearchService(db, market_service)
+
+async def get_deal_analysis_service(
+    db: AsyncSession = Depends(get_db),
+    market_service: MarketService = Depends(get_market_service),
+    deal_service: DealService = Depends(get_deal_service)
+) -> DealAnalysisService:
+    """Get deal analysis service instance."""
+    return DealAnalysisService(db, market_service, deal_service)
+
+__all__ = [
+    'get_token_service',
+    'get_analytics_service',
+    'get_market_service',
+    'get_deal_service',
+    'get_goal_service',
+    'get_market_search_service',
+    'get_deal_analysis_service',
+    'get_current_user',
+    'get_current_active_user'
+]

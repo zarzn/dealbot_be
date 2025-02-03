@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from ..models.market import MarketType
 from ..exceptions import IntegrationError
+from decimal import Decimal
 
 class BaseMarketIntegration(ABC):
     def __init__(self, credentials: Dict[str, str]):
@@ -70,4 +71,20 @@ class BaseMarketIntegration(ABC):
             "marketplace": raw_data.get("marketplace"),
             "seller": raw_data.get("seller"),
             "metadata": raw_data.get("metadata", {})
+        }
+
+    def _normalize_deal_data(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize raw deal data to standard format"""
+        return {
+            "title": raw_data["title"],
+            "description": raw_data.get("description"),
+            "price": Decimal(str(raw_data["price"])),
+            "original_price": Decimal(str(raw_data["original_price"])) if raw_data.get("original_price") else None,
+            "currency": raw_data.get("currency", "USD"),
+            "source": self.source_name,
+            "url": raw_data["url"],
+            "image_url": raw_data.get("image_url"),
+            "deal_metadata": raw_data.get("deal_metadata", {}),
+            "price_metadata": raw_data.get("price_metadata", {}),
+            "expires_at": raw_data.get("expires_at")
         } 

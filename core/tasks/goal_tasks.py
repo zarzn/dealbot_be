@@ -3,10 +3,10 @@ from uuid import UUID
 import logging
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from backend.core.database import get_db
-from backend.core.models.goal import GoalUpdate
-from backend.core.services.goal import GoalService
-from backend.core.exceptions import GoalProcessingError
+from core.database import get_db
+from core.models.goal import GoalUpdate
+from core.services.goal import GoalService
+from core.exceptions import GoalProcessingError
 
 logger = logging.getLogger(__name__)
 

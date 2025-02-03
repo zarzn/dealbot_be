@@ -13,9 +13,9 @@ import psutil
 from typing import Any, Dict
 from prometheus_client import Counter, Histogram, Gauge
 
-from backend.core.config import settings
-from backend.core.utils.logger import get_logger
-from backend.core.metrics.celery import CeleryMetrics
+from core.config import settings
+from core.utils.logger import get_logger
+from core.metrics.celery import CeleryMetrics
 
 logger = get_logger(__name__)
 metrics = CeleryMetrics()
@@ -26,9 +26,9 @@ celery_app = Celery(
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
     include=[
-        "backend.core.tasks.deal_tasks",
-        "backend.core.tasks.notification_tasks",
-        "backend.core.tasks.token_tasks"
+        "core.tasks.deal_tasks",
+        "core.tasks.notification_tasks",
+        "core.tasks.token_tasks"
     ]
 )
 
@@ -78,7 +78,7 @@ celery_app.conf.update(
     beat_schedule={
         # Deal monitoring tasks
         "monitor_prices": {
-            "task": "backend.core.tasks.deal_tasks.monitor_prices",
+            "task": "core.tasks.deal_tasks.monitor_prices",
             "schedule": timedelta(minutes=30),
             "options": {
                 "expires": 600,  # 10 minutes
@@ -92,7 +92,7 @@ celery_app.conf.update(
             }
         },
         "cleanup_expired_deals": {
-            "task": "backend.core.tasks.deal_tasks.cleanup_expired_deals",
+            "task": "core.tasks.deal_tasks.cleanup_expired_deals",
             "schedule": crontab(hour="*/6", minute=0),  # Every 6 hours
             "options": {
                 "expires": 3600,  # 1 hour
@@ -102,7 +102,7 @@ celery_app.conf.update(
         
         # Notification tasks
         "cleanup_old_notifications": {
-            "task": "backend.core.tasks.notification_tasks.cleanup_old_notifications",
+            "task": "core.tasks.notification_tasks.cleanup_old_notifications",
             "schedule": crontab(hour=0, minute=0),  # Daily at midnight
             "args": (settings.NOTIFICATION_RETENTION_DAYS,),
             "options": {
@@ -111,7 +111,7 @@ celery_app.conf.update(
             }
         },
         "process_notifications": {
-            "task": "backend.core.tasks.notification_tasks.process_notifications",
+            "task": "core.tasks.notification_tasks.process_notifications",
             "schedule": timedelta(minutes=5),
             "options": {
                 "expires": 300,  # 5 minutes
@@ -122,7 +122,7 @@ celery_app.conf.update(
         
         # Token tasks
         "update_token_prices": {
-            "task": "backend.core.tasks.token_tasks.update_token_prices",
+            "task": "core.tasks.token_tasks.update_token_prices",
             "schedule": timedelta(minutes=15),
             "options": {
                 "expires": 600,  # 10 minutes
@@ -136,7 +136,7 @@ celery_app.conf.update(
             }
         },
         "process_token_transactions": {
-            "task": "backend.core.tasks.token_tasks.process_token_transactions",
+            "task": "core.tasks.token_tasks.process_token_transactions",
             "schedule": timedelta(minutes=5),
             "options": {
                 "expires": 300,  # 5 minutes
@@ -149,26 +149,26 @@ celery_app.conf.update(
     # Task routing
     task_routes={
         # Deal tasks
-        "backend.core.tasks.deal_tasks.monitor_prices": {
+        "core.tasks.deal_tasks.monitor_prices": {
             "queue": "deals_high"
         },
-        "backend.core.tasks.deal_tasks.*": {
+        "core.tasks.deal_tasks.*": {
             "queue": "deals"
         },
         
         # Notification tasks
-        "backend.core.tasks.notification_tasks.process_notifications": {
+        "core.tasks.notification_tasks.process_notifications": {
             "queue": "notifications_high"
         },
-        "backend.core.tasks.notification_tasks.*": {
+        "core.tasks.notification_tasks.*": {
             "queue": "notifications"
         },
         
         # Token tasks
-        "backend.core.tasks.token_tasks.update_token_prices": {
+        "core.tasks.token_tasks.update_token_prices": {
             "queue": "tokens_high"
         },
-        "backend.core.tasks.token_tasks.*": {
+        "core.tasks.token_tasks.*": {
             "queue": "tokens"
         }
     },

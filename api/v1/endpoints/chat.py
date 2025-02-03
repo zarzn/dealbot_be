@@ -3,10 +3,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 from uuid import UUID
 
-from backend.core.database import get_db
-from backend.core.models.chat import ChatMessage, ChatResponse
-from backend.core.services import AgentService, get_current_user
-from backend.core.models.user import UserInDB
+from core.database import get_db
+from core.models.chat import ChatMessage, ChatResponse
+from core.services import AgentService, get_current_user
+from core.models.user import UserInDB
 
 router = APIRouter()
 

@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    env_file:
+      - .env.development
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - deals_network
+
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=12345678
+      - POSTGRES_DB=deals
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - deals_network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --requirepass your_redis_password
+    volumes:
+      - redis_data:/data
+    networks:
+      - deals_network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  deals_network:
+    driver: bridge 

@@ -8,6 +8,9 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
 import logging
+import enum
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.functions import now
 
 from pydantic import BaseModel, Field, validator, conint
 from sqlalchemy import (
@@ -17,13 +20,17 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
-from sqlalchemy.sql import expression
-import enum
+from sqlalchemy.sql import expression, text
+from sqlalchemy import select, func
 
-from backend.core.models.base import Base
-from backend.core.exceptions import MarketError, ValidationError
+from core.models.base import Base
+from core.exceptions import MarketError, ValidationError
+from core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Constants
+MARKET_ERROR_THRESHOLD = 10  # Default value if not set in settings
 
 class MarketType(str, enum.Enum):
     """Supported market types."""
@@ -66,62 +73,40 @@ class Market(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    type: Mapped[MarketType] = mapped_column(SQLAlchemyEnum(MarketType), nullable=False)
-    status: Mapped[MarketStatus] = mapped_column(
-        SQLAlchemyEnum(MarketStatus),
-        nullable=False,
-        default=MarketStatus.ACTIVE,
-        server_default=MarketStatus.ACTIVE.value
-    )
-    description: Mapped[Optional[str]] = mapped_column(Text)
-    api_credentials: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
-    rate_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
-    supported_categories: Mapped[List[MarketCategory]] = mapped_column(
-        JSONB,
-        nullable=False,
-        default=lambda: [c.value for c in MarketCategory]
-    )
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        nullable=False,
-        default=True,
-        server_default=expression.true()
-    )
-    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    last_error: Mapped[Optional[str]] = mapped_column(Text)
-    last_error_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    last_successful_request: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    success_rate: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
-    avg_response_time: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    total_requests: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    requests_today: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    last_reset_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=expression.func.now()
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=expression.func.now()
-    )
+    name: Mapped[str] = mapped_column(String(100))
+    type: Mapped[MarketType] = mapped_column(SQLAlchemyEnum(MarketType))
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    api_endpoint: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    api_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    status: Mapped[MarketStatus] = mapped_column(SQLAlchemyEnum(MarketStatus), default=MarketStatus.ACTIVE)
+    config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    rate_limit: Mapped[int] = mapped_column(Integer, default=100)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=expression.true())
+    error_count: Mapped[int] = mapped_column(Integer, default=0, server_default=expression.text('0'))
+    requests_today: Mapped[int] = mapped_column(Integer, default=0, server_default=expression.text('0'))
+    total_requests: Mapped[int] = mapped_column(Integer, default=0, server_default=expression.text('0'))
+    success_rate: Mapped[float] = mapped_column(Float, default=1.0, server_default=expression.text('1.0'))
+    avg_response_time: Mapped[float] = mapped_column(Float, default=0.0, server_default=expression.text('0.0'))
+    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_error_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_successful_request: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_reset_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        nullable=False,
-        server_default=expression.func.now(),
-        onupdate=expression.func.now()
+        server_default=text('CURRENT_TIMESTAMP'),
+        onupdate=text('CURRENT_TIMESTAMP')
     )
 
     # Relationships
-    deals = relationship("Deal", back_populates="market")
-    price_histories = relationship("PriceHistory", back_populates="market")
+    deals = relationship("Deal", back_populates="market", cascade="all, delete-orphan")
+    price_histories = relationship("PriceHistory", back_populates="market", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         """String representation of the market."""
         return f"<Market {self.name} ({self.type})>"
 
-    async def check_rate_limit(self, db) -> bool:
+    async def check_rate_limit(self, db: AsyncSession) -> bool:
         """Check if market has exceeded rate limit."""
         try:
             now = datetime.utcnow()
@@ -136,17 +121,18 @@ class Market(Base):
             
         except Exception as e:
             logger.error(
-                f"Failed to check rate limit",
+                "Failed to check rate limit",
                 extra={
                     'market_id': str(self.id),
                     'error': str(e)
                 }
             )
+            await db.rollback()
             return False
 
     async def record_request(
         self,
-        db,
+        db: AsyncSession,
         success: bool,
         response_time: Optional[float] = None,
         error: Optional[str] = None
@@ -169,7 +155,8 @@ class Market(Base):
                 self.last_error = error
                 self.last_error_at = datetime.utcnow()
                 
-                if self.error_count >= settings.MARKET_ERROR_THRESHOLD:
+                error_threshold = getattr(settings, 'MARKET_ERROR_THRESHOLD', MARKET_ERROR_THRESHOLD)
+                if self.error_count >= error_threshold:
                     self.status = MarketStatus.ERROR
                     
             # Update success rate
@@ -182,7 +169,7 @@ class Market(Base):
             await db.commit()
             
             logger.info(
-                f"Recorded market request",
+                "Recorded market request",
                 extra={
                     'market_id': str(self.id),
                     'success': success,
@@ -195,19 +182,19 @@ class Market(Base):
         except Exception as e:
             await db.rollback()
             logger.error(
-                f"Failed to record market request",
+                "Failed to record market request",
                 extra={
                     'market_id': str(self.id),
                     'error': str(e)
                 }
             )
-            raise MarketError(f"Failed to record market request: {str(e)}")
+            raise ValidationError(f"Failed to record market request: {str(e)}")
 
-    async def reset_error_state(self, db) -> None:
+    async def reset_error_state(self, db: AsyncSession) -> None:
         """Reset market error state."""
         try:
             if self.status not in [MarketStatus.ERROR, MarketStatus.RATE_LIMITED]:
-                raise MarketError("Market is not in error state")
+                raise ValidationError("Market is not in error state")
                 
             self.status = MarketStatus.ACTIVE
             self.error_count = 0
@@ -221,46 +208,45 @@ class Market(Base):
             await db.commit()
             
             logger.info(
-                f"Reset market error state",
+                "Reset market error state",
                 extra={'market_id': str(self.id)}
             )
             
         except Exception as e:
             await db.rollback()
             logger.error(
-                f"Failed to reset market error state",
+                "Failed to reset market error state",
                 extra={
                     'market_id': str(self.id),
                     'error': str(e)
                 }
             )
-            if isinstance(e, MarketError):
+            if isinstance(e, ValidationError):
                 raise
-            raise MarketError(f"Failed to reset market error state: {str(e)}")
+            raise ValidationError(f"Failed to reset market error state: {str(e)}")
 
     @classmethod
     async def get_available_markets(
         cls,
-        db,
+        db: AsyncSession,
         market_type: Optional[MarketType] = None,
         category: Optional[MarketCategory] = None
     ) -> List['Market']:
         """Get available markets with optional filtering."""
         try:
-            query = db.query(cls).filter(
+            query = select(cls).where(
                 cls.is_active == True,
                 cls.status == MarketStatus.ACTIVE
             )
             
             if market_type:
-                query = query.filter(cls.type == market_type)
-            if category:
-                query = query.filter(cls.supported_categories.contains([category]))
+                query = query.where(cls.type == market_type)
                 
-            markets = await query.all()
+            result = await db.execute(query)
+            markets = result.scalars().all()
             
             logger.info(
-                f"Retrieved available markets",
+                "Retrieved available markets",
                 extra={
                     'count': len(markets),
                     'type': market_type.value if market_type else None,
@@ -271,116 +257,165 @@ class Market(Base):
             
         except Exception as e:
             logger.error(
-                f"Failed to get available markets",
+                "Failed to get available markets",
                 extra={
                     'type': market_type.value if market_type else None,
                     'category': category.value if category else None,
                     'error': str(e)
                 }
             )
-            raise MarketError(f"Failed to get available markets: {str(e)}")
+            raise ValidationError(f"Failed to get available markets: {str(e)}")
 
-class MarketCreate(BaseModel):
-    """Market creation model."""
-    name: str = Field(..., min_length=1, max_length=255)
+# Pydantic Models for API Operations
+
+class MarketBase(BaseModel):
+    """Base market model."""
+    name: str = Field(..., min_length=1, max_length=100)
     type: MarketType
     description: Optional[str] = None
-    api_credentials: Optional[Dict[str, Any]] = None
-    rate_limit: conint(gt=0) = Field(default=100)
-    supported_categories: List[MarketCategory] = Field(
-        default_factory=lambda: [c for c in MarketCategory]
-    )
+    api_endpoint: Optional[str] = None
+    rate_limit: Optional[int] = Field(default=100, gt=0)
+    config: Optional[Dict[str, Any]] = None
 
-    @validator('api_credentials')
-    def validate_credentials(cls, v, values):
-        """Validate API credentials based on market type."""
-        if not v:
-            return v
-            
-        market_type = values.get('type')
-        if not market_type:
-            return v
-            
+    @classmethod
+    def validate_credentials(cls, credentials: Dict[str, str], market_type: MarketType) -> None:
+        """Validate market-specific API credentials."""
         required_fields = {
-            MarketType.AMAZON: ['access_key', 'secret_key', 'partner_tag'],
-            MarketType.WALMART: ['client_id', 'client_secret'],
-            MarketType.EBAY: ['app_id', 'cert_id', 'dev_id'],
-            MarketType.TARGET: ['api_key'],
-            MarketType.BESTBUY: ['api_key']
+            MarketType.AMAZON: ["access_key", "secret_key", "partner_tag"],
+            MarketType.WALMART: ["client_id", "client_secret"],
+            MarketType.EBAY: ["app_id", "cert_id", "dev_id"]
         }
-        
-        missing = [f for f in required_fields[market_type] if f not in v]
-        if missing:
-            raise ValidationError(
-                f"Missing required credentials for {market_type}: {', '.join(missing)}"
-            )
-            
-        return v
 
-    class Config:
-        """Pydantic model configuration."""
-        json_encoders = {
-            datetime: lambda v: v.isoformat(),
-            UUID: lambda v: str(v)
+        if market_type not in required_fields:
+            raise ValidationError(f"Unsupported market type: {market_type}")
+
+        missing_fields = [field for field in required_fields[market_type] 
+                         if field not in credentials]
+        
+        if missing_fields:
+            raise ValidationError(
+                f"Missing required API credentials for {market_type}: {', '.join(missing_fields)}"
+            )
+
+    @classmethod
+    def validate_update_credentials(cls, credentials: Dict[str, str], market_type: MarketType) -> None:
+        """Validate credentials for update operation."""
+        cls.validate_credentials(credentials, market_type)
+
+    @classmethod
+    def validate_status_update(cls, status: MarketStatus, current_status: MarketStatus) -> None:
+        """Validate market status transition."""
+        valid_transitions = {
+            MarketStatus.ACTIVE: [MarketStatus.INACTIVE, MarketStatus.MAINTENANCE, MarketStatus.ERROR],
+            MarketStatus.INACTIVE: [MarketStatus.ACTIVE],
+            MarketStatus.MAINTENANCE: [MarketStatus.ACTIVE, MarketStatus.INACTIVE],
+            MarketStatus.ERROR: [MarketStatus.ACTIVE, MarketStatus.MAINTENANCE],
+            MarketStatus.RATE_LIMITED: [MarketStatus.ACTIVE]
         }
+
+        if status not in valid_transitions.get(current_status, []):
+            raise ValidationError(
+                f"Invalid status transition from {current_status} to {status}"
+            )
+
+class MarketCreate(MarketBase):
+    """Market creation model."""
+    api_credentials: Optional[Dict[str, str]] = None
 
 class MarketUpdate(BaseModel):
     """Market update model."""
-    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = None
-    api_credentials: Optional[Dict[str, Any]] = None
-    rate_limit: Optional[conint(gt=0)] = None
-    supported_categories: Optional[List[MarketCategory]] = None
-    is_active: Optional[bool] = None
+    api_endpoint: Optional[str] = None
+    api_credentials: Optional[Dict[str, str]] = None
+    rate_limit: Optional[int] = Field(None, gt=0)
+    config: Optional[Dict[str, Any]] = None
     status: Optional[MarketStatus] = None
+    is_active: Optional[bool] = None
 
-    @validator('api_credentials')
-    def validate_update_credentials(cls, v):
-        """Validate API credentials update."""
-        if not v:
-            return v
-            
-        # Ensure no empty string values
-        if any(not val for val in v.values()):
-            raise ValidationError("API credentials cannot contain empty values")
-            
-        return v
-
-    @validator('status')
-    def validate_status_update(cls, v):
-        """Validate status updates."""
-        if v == MarketStatus.ACTIVE:
-            # Additional validation could be added here
-            pass
-        return v
-
-    class Config:
-        """Pydantic model configuration."""
-        json_encoders = {
-            datetime: lambda v: v.isoformat(),
-            UUID: lambda v: str(v)
-        }
-
-class MarketResponse(BaseModel):
+class MarketResponse(MarketBase):
     """Market response model."""
     id: UUID
-    name: str
-    type: MarketType
     status: MarketStatus
-    description: Optional[str]
-    supported_categories: List[MarketCategory]
     is_active: bool
-    rate_limit: int
+    error_count: int
     requests_today: int
+    total_requests: int
     success_rate: float
     avg_response_time: float
-    last_successful_request: Optional[datetime]
+    last_error: Optional[str] = None
+    last_error_at: Optional[datetime] = None
+    last_successful_request: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
     class Config:
-        """Pydantic config."""
         from_attributes = True
+
+class MarketCategory(BaseModel):
+    """Market category model."""
+    id: str
+    name: str
+    parent_id: Optional[str] = None
+
+class MarketAnalytics(BaseModel):
+    """Market analytics model."""
+    total_products: int
+    active_deals: int
+    average_discount: float
+    top_categories: List[Dict[str, Any]]
+    price_ranges: Dict[str, int]
+    daily_stats: Dict[str, int]
+
+class MarketMetrics(BaseModel):
+    """Market performance metrics model."""
+    total_products: int
+    active_deals: int
+    average_discount: float
+    response_time: str
+    success_rate: float
+
+class MarketComparison(BaseModel):
+    """Market comparison model."""
+    comparison_date: str
+    markets: List[Dict[str, Any]]
+    summary: Dict[str, Optional[str]]
+
+class MarketPriceHistory(BaseModel):
+    """Market price history model."""
+    market_id: UUID
+    product_id: str
+    price_points: List[Dict[str, Any]]
+    average_price: float
+    lowest_price: float
+    highest_price: float
+    price_trend: str
+
+class MarketAvailability(BaseModel):
+    """Market availability model."""
+    market_id: UUID
+    total_products: int
+    available_products: int
+    out_of_stock: int
+    availability_rate: float
+    last_checked: datetime
+
+class MarketTrends(BaseModel):
+    """Market trends model."""
+    trend_period: str
+    top_trending: List[Dict[str, Any]]
+    price_trends: Dict[str, float]
+    category_trends: List[Dict[str, Any]]
+    search_trends: List[Dict[str, int]]
+
+class MarketPerformance(BaseModel):
+    """Market performance model."""
+    market_id: UUID
+    uptime: float
+    response_times: Dict[str, float]
+    error_rates: Dict[str, float]
+    success_rates: Dict[str, float]
+    api_usage: Dict[str, int]
 
 class MarketStats(BaseModel):
     """Market statistics model."""

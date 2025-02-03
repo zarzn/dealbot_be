@@ -1,12 +1,15 @@
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, UUID
 from datetime import datetime
 import aiohttp
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+import aioredis
+import json
+import logging
 
-from ..models.notification import Notification, NotificationType
+from ..models.notification import Notification, NotificationType, NotificationChannel, NotificationPriority
 from ..models.user import User
-from ..utils.redis import get_redis_client
+from ..utils.redis import get_redis_pool
 from ..exceptions import ValidationError
 
 class NotificationService:
@@ -205,7 +208,7 @@ class NotificationService:
     async def _cache_notification(self, notification: Notification) -> None:
         """Cache notification in Redis for real-time access"""
         try:
-            redis = await get_redis_client()
+            redis = await get_redis_pool()
             
             # Cache individual notification
             notification_key = f"notification:{notification.id}"
@@ -265,7 +268,7 @@ class NotificationService:
             await self.session.commit()
 
             # Delete from Redis
-            redis = await get_redis_client()
+            redis = await get_redis_pool()
             for notification_id in notification_ids:
                 await redis.delete(f"notification:{notification_id}")
 
@@ -291,9 +294,66 @@ class NotificationService:
             await self.session.commit()
 
             # Clear from Redis
-            redis = await get_redis_client()
+            redis = await get_redis_pool()
             await redis.delete(f"user:{user_id}:notifications")
 
         except Exception as e:
             await self.session.rollback()
-            raise ValidationError(f"Error clearing notifications: {str(e)}") 
+            raise ValidationError(f"Error clearing notifications: {str(e)}")
+
+    async def create_notification(
+        self,
+        user_id: UUID,
+        title: str,
+        message: str,
+        type: NotificationType,
+        channels: List[NotificationChannel] = [NotificationChannel.IN_APP],
+        priority: NotificationPriority = NotificationPriority.MEDIUM,
+        data: Optional[Dict[str, Any]] = None,
+        notification_metadata: Optional[Dict[str, Any]] = None,
+        action_url: Optional[str] = None,
+        schedule_for: Optional[datetime] = None,
+        deal_id: Optional[UUID] = None,
+        goal_id: Optional[UUID] = None,
+        expires_at: Optional[datetime] = None
+    ) -> Notification:
+        """Create a new notification"""
+        try:
+            notification = Notification(
+                user_id=user_id,
+                title=title,
+                message=message,
+                type=type,
+                channels=channels,
+                priority=priority,
+                data=data,
+                notification_metadata=notification_metadata,
+                action_url=action_url,
+                schedule_for=schedule_for,
+                deal_id=deal_id,
+                goal_id=goal_id,
+                expires_at=expires_at
+            )
+
+            if self.session:
+                self.session.add(notification)
+                await self.session.commit()
+                await self.session.refresh(notification)
+
+            # Send notification based on type
+            if type == NotificationType.EMAIL:
+                await self._send_email_notification(notification)
+            elif type == NotificationType.PUSH:
+                await self._send_push_notification(notification)
+            elif type == NotificationType.SMS:
+                await self._send_sms_notification(notification)
+            
+            # Store in Redis for real-time access
+            await self._cache_notification(notification)
+
+            return notification
+
+        except Exception as e:
+            if self.session:
+                await self.session.rollback()
+            raise ValidationError(f"Error creating notification: {str(e)}") 

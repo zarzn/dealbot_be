@@ -16,8 +16,8 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.sql import expression
 
-from backend.core.config import settings
-from backend.core.exceptions import DatabaseError
+from core.config import settings
+from core.exceptions import DatabaseError
 
 if TYPE_CHECKING:
     from sqlalchemy import Table

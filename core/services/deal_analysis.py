@@ -26,6 +26,8 @@ from ..exceptions import (
     ModelError
 )
 from ..config import settings
+from ..services.market import MarketService
+from ..services.deal import DealService
 
 logger = get_logger(__name__)
 
@@ -43,12 +45,20 @@ class AnalysisResult:
 class DealAnalysisService:
     """Service for analyzing deals using advanced analytics and AI."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(
+        self,
+        session: AsyncSession,
+        market_service: MarketService,
+        deal_service: DealService
+    ):
         self.session = session
+        self.market_service = market_service
+        self.deal_service = deal_service
         self.scaler = MinMaxScaler()
         self.anomaly_detector = IsolationForest(
             contamination=0.1,
-            random_state=42
+            random_state=42,
+            n_jobs=-1
         )
 
     async def analyze_deal(
@@ -165,7 +175,7 @@ class DealAnalysisService:
             confidence_scores = {
                 "price_data": 1.0 if not price_history.empty else 0.5,
                 "similar_deals": min(len(similar_deals) / 10, 1.0) if similar_deals else 0.0,
-                "market_data": 1.0 if deal.metadata.get("seller_rating") else 0.5,
+                "market_data": 1.0 if deal.deal_metadata.get("seller_rating") else 0.5,
                 "goal_data": 1.0 if goal.criteria else 0.5
             }
 
@@ -328,7 +338,7 @@ class DealAnalysisService:
             metrics = {
                 "competition_score": 0.0,
                 "availability_score": 1.0 if deal.is_available else 0.0,
-                "seller_rating": float(deal.metadata.get("seller_rating", 0.0)),
+                "seller_rating": float(deal.deal_metadata.get("seller_rating", 0.0)),
                 "market_share": 0.0,
                 "price_competitiveness": 0.0,
                 "market_momentum": 0.0
@@ -427,18 +437,18 @@ class DealAnalysisService:
                     metrics["urgency_score"] = 1 - (np.exp(-max(0, days_left)) / np.exp(0))
 
             # Feature matching
-            if goal.features and deal.metadata.get("features"):
+            if goal.features and deal.deal_metadata.get("features"):
                 goal_features = set(goal.features)
-                deal_features = set(deal.metadata["features"])
+                deal_features = set(deal.deal_metadata["features"])
                 if goal_features:
                     metrics["feature_match"] = len(
                         goal_features.intersection(deal_features)
                     ) / len(goal_features)
 
             # Brand matching
-            if goal.preferred_brands and deal.metadata.get("brand"):
+            if goal.preferred_brands and deal.deal_metadata.get("brand"):
                 metrics["brand_match"] = float(
-                    deal.metadata["brand"] in goal.preferred_brands
+                    deal.deal_metadata["brand"] in goal.preferred_brands
                 )
 
             return metrics
@@ -668,4 +678,121 @@ class DealAnalysisService:
             return float(data)
         elif isinstance(data, np.ndarray):
             return data.tolist()
-        return data 
+        return data
+
+    def _calculate_market_score(self, deal: Deal) -> float:
+        """Calculate market-based score component"""
+        try:
+            # Get market data from deal metadata
+            seller_rating = float(deal.deal_metadata.get("seller_rating", 0.0))
+            seller_reviews = int(deal.deal_metadata.get("seller_reviews", 0))
+            seller_history = int(deal.deal_metadata.get("seller_history_days", 0))
+            
+            # Calculate individual components
+            rating_score = min(seller_rating / 5.0, 1.0)
+            review_score = min(seller_reviews / 1000.0, 1.0)
+            history_score = min(seller_history / 365.0, 1.0)
+            
+            # Weighted average
+            weights = {
+                "rating": 0.5,
+                "reviews": 0.3,
+                "history": 0.2
+            }
+            
+            market_score = (
+                rating_score * weights["rating"] +
+                review_score * weights["reviews"] +
+                history_score * weights["history"]
+            )
+            
+            return market_score
+            
+        except Exception as e:
+            logger.error(f"Error calculating market score: {str(e)}")
+            return 0.5  # Default score on error
+
+    def _calculate_price_score(self, deal: Deal) -> float:
+        """Calculate price-based score component"""
+        try:
+            # Get price data
+            current_price = float(deal.price)
+            original_price = float(deal.original_price) if deal.original_price else current_price
+            historical_low = float(deal.price_metadata.get("historical_low", current_price))
+            historical_high = float(deal.price_metadata.get("historical_high", current_price))
+            average_price = float(deal.price_metadata.get("average_price", current_price))
+            
+            # Calculate discount percentage
+            discount = (original_price - current_price) / original_price
+            
+            # Calculate historical position
+            price_range = historical_high - historical_low
+            if price_range > 0:
+                historical_position = (historical_high - current_price) / price_range
+            else:
+                historical_position = 0.5
+                
+            # Calculate relative to average
+            if average_price > 0:
+                average_position = (average_price - current_price) / average_price
+            else:
+                average_position = 0
+                
+            # Weighted combination
+            weights = {
+                "discount": 0.4,
+                "historical": 0.4,
+                "average": 0.2
+            }
+            
+            price_score = (
+                min(discount, 1.0) * weights["discount"] +
+                historical_position * weights["historical"] +
+                min(average_position, 1.0) * weights["average"]
+            )
+            
+            return max(min(price_score, 1.0), 0.0)
+            
+        except Exception as e:
+            logger.error(f"Error calculating price score: {str(e)}")
+            return 0.5  # Default score on error
+
+    def _calculate_feature_match_score(self, deal: Deal, goal: Goal) -> float:
+        """Calculate how well deal features match goal requirements"""
+        try:
+            # Check brand match
+            brand_match = 1.0
+            if goal.preferred_brands and deal.deal_metadata.get("brand"):
+                brand_match = 1.0 if deal.deal_metadata["brand"] in goal.preferred_brands else 0.0
+                
+            # Check feature match
+            feature_match = 1.0
+            if goal.required_features and deal.deal_metadata.get("features"):
+                deal_features = set(deal.deal_metadata["features"])
+                required_features = set(goal.required_features)
+                if required_features:
+                    feature_match = len(required_features.intersection(deal_features)) / len(required_features)
+                    
+            # Check condition match
+            condition_match = 1.0
+            if goal.acceptable_conditions and deal.deal_metadata.get("condition"):
+                condition_match = 1.0 if deal.deal_metadata["condition"] in goal.acceptable_conditions else 0.0
+                
+            # Weighted combination
+            weights = {
+                "brand": 0.3,
+                "features": 0.5,
+                "condition": 0.2
+            }
+            
+            feature_score = (
+                brand_match * weights["brand"] +
+                feature_match * weights["features"] +
+                condition_match * weights["condition"]
+            )
+            
+            return feature_score
+            
+        except Exception as e:
+            logger.error(f"Error calculating feature match score: {str(e)}")
+            return 0.5  # Default score on error 

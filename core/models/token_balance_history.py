@@ -19,8 +19,8 @@ from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column
-from backend.core.models.base import Base
-from backend.core.exceptions import InvalidBalanceChangeError
+from core.models.base import Base
+from core.exceptions import InvalidBalanceChangeError
 
 class BalanceChangeType(str, Enum):
     DEDUCTION = "deduction"

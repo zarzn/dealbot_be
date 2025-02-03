@@ -14,23 +14,27 @@ Classes:
 from uuid import UUID
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text
+from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text, DECIMAL, ForeignKey, JSON
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, expression
 from sqlalchemy.orm import Mapped, mapped_column
-from backend.core.models.base import Base
-from backend.core.exceptions import InvalidTransactionError
+from core.models.base import Base
+from core.exceptions import InvalidTransactionError
 
 class TransactionType(str, Enum):
     PAYMENT = "payment"
     REFUND = "refund"
+    REWARD = "reward"
+    SEARCH_PAYMENT = "search_payment"
+    SEARCH_REFUND = "search_refund"
 
 class TransactionStatus(str, Enum):
     PENDING = "pending"
     COMPLETED = "completed"
     FAILED = "failed"
+    REFUNDED = "refunded"
 
 class TokenTransactionBase(BaseModel):
     user_id: UUID
@@ -73,16 +77,21 @@ class TokenTransactionInDB(TokenTransactionBase):
 class TokenTransaction(Base):
     __tablename__ = 'token_transactions'
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, index=True)
-    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
-    type: Mapped[TransactionType] = mapped_column(SQLEnum(TransactionType), nullable=False)
-    amount: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
-    status: Mapped[TransactionStatus] = mapped_column(SQLEnum(TransactionStatus), nullable=False)
-    tx_hash: Mapped[Optional[str]] = mapped_column(String(66), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('NOW()'))
+    id = Column(UUID(as_uuid=True), primary_key=True, server_default=expression.text("gen_random_uuid()"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    type = Column(Enum(TransactionType), nullable=False)
+    status = Column(Enum(TransactionStatus), nullable=False, default=TransactionStatus.PENDING)
+    amount = Column(DECIMAL(precision=18, scale=8), nullable=False)
+    balance_before = Column(DECIMAL(precision=18, scale=8), nullable=False)
+    balance_after = Column(DECIMAL(precision=18, scale=8), nullable=False)
+    details = Column(JSON, nullable=True)
+    signature = Column(String, nullable=True)  # Blockchain transaction signature
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=expression.text("now()"))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=expression.text("now()"), onupdate=expression.text("now()"))
+    completed_at = Column(DateTime(timezone=True), nullable=True)
 
-    def __repr__(self):
-        return f"<TokenTransaction {self.id}>"
+    def __repr__(self) -> str:
+        return f"<TokenTransaction(id={self.id}, type={self.type}, amount={self.amount})>"
 
     @classmethod
     async def create(cls, db, **kwargs) -> 'TokenTransaction':

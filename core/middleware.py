@@ -7,24 +7,29 @@ including request logging, rate limiting, authentication, and performance monito
 import time
 import uuid
 from typing import Callable, Dict, Any, Optional, List
-from fastapi import Request, Response
+from fastapi import Request, Response, HTTPException, status
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 from starlette.datastructures import Headers
 from prometheus_client import Counter, Histogram
-import jwt
-from datetime import datetime
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
+from redis.asyncio import Redis
+import logging
 
-from backend.core.config import get_settings
-from backend.core.utils.logger import get_logger, get_request_logger
-from backend.core.utils.redis import RateLimit
-from backend.core.exceptions import (
+from jose import JWTError, jwt
+from core.config import get_settings
+from core.utils.logger import get_logger, get_request_logger
+from core.utils.redis import RateLimit, RedisClient
+from core.exceptions import (
     RateLimitError,
     AuthenticationError,
     TokenExpiredError,
     TokenInvalidError
 )
-from backend.core.metrics.middleware import MiddlewareMetrics
+from core.metrics.middleware import MiddlewareMetrics
+from core.services.auth import get_current_user
+from core.models.user import User
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -201,14 +206,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         # Check both per-second and per-minute limits
         second_limit = RateLimit(
-            key=f"ratelimit:1s:{client_id}",
+            key=f"1s:{client_id}",
             limit=self.limit_per_second,
             window=1,
             burst_multiplier=self.burst_multiplier
         )
         
         minute_limit = RateLimit(
-            key=f"ratelimit:1m:{client_id}",
+            key=f"1m:{client_id}",
             limit=self.limit_per_minute,
             window=60,
             burst_multiplier=self.burst_multiplier

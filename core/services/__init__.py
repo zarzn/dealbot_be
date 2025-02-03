@@ -1,27 +1,18 @@
-"""
-Services package initialization
-"""
+"""Core services initialization."""
 
-from .auth import (
-    Token,
-    TokenData,
-    verify_password,
-    get_password_hash,
-    create_tokens,
-    refresh_tokens,
-    authenticate_user,
-    get_current_user
-)
-from .user import get_user_by_email
+from .token import TokenService
+from .analytics import AnalyticsService
+from .market import MarketService
+from .deal import DealService
+from .goal import GoalService
+from .auth import get_current_user, get_current_active_user
 
 __all__ = [
-    'Token',
-    'TokenData',
-    'verify_password',
-    'get_password_hash',
-    'create_tokens',
-    'refresh_tokens',
-    'authenticate_user',
+    'TokenService',
+    'AnalyticsService',
+    'MarketService',
+    'DealService',
+    'GoalService',
     'get_current_user',
-    'get_user_by_email'
+    'get_current_active_user'
 ]

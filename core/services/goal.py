@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
 import logging
 import asyncio
@@ -9,10 +9,11 @@ from sqlalchemy import update, delete
 from pydantic import BaseModel
 from fastapi import BackgroundTasks
 from datetime import datetime
+import json
 
-from backend.core.models.goal import GoalCreate, GoalResponse, GoalUpdate
-from backend.core.models.database import Goal as GoalModel
-from backend.core.exceptions import (
+from core.models.goal import GoalCreate, GoalResponse, GoalUpdate
+from core.models.database import Goal as GoalModel
+from core.exceptions import (
     GoalNotFoundError,
     GoalCreationError,
     GoalUpdateError,
@@ -20,10 +21,10 @@ from backend.core.exceptions import (
     RedisConnectionError,
     CacheOperationError
 )
-from backend.core.services.token import TokenService
-from backend.core.config import settings
-from backend.core.utils.redis import get_redis_pool
-from backend.core.tasks.goal_tasks import update_goal_status_task
+from core.services.token import TokenService
+from core.config import settings
+from core.utils.redis import get_redis_pool
+from core.tasks.goal_tasks import update_goal_status_task
 
 logger = logging.getLogger(__name__)
 

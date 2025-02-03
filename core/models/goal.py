@@ -26,15 +26,13 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import relationship, Mapped, mapped_column
-try:
-    import redis.asyncio as aioredis
-except ImportError:
-    aioredis = None
+import redis.asyncio as aioredis
+from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
-from backend.core.models.base import Base
-from backend.core.exceptions import (
+from core.models.base import Base
+from core.exceptions import (
     GoalConstraintError,
     GoalValidationError, 
     GoalNotFoundError,
@@ -46,8 +44,8 @@ from backend.core.exceptions import (
     GoalUpdateError,
     DealMatchError
 )
-from backend.core.config import settings
-from backend.core.models.market import MarketCategory
+from core.config import settings
+from core.models.market import MarketCategory
 
 class GoalStatus(str, enum.Enum):
     """Goal status types."""
@@ -292,372 +290,159 @@ class Goal(Base):
         })
 
     @classmethod
-    async def create(cls, db: AsyncSession, redis: aioredis.Redis, user_id: UUID, **kwargs) -> 'Goal':
-        """Create a new goal with token validation and proper error handling"""
+    async def create(
+        cls,
+        db: AsyncSession,
+        redis: Redis,
+        goal_data: GoalCreate
+    ) -> 'Goal':
+        """Create a new goal."""
         try:
-            # Validate token balance
-            token_balance = await redis.get(f"user:{user_id}:token_balance")
-            if not token_balance or float(token_balance) < settings.TOKEN_GOAL_CREATION_COST:
-                raise InsufficientBalanceError(
-                    f"Insufficient tokens. Required: {settings.TOKEN_GOAL_CREATION_COST}"
+            # Verify token balance
+            required_balance = settings.GOAL_CREATION_COST
+            cached_balance = await redis.get(f"balance:{goal_data.user_id}")
+            
+            if cached_balance is not None:
+                current_balance = Decimal(cached_balance.decode())
+            else:
+                # Get user balance from database
+                user_result = await db.execute(
+                    select(User).where(User.id == goal_data.user_id)
                 )
-
-            # Validate goal constraints
-            if 'constraints' in kwargs:
-                GoalBase.validate_constraints(kwargs)
-
-            # Create goal in database
-            goal = cls(user_id=user_id, **kwargs)
+                user = user_result.scalar_one_or_none()
+                if not user:
+                    raise UserNotFoundError("User not found")
+                current_balance = user.token_balance
+                
+                # Cache the balance
+                await redis.setex(
+                    f"balance:{goal_data.user_id}",
+                    300,  # 5 minutes TTL
+                    str(current_balance)
+                )
+            
+            if current_balance < required_balance:
+                raise InsufficientBalanceError(
+                    f"Insufficient balance for goal creation. Required: {required_balance}, Current: {current_balance}"
+                )
+            
+            # Create goal
+            goal = cls(**goal_data.model_dump(exclude={'initial_search'}))
             db.add(goal)
             await db.commit()
             await db.refresh(goal)
-
-            # Deduct tokens atomically
-            async with redis.pipeline() as pipe:
-                pipe.decrby(
-                    f"user:{user_id}:token_balance",
-                    settings.TOKEN_GOAL_CREATION_COST
-                )
-                pipe.set(
-                    f"goal:{goal.id}",
-                    goal.to_json(),
-                    ex=settings.GOAL_CACHE_TTL
-                )
-                await pipe.execute()
-
-            # Log creation
-            logger.info(
-                "Created new goal",
-                extra={
-                    'goal_id': str(goal.id),
-                    'user_id': str(user_id),
-                    'token_cost': settings.TOKEN_GOAL_CREATION_COST
-                }
-            )
-
-            # Queue background task for initial deal search
-            try:
-                from backend.core.tasks.deal_search import search_deals_for_goal
-                await search_deals_for_goal.delay(str(goal.id))
-            except ImportError:
-                logger.warning(
-                    "Deal search task not available",
-                    extra={'goal_id': str(goal.id)}
-                )
-
-            return goal
             
+            # Cache goal data
+            await redis.setex(
+                f"goal:{goal.id}",
+                3600,  # 1 hour TTL
+                json.dumps(goal.to_dict())
+            )
+            
+            # Add to user's goals list
+            await redis.lpush(f"user_goals:{goal_data.user_id}", str(goal.id))
+            await redis.expire(f"user_goals:{goal_data.user_id}", 3600)  # 1 hour TTL
+            
+            return goal
         except Exception as e:
             await db.rollback()
-            logger.error(
-                "Failed to create goal",
-                extra={
-                    'error': str(e),
-                    'user_id': str(user_id),
-                    'stack_info': True
-                }
-            )
-            raise GoalCreationError(f"Failed to create goal: {str(e)}") from e
+            logger.error(f"Error creating goal: {e}")
+            raise GoalCreationError(f"Could not create goal: {str(e)}")
 
     @classmethod
-    async def get_by_user(cls, db: AsyncSession, redis_client: aioredis.Redis, user_id: UUID) -> List['Goal']:
-        """Get all goals for a user with caching"""
+    async def get_by_id(
+        cls,
+        goal_id: UUID,
+        db: AsyncSession,
+        redis: Redis
+    ) -> Optional['Goal']:
+        """Get a goal by its ID."""
         try:
             # Try to get from cache first
-            cached_goals = await redis_client.get(f"user:{user_id}:goals")
-            if cached_goals:
-                goals_data = json.loads(cached_goals)
-                return [cls(**goal_data) for goal_data in goals_data]
-
+            cached_goal = await redis.get(f"goal:{goal_id}")
+            if cached_goal:
+                goal_data = json.loads(cached_goal.decode())
+                return cls(**goal_data)
+            
             # If not in cache, get from database
+            result = await db.execute(
+                select(cls).where(cls.id == goal_id)
+            )
+            goal = result.scalar_one_or_none()
+            
+            if goal:
+                # Cache the goal
+                await redis.setex(
+                    f"goal:{goal_id}",
+                    3600,  # 1 hour TTL
+                    json.dumps(goal.to_dict())
+                )
+            
+            return goal
+        except Exception as e:
+            logger.error(f"Error getting goal by ID: {e}")
+            raise GoalNotFoundError(f"Could not retrieve goal: {str(e)}")
+
+    @classmethod
+    async def get_by_user(
+        cls,
+        user_id: UUID,
+        db: AsyncSession,
+        redis: Redis,
+        status: Optional[GoalStatus] = None,
+        limit: int = 10,
+        offset: int = 0
+    ) -> List['Goal']:
+        """Get goals for a user."""
+        try:
             query = select(cls).where(cls.user_id == user_id)
+            
+            if status:
+                query = query.where(cls.status == status)
+            
+            query = query.order_by(cls.created_at.desc())
+            query = query.limit(limit).offset(offset)
+            
             result = await db.execute(query)
             goals = result.scalars().all()
-
-            # Cache the results
-            if goals:
-                await redis_client.set(
-                    f"user:{user_id}:goals",
-                    json.dumps([json.loads(goal.to_json()) for goal in goals]),
-                    ex=settings.GOALS_CACHE_TTL
+            
+            # Cache the goals
+            for goal in goals:
+                await redis.setex(
+                    f"goal:{goal.id}",
+                    3600,  # 1 hour TTL
+                    json.dumps(goal.to_dict())
                 )
-
+            
             return goals
         except Exception as e:
-            logger.error(
-                "Failed to get goals for user",
-                extra={
-                    'error': str(e),
-                    'user_id': str(user_id)
-                }
-            )
-            raise ServiceError(f"Failed to get goals: {str(e)}") from e
+            logger.error(f"Error getting goals for user: {e}")
+            raise ServiceError(f"Could not retrieve goals: {str(e)}")
 
-    @classmethod
-    async def get_by_id(cls, db: AsyncSession, redis_client: aioredis.Redis, goal_id: UUID) -> Optional['Goal']:
-        """Get a goal by ID with caching."""
-        try:
-            # Try to get from cache first
-            cached_goal = await redis_client.get(f"goal:{goal_id}")
-            if cached_goal:
-                goal_data = json.loads(cached_goal)
-                return cls(**goal_data)
-
-            # If not in cache, get from database
-            query = select(cls).where(cls.id == goal_id)
-            result = await db.execute(query)
-            goal = result.scalar_one_or_none()
-
-            # Cache the result if found
-            if goal:
-                await redis_client.set(
-                    f"goal:{goal_id}",
-                    goal.to_json(),
-                    ex=settings.GOAL_CACHE_TTL
-                )
-
-            return goal
-        except Exception as e:
-            logger.error(
-                "Failed to get goal by ID",
-                extra={
-                    'error': str(e),
-                    'goal_id': str(goal_id)
-                }
-            )
-            raise ServiceError(f"Failed to get goal: {str(e)}") from e
-
-    async def update(
-        self,
-        db: AsyncSession,
-        redis_client: aioredis.Redis,
-        update_data: Dict[str, Any]
-    ) -> 'Goal':
-        """Update goal with new data."""
-        try:
-            # Validate update data
-            update_model = GoalUpdate(**update_data)
-            
-            # Update fields
-            for field, value in update_data.items():
-                if hasattr(self, field) and value is not None:
-                    setattr(self, field, value)
-
-            self.updated_at = datetime.utcnow()
-            
-            # Save to database
-            await db.commit()
-            await db.refresh(self)
-
-            # Update cache
-            await redis_client.set(
-                f"goal:{self.id}",
-                self.to_json(),
-                ex=settings.GOAL_CACHE_TTL
-            )
-
-            # Invalidate user goals cache
-            await redis_client.delete(f"user:{self.user_id}:goals")
-
-            logger.info(
-                "Updated goal",
-                extra={
-                    'goal_id': str(self.id),
-                    'updated_fields': list(update_data.keys())
-                }
-            )
-
-            return self
-        except Exception as e:
-            await db.rollback()
-            logger.error(
-                "Failed to update goal",
-                extra={
-                    'error': str(e),
-                    'goal_id': str(self.id)
-                }
-            )
-            raise GoalUpdateError(f"Failed to update goal: {str(e)}") from e
-
-    async def change_status(
-        self,
-        db: AsyncSession,
-        redis_client: aioredis.Redis,
-        new_status: GoalStatus,
-        reason: Optional[str] = None
-    ) -> 'Goal':
-        """Change goal status with proper validation and logging."""
-        try:
-            old_status = self.status
-            self.status = new_status
-            self.updated_at = datetime.utcnow()
-            
-            if new_status == GoalStatus.COMPLETED:
-                self.processing_stats['completion_time'] = datetime.utcnow().isoformat()
-            elif new_status == GoalStatus.ERROR:
-                self.processing_stats['last_error'] = {
-                    'time': datetime.utcnow().isoformat(),
-                    'reason': reason
-                }
-
-            # Save to database
-            await db.commit()
-            await db.refresh(self)
-
-            # Update cache
-            await redis_client.set(
-                f"goal:{self.id}",
-                self.to_json(),
-                ex=settings.GOAL_CACHE_TTL
-            )
-
-            # Invalidate user goals cache
-            await redis_client.delete(f"user:{self.user_id}:goals")
-
-            logger.info(
-                "Changed goal status",
-                extra={
-                    'goal_id': str(self.id),
-                    'old_status': old_status.value,
-                    'new_status': new_status.value,
-                    'reason': reason
-                }
-            )
-
-            return self
-        except Exception as e:
-            await db.rollback()
-            logger.error(
-                "Failed to change goal status",
-                extra={
-                    'error': str(e),
-                    'goal_id': str(self.id),
-                    'new_status': new_status.value
-                }
-            )
-            raise GoalStatusError(f"Failed to change goal status: {str(e)}") from e
-
-    async def process_deal_match(
-        self,
-        db: AsyncSession,
-        redis_client: aioredis.Redis,
-        deal_id: UUID,
-        match_score: float,
-        match_details: Dict[str, Any]
-    ) -> Tuple[bool, Optional[str]]:
-        """Process a new deal match for this goal."""
-        try:
-            # Update match statistics
-            self.matches_found += 1
-            self.deals_processed += 1
-            
-            # Update score metrics
-            if self.best_match_score is None or match_score > self.best_match_score:
-                self.best_match_score = match_score
-            
-            # Calculate new average score
-            current_avg = self.average_match_score or 0
-            self.average_match_score = (
-                (current_avg * (self.matches_found - 1) + match_score) / self.matches_found
-            )
-
-            # Check if we should notify based on threshold
-            should_notify = False
-            notification_message = None
-            if self.notification_threshold is not None and match_score >= self.notification_threshold:
-                should_notify = True
-                notification_message = (
-                    f"New deal match with score {match_score:.2f} "
-                    f"(threshold: {self.notification_threshold:.2f})"
-                )
-
-            # Update processing stats
-            self.processing_stats['last_match'] = {
-                'time': datetime.utcnow().isoformat(),
-                'deal_id': str(deal_id),
-                'score': match_score,
-                'details': match_details
-            }
-
-            # Calculate success rate
-            total_processed = self.deals_processed or 1
-            self.success_rate = self.matches_found / total_processed
-
-            # Save to database
-            await db.commit()
-            await db.refresh(self)
-
-            # Update cache
-            await redis_client.set(
-                f"goal:{self.id}",
-                self.to_json(),
-                ex=settings.GOAL_CACHE_TTL
-            )
-
-            logger.info(
-                "Processed deal match",
-                extra={
-                    'goal_id': str(self.id),
-                    'deal_id': str(deal_id),
-                    'match_score': match_score,
-                    'should_notify': should_notify
-                }
-            )
-
-            return should_notify, notification_message
-
-        except Exception as e:
-            await db.rollback()
-            logger.error(
-                "Failed to process deal match",
-                extra={
-                    'error': str(e),
-                    'goal_id': str(self.id),
-                    'deal_id': str(deal_id)
-                }
-            )
-            raise DealMatchError(f"Failed to process deal match: {str(e)}") from e
-
-    async def check_completion(
-        self,
-        db: AsyncSession,
-        redis_client: aioredis.Redis
-    ) -> bool:
-        """Check if goal should be marked as completed."""
-        try:
-            should_complete = False
-            
-            # Check max matches limit
-            if self.max_matches and self.matches_found >= self.max_matches:
-                should_complete = True
-                reason = f"Reached maximum matches ({self.max_matches})"
-            
-            # Check deadline
-            elif self.deadline and datetime.utcnow() >= self.deadline:
-                should_complete = True
-                reason = "Reached deadline"
-            
-            # Check token limit
-            elif self.max_tokens and self.tokens_spent >= self.max_tokens:
-                should_complete = True
-                reason = f"Reached maximum token usage ({self.max_tokens})"
-
-            if should_complete:
-                await self.change_status(
-                    db,
-                    redis_client,
-                    GoalStatus.COMPLETED,
-                    reason=reason
-                )
-
-            return should_complete
-
-        except Exception as e:
-            logger.error(
-                "Failed to check goal completion",
-                extra={
-                    'error': str(e),
-                    'goal_id': str(self.id)
-                }
-            )
-            return False
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert goal to dictionary for caching."""
+        return {
+            "id": str(self.id),
+            "user_id": str(self.user_id),
+            "item_category": self.item_category,
+            "title": self.title,
+            "constraints": self.constraints,
+            "deadline": self.deadline.isoformat() if self.deadline else None,
+            "status": self.status,
+            "priority": self.priority,
+            "max_matches": self.max_matches,
+            "max_tokens": float(self.max_tokens) if self.max_tokens else None,
+            "notification_threshold": float(self.notification_threshold) if self.notification_threshold else None,
+            "auto_buy_threshold": float(self.auto_buy_threshold) if self.auto_buy_threshold else None,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else None,
+            "matches_found": self.matches_found,
+            "deals_processed": self.deals_processed,
+            "tokens_spent": float(self.tokens_spent),
+            "rewards_earned": float(self.rewards_earned),
+            "last_processed_at": self.last_processed_at.isoformat() if self.last_processed_at else None,
+            "processing_stats": self.processing_stats,
+            "best_match_score": float(self.best_match_score) if self.best_match_score else None,
+            "average_match_score": float(self.average_match_score) if self.average_match_score else None
+        }

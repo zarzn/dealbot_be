@@ -73,4 +73,99 @@ class MarketService:
         if missing_fields:
             raise ValidationError(
                 f"Missing required API credentials for {market_type}: {', '.join(missing_fields)}"
-            ) 
+            )
+
+    async def get_categories(self, market_id: UUID) -> List[dict]:
+        """Get categories for a specific market"""
+        market = await self.get_market(market_id)
+        
+        # Default categories for supported markets
+        default_categories = {
+            MarketType.AMAZON: [
+                {"id": "electronics", "name": "Electronics", "parent_id": None},
+                {"id": "computers", "name": "Computers", "parent_id": "electronics"},
+                {"id": "phones", "name": "Phones & Accessories", "parent_id": "electronics"},
+                {"id": "home", "name": "Home & Kitchen", "parent_id": None},
+                {"id": "appliances", "name": "Appliances", "parent_id": "home"}
+            ],
+            MarketType.WALMART: [
+                {"id": "electronics", "name": "Electronics", "parent_id": None},
+                {"id": "home", "name": "Home", "parent_id": None},
+                {"id": "grocery", "name": "Grocery", "parent_id": None}
+            ]
+        }
+        
+        try:
+            if market.type in default_categories:
+                return default_categories[market.type]
+            else:
+                raise ValidationError(f"Categories not available for market type: {market.type}")
+        except Exception as e:
+            raise ValidationError(f"Error fetching categories: {str(e)}")
+
+    async def get_market_analytics(self, market_id: UUID) -> dict:
+        """Get analytics for a specific market"""
+        market = await self.get_market(market_id)
+        
+        try:
+            # In a real implementation, this would fetch actual analytics data
+            # For now, returning mock data
+            return {
+                "total_products": 1000000,
+                "active_deals": 5000,
+                "average_discount": 25.5,
+                "top_categories": [
+                    {"name": "Electronics", "deal_count": 1500},
+                    {"name": "Home & Kitchen", "deal_count": 1200},
+                    {"name": "Fashion", "deal_count": 800}
+                ],
+                "price_ranges": {
+                    "0-50": 2000,
+                    "51-100": 1500,
+                    "101-500": 1000,
+                    "500+": 500
+                },
+                "daily_stats": {
+                    "new_deals": 250,
+                    "expired_deals": 200,
+                    "price_drops": 300
+                }
+            }
+        except Exception as e:
+            raise ValidationError(f"Error fetching market analytics: {str(e)}")
+
+    async def get_market_comparison(self, market_ids: List[UUID]) -> dict:
+        """Compare multiple markets"""
+        markets = []
+        for market_id in market_ids:
+            market = await self.get_market(market_id)
+            markets.append(market)
+        
+        try:
+            # In a real implementation, this would fetch actual comparison data
+            # For now, returning mock data
+            return {
+                "comparison_date": "2024-02-03",
+                "markets": [
+                    {
+                        "id": str(market.id),
+                        "name": market.name,
+                        "type": market.type.value,
+                        "metrics": {
+                            "total_products": 1000000,
+                            "active_deals": 5000,
+                            "average_discount": 25.5,
+                            "response_time": "120ms",
+                            "success_rate": 99.5
+                        }
+                    }
+                    for market in markets
+                ],
+                "summary": {
+                    "best_prices": markets[0].name if markets else None,
+                    "most_deals": markets[-1].name if markets else None,
+                    "fastest_updates": markets[0].name if markets else None
+                }
+            }
+        except Exception as e:
+            raise ValidationError(f"Error comparing markets: {str(e)}") 

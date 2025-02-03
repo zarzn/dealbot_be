@@ -1,5 +1,5 @@
 import asyncio
-from backend.core.utils.redis import RedisClient
+from core.utils.redis import RedisClient
 
 async def test_redis_connection():
     try:

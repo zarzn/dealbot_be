@@ -13,7 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
-        libpq-dev \
+        curl \
         git \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
@@ -30,8 +30,11 @@ RUN adduser --disabled-password --gecos '' appuser
 RUN chown -R appuser:appuser /app
 USER appuser
 
+# Add backend directory to Python path
+ENV PYTHONPATH=/app:$PYTHONPATH
+
 # Expose port
 EXPOSE 8000
 
 # Run the application
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"] 
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"] 

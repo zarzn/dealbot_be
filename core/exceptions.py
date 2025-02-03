@@ -5,7 +5,7 @@ including authentication, validation, database, and business logic errors.
 """
 
 from typing import List, Dict, Any, Optional, Union
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 from pydantic import ValidationError as PydanticValidationError
 import traceback
 import json
@@ -16,7 +16,7 @@ class BaseAppException(Exception):
     def __init__(
         self,
         message: str,
-        status_code: int = 500,
+        status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR,
         error_code: str = "internal_error",
         details: Optional[Dict[str, Any]] = None,
         original_error: Optional[Exception] = None
@@ -62,54 +62,238 @@ class ValidationError(BaseAppException):
     
     def __init__(
         self,
-        errors: Union[List[Dict[str, Any]], PydanticValidationError],
         message: str = "Validation error",
+        errors: Optional[List[Dict[str, Any]]] = None,
         field_prefix: str = ""
     ):
-        if isinstance(errors, PydanticValidationError):
-            formatted_errors = self._format_pydantic_errors(errors, field_prefix)
-        else:
-            formatted_errors = errors
-            
         super().__init__(
             message=message,
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             error_code="validation_error",
-            details={"errors": formatted_errors}
+            details={"errors": errors or []}
         )
 
-    def _format_pydantic_errors(
-        self,
-        error: PydanticValidationError,
-        field_prefix: str = ""
-    ) -> List[Dict[str, Any]]:
-        """Format Pydantic validation errors."""
-        formatted = []
-        for err in error.errors():
-            field = ".".join(str(loc) for loc in err["loc"])
-            if field_prefix:
-                field = f"{field_prefix}.{field}"
-            formatted.append({
-                "field": field,
-                "message": err["msg"],
-                "type": err["type"]
-            })
-        return formatted
-
 class AuthenticationError(BaseAppException):
-    """Base authentication error."""
+    """Authentication error."""
     
     def __init__(
         self,
         message: str = "Authentication failed",
-        error_code: str = "authentication_error",
         details: Optional[Dict[str, Any]] = None
     ):
         super().__init__(
             message=message,
-            status_code=401,
-            error_code=error_code,
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            error_code="authentication_error",
             details=details
+        )
+
+class NotFoundException(BaseAppException):
+    """Resource not found error."""
+    
+    def __init__(
+        self,
+        message: str = "Resource not found",
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None
+    ):
+        details = {}
+        if resource_type:
+            details["resource_type"] = resource_type
+        if resource_id:
+            details["resource_id"] = resource_id
+            
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_404_NOT_FOUND,
+            error_code="not_found",
+            details=details
+        )
+
+class DatabaseError(BaseAppException):
+    """Database operation error."""
+    
+    def __init__(
+        self,
+        message: str = "Database operation failed",
+        operation: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if operation:
+            error_details["operation"] = operation
+            
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            error_code="database_error",
+            details=error_details
+        )
+
+class MarketError(BaseAppException):
+    """Market operation error."""
+    
+    def __init__(
+        self,
+        message: str = "Market operation failed",
+        market_id: Optional[str] = None,
+        operation: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if market_id:
+            error_details["market_id"] = market_id
+        if operation:
+            error_details["operation"] = operation
+            
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="market_error",
+            details=error_details
+        )
+
+class RateLimitError(BaseAppException):
+    """Rate limit exceeded error."""
+    
+    def __init__(
+        self,
+        message: str = "Rate limit exceeded",
+        limit: Optional[int] = None,
+        reset_after: Optional[int] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if limit:
+            error_details["limit"] = limit
+        if reset_after:
+            error_details["reset_after"] = reset_after
+            
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            error_code="rate_limit_exceeded",
+            details=error_details
+        )
+
+class InsufficientTokensError(BaseAppException):
+    """Insufficient tokens error."""
+    
+    def __init__(
+        self,
+        message: str = "Insufficient tokens",
+        required: Optional[int] = None,
+        available: Optional[int] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if required is not None:
+            error_details["required"] = required
+        if available is not None:
+            error_details["available"] = available
+            
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            error_code="insufficient_tokens",
+            details=error_details
+        )
+
+class MarketConnectionError(MarketError):
+    """Market connection error."""
+    
+    def __init__(
+        self,
+        message: str = "Failed to connect to market",
+        market_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            market_id=market_id,
+            operation="connect",
+            details=details
+        )
+
+class MarketAuthenticationError(MarketError):
+    """Market authentication error."""
+    
+    def __init__(
+        self,
+        message: str = "Market authentication failed",
+        market_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            market_id=market_id,
+            operation="authenticate",
+            details=details
+        )
+
+class MarketRateLimitError(MarketError):
+    """Market rate limit error."""
+    
+    def __init__(
+        self,
+        message: str = "Market rate limit exceeded",
+        market_id: Optional[str] = None,
+        reset_after: Optional[int] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if reset_after:
+            error_details["reset_after"] = reset_after
+            
+        super().__init__(
+            message=message,
+            market_id=market_id,
+            operation="rate_limit",
+            details=error_details
+        )
+
+class MarketMaintenanceError(MarketError):
+    """Market maintenance error."""
+    
+    def __init__(
+        self,
+        message: str = "Market is under maintenance",
+        market_id: Optional[str] = None,
+        maintenance_window: Optional[Dict[str, str]] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if maintenance_window:
+            error_details["maintenance_window"] = maintenance_window
+            
+        super().__init__(
+            message=message,
+            market_id=market_id,
+            operation="maintenance",
+            details=error_details
+        )
+
+class TokenTransactionError(BaseAppException):
+    """Token transaction error."""
+    
+    def __init__(
+        self,
+        message: str = "Token transaction failed",
+        transaction_id: Optional[str] = None,
+        transaction_type: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if transaction_id:
+            error_details["transaction_id"] = transaction_id
+        if transaction_type:
+            error_details["transaction_type"] = transaction_type
+            
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="token_transaction_error",
+            details=error_details
         )
 
 class TokenExpiredError(AuthenticationError):
@@ -126,7 +310,7 @@ class TokenExpiredError(AuthenticationError):
             details=details
         )
 
-class TokenInvalidError(AuthenticationError):
+class InvalidTokenError(AuthenticationError):
     """Invalid token error."""
     
     def __init__(
@@ -174,7 +358,7 @@ class AuthorizationError(BaseAppException):
             
         super().__init__(
             message=message,
-            status_code=403,
+            status_code=status.HTTP_403_FORBIDDEN,
             error_code="authorization_error",
             details=details
         )
@@ -191,33 +375,12 @@ class NotFoundError(BaseAppException):
         message = message or f"{resource_type} not found"
         super().__init__(
             message=message,
-            status_code=404,
+            status_code=status.HTTP_404_NOT_FOUND,
             error_code="not_found",
             details={
                 "resource_type": resource_type,
                 "identifier": str(identifier)
             }
-        )
-
-class DatabaseError(BaseAppException):
-    """Database error with operation details."""
-    
-    def __init__(
-        self,
-        operation: str,
-        message: str = "Database error occurred",
-        original_error: Optional[Exception] = None,
-        details: Optional[Dict[str, Any]] = None
-    ):
-        details = details or {}
-        details["operation"] = operation
-        
-        super().__init__(
-            message=message,
-            status_code=500,
-            error_code="database_error",
-            details=details,
-            original_error=original_error
         )
 
 class RedisError(BaseAppException):
@@ -235,10 +398,26 @@ class RedisError(BaseAppException):
         
         super().__init__(
             message=message,
-            status_code=500,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             error_code="redis_error",
             details=details,
             original_error=original_error
+        )
+
+class RedisConnectionError(RedisError):
+    """Redis connection error."""
+    
+    def __init__(
+        self,
+        message: str = "Failed to connect to Redis",
+        original_error: Optional[Exception] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            operation="connect",
+            message=message,
+            original_error=original_error,
+            details=details
         )
 
 class ExternalServiceError(BaseAppException):
@@ -248,46 +427,23 @@ class ExternalServiceError(BaseAppException):
         self,
         service: str,
         operation: str,
-        message: str = "External service error",
-        response: Optional[Any] = None,
+        message: str = "External service error occurred",
+        response: Optional[Dict[str, Any]] = None,
         original_error: Optional[Exception] = None
     ):
         details = {
             "service": service,
             "operation": operation
         }
-        
         if response:
-            try:
-                if isinstance(response, (str, bytes)):
-                    response_data = json.loads(response)
-                else:
-                    response_data = response
-                details["response"] = response_data
-            except Exception:
-                details["response"] = str(response)
-        
+            details["response"] = response
+            
         super().__init__(
             message=message,
-            status_code=502,
+            status_code=status.HTTP_502_BAD_GATEWAY,
             error_code="external_service_error",
             details=details,
             original_error=original_error
-        )
-
-class RateLimitError(BaseAppException):
-    """Rate limit error with limit details."""
-    
-    def __init__(
-        self,
-        message: str = "Rate limit exceeded",
-        details: Optional[Dict[str, Any]] = None
-    ):
-        super().__init__(
-            message=message,
-            status_code=429,
-            error_code="rate_limit_error",
-            details=details
         )
 
 class TokenError(BaseAppException):
@@ -301,153 +457,380 @@ class TokenError(BaseAppException):
     ):
         super().__init__(
             message=message,
-            status_code=400,
+            status_code=status.HTTP_400_BAD_REQUEST,
             error_code=error_code,
             details=details
         )
 
-class InsufficientTokensError(TokenError):
-    """Insufficient tokens error with balance details."""
+class InvalidCredentialsError(AuthenticationError):
+    """Invalid credentials error."""
     
     def __init__(
         self,
-        required: float,
-        available: float,
-        message: str = "Insufficient tokens"
+        message: str = "Invalid credentials",
+        details: Optional[Dict[str, Any]] = None
     ):
         super().__init__(
             message=message,
-            error_code="insufficient_tokens",
-            details={
-                "required": required,
-                "available": available,
-                "missing": required - available
-            }
+            error_code="invalid_credentials",
+            details=details
         )
 
-class SolanaError(BaseAppException):
-    """Solana blockchain error."""
+class TokenValidationError(TokenError):
+    """Token validation error."""
+    
+    def __init__(
+        self,
+        message: str = "Token validation failed",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            error_code="token_validation_error",
+            details=details
+        )
+
+class RateLimitExceededError(RateLimitError):
+    """Rate limit exceeded error."""
+    
+    def __init__(
+        self,
+        message: str = "Rate limit exceeded",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            details=details
+        )
+
+class AccountLockedError(AuthenticationError):
+    """Account locked error."""
+    
+    def __init__(
+        self,
+        message: str = "Account is locked",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            error_code="account_locked",
+            details=details
+        )
+
+class TokenRefreshError(TokenError):
+    """Token refresh error."""
+    
+    def __init__(
+        self,
+        message: str = "Token refresh failed",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            error_code="token_refresh_error",
+            details=details
+        )
+
+class UserError(BaseAppException):
+    """User-related error."""
+    
+    def __init__(
+        self,
+        message: str = "User error occurred",
+        error_code: str = "user_error",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code=error_code,
+            details=details
+        )
+
+class WalletError(BaseAppException):
+    """Wallet-related error."""
+    
+    def __init__(
+        self,
+        message: str = "Wallet error occurred",
+        error_code: str = "wallet_error",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code=error_code,
+            details=details
+        )
+
+class ServiceError(BaseAppException):
+    """Service-related error."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            error_code="service_error",
+            details=details
+        )
+
+class InsufficientBalanceError(BaseAppException):
+    """Insufficient balance error."""
+    
+    def __init__(
+        self,
+        message: str = "Insufficient balance",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="insufficient_balance",
+            details=details
+        )
+
+# Goal-related exceptions
+class GoalConstraintError(BaseAppException):
+    """Goal constraint validation error."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="goal_constraint_error",
+            details=details
+        )
+
+class GoalValidationError(BaseAppException):
+    """Goal validation error."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="goal_validation_error",
+            details=details
+        )
+
+class GoalNotFoundError(NotFoundError):
+    """Goal not found error."""
+    
+    def __init__(
+        self,
+        goal_id: Any,
+        message: Optional[str] = None
+    ):
+        super().__init__(
+            resource_type="Goal",
+            identifier=goal_id,
+            message=message
+        )
+
+class GoalStatusError(BaseAppException):
+    """Goal status transition error."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="goal_status_error",
+            details=details
+        )
+
+class InvalidGoalConstraintsError(BaseAppException):
+    """Invalid goal constraints error."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="invalid_goal_constraints",
+            details=details
+        )
+
+class GoalCreationError(BaseAppException):
+    """Goal creation error."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="goal_creation_error",
+            details=details
+        )
+
+class GoalUpdateError(BaseAppException):
+    """Goal update error."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="goal_update_error",
+            details=details
+        )
+
+class DealMatchError(BaseAppException):
+    """Deal matching error."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="deal_match_error",
+            details=details
+        )
+
+class UserNotFoundError(NotFoundError):
+    """Error raised when a user is not found."""
+    
+    def __init__(
+        self,
+        user_id: Any,
+        message: Optional[str] = None
+    ):
+        super().__init__(
+            resource_type="user",
+            identifier=user_id,
+            message=message or f"User with ID {user_id} not found"
+        )
+
+class DealNotFoundError(NotFoundError):
+    """Error raised when a deal is not found."""
+    
+    def __init__(
+        self,
+        deal_id: Any,
+        message: Optional[str] = None
+    ):
+        super().__init__(
+            resource_type="deal",
+            identifier=deal_id,
+            message=message or f"Deal with ID {deal_id} not found"
+        )
+
+class InvalidDealDataError(DealError):
+    """Error raised when deal data is invalid."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            error_code="invalid_deal_data",
+            details=details
+        )
+
+class DealExpirationError(DealError):
+    """Error raised when a deal has expired."""
+    
+    def __init__(
+        self,
+        deal_id: str,
+        message: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            deal_id=deal_id,
+            message=message or f"Deal {deal_id} has expired",
+            error_code="deal_expired",
+            details=details
+        )
+
+class DealPriceError(DealError):
+    """Error raised when there are issues with deal pricing."""
+    
+    def __init__(
+        self,
+        deal_id: str,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            deal_id=deal_id,
+            message=message,
+            error_code="deal_price_error",
+            details=details
+        )
+
+class DealValidationError(DealError):
+    """Error raised during deal validation."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            error_code="deal_validation_error",
+            details=details
+        )
+
+class AIServiceError(ExternalServiceError):
+    """Error raised when AI service operations fail."""
     
     def __init__(
         self,
         operation: str,
-        message: str = "Solana operation failed",
-        error_code: str = "solana_error",
-        details: Optional[Dict[str, Any]] = None,
+        message: str = "AI service error occurred",
+        response: Optional[Dict[str, Any]] = None,
         original_error: Optional[Exception] = None
     ):
-        details = details or {}
-        details["operation"] = operation
-        
         super().__init__(
+            service="ai",
+            operation=operation,
             message=message,
-            status_code=502,
-            error_code=error_code,
-            details=details,
+            response=response,
             original_error=original_error
         )
 
-class SolanaTransactionError(SolanaError):
-    """Solana transaction error with signature details."""
+class MarketNotFoundError(NotFoundError):
+    """Error raised when a market is not found."""
     
     def __init__(
         self,
-        signature: str,
-        message: str = "Transaction failed",
-        details: Optional[Dict[str, Any]] = None
+        market_id: Any,
+        message: Optional[str] = None
     ):
-        details = details or {}
-        details["signature"] = signature
-        
         super().__init__(
-            operation="transaction",
-            message=message,
-            error_code="solana_transaction_error",
-            details=details
-        )
-
-class SolanaConnectionError(SolanaError):
-    """Solana connection error."""
-    
-    def __init__(
-        self,
-        endpoint: str,
-        message: str = "Failed to connect to Solana network",
-        details: Optional[Dict[str, Any]] = None
-    ):
-        details = details or {}
-        details["endpoint"] = endpoint
-        
-        super().__init__(
-            operation="connection",
-            message=message,
-            error_code="solana_connection_error",
-            details=details
-        )
-
-class DealError(BaseAppException):
-    """Deal-related error with deal details."""
-    
-    def __init__(
-        self,
-        deal_id: Optional[str] = None,
-        message: str = "Deal error occurred",
-        error_code: str = "deal_error",
-        details: Optional[Dict[str, Any]] = None
-    ):
-        details = details or {}
-        if deal_id:
-            details["deal_id"] = deal_id
-            
-        super().__init__(
-            message=message,
-            status_code=400,
-            error_code=error_code,
-            details=details
-        )
-
-class GoalError(BaseAppException):
-    """Goal-related error with goal details."""
-    
-    def __init__(
-        self,
-        goal_id: Optional[str] = None,
-        message: str = "Goal error occurred",
-        error_code: str = "goal_error",
-        details: Optional[Dict[str, Any]] = None
-    ):
-        details = details or {}
-        if goal_id:
-            details["goal_id"] = goal_id
-            
-        super().__init__(
-            message=message,
-            status_code=400,
-            error_code=error_code,
-            details=details
-        )
-
-class NotificationError(BaseAppException):
-    """Notification error with delivery details."""
-    
-    def __init__(
-        self,
-        notification_type: str,
-        recipient: str,
-        message: str = "Notification error occurred",
-        details: Optional[Dict[str, Any]] = None
-    ):
-        details = details or {}
-        details.update({
-            "notification_type": notification_type,
-            "recipient": recipient
-        })
-            
-        super().__init__(
-            message=message,
-            status_code=400,
-            error_code="notification_error",
-            details=details
+            resource_type="market",
+            identifier=market_id,
+            message=message or f"Market with ID {market_id} not found"
         )
 
 def http_exception_handler(exc: HTTPException) -> Dict[str, Any]:

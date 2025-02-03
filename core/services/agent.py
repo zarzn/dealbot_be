@@ -1,10 +1,10 @@
 from crewai import Agent, Task, Crew
 from typing import List, Dict, Any
 from pydantic import BaseModel
-from backend.core.services.base import BaseService
-from backend.core.models import Goal, Deal
-from backend.core.utils.redis import RedisClient
-from backend.core.exceptions import AgentError
+from core.services.base import BaseService
+from core.models import Goal, Deal
+from core.utils.redis import RedisClient
+from core.exceptions import AgentError
 
 class AgentService(BaseService):
     def __init__(self):

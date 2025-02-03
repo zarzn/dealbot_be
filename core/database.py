@@ -15,8 +15,8 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
-from backend.core.config import settings
-from backend.core.metrics.database import DatabaseMetrics
+from core.config import settings
+from core.metrics.database import DatabaseMetrics
 
 logger = logging.getLogger(__name__)
 metrics = DatabaseMetrics()
@@ -29,7 +29,12 @@ engine = create_async_engine(
     pool_timeout=settings.DB_POOL_TIMEOUT,
     pool_recycle=settings.DB_POOL_RECYCLE,
     pool_pre_ping=True,
-    echo=settings.DEBUG
+    echo=settings.DEBUG,
+    connect_args={
+        "statement_timeout": settings.DB_STATEMENT_TIMEOUT * 1000,  # Convert to milliseconds
+        "command_timeout": settings.DB_STATEMENT_TIMEOUT,
+        "idle_in_transaction_session_timeout": settings.DB_IDLE_TIMEOUT * 1000,  # Convert to milliseconds
+    }
 )
 
 # Configure session factory with transaction management
@@ -46,21 +51,25 @@ Base = declarative_base()
 @event.listens_for(engine.sync_engine, "connect")
 def set_search_path(dbapi_connection, connection_record):
     """Set the search path and connection settings."""
-    cursor = dbapi_connection.cursor()
-    cursor.execute("SET search_path TO public")
-    cursor.execute("SET timezone TO 'UTC'")
-    cursor.execute("SET statement_timeout TO '30s'")
-    cursor.close()
+    try:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("SET search_path TO public")
+        cursor.execute("SET timezone TO 'UTC'")
+        cursor.execute(f"SET statement_timeout TO '{settings.DB_STATEMENT_TIMEOUT}s'")
+        cursor.close()
+    except Exception as e:
+        logger.error(f"Failed to set database connection parameters: {str(e)}")
+        raise
 
 @event.listens_for(engine.sync_engine, "checkout")
 def receive_checkout(dbapi_connection, connection_record, connection_proxy):
     """Monitor connection checkouts for metrics."""
-    metrics.connection_checkout()
+    metrics.connection_checkouts.inc()
 
 @event.listens_for(engine.sync_engine, "checkin")
 def receive_checkin(dbapi_connection, connection_record):
     """Monitor connection checkins for metrics."""
-    metrics.connection_checkin()
+    metrics.connection_checkins.inc()
 
 @asynccontextmanager
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
@@ -72,17 +81,15 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         session = async_session()
         yield session
         await session.commit()
-        metrics.successful_transaction()
     except SQLAlchemyError as e:
         if session:
             await session.rollback()
-        metrics.failed_transaction()
+        metrics.connection_failures.inc()
         logger.error(f"Database transaction failed: {str(e)}")
         raise
     finally:
         if session:
             await session.close()
-        metrics.transaction_time(time.time() - start_time)
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Dependency that provides a database session with retry logic."""
@@ -96,7 +103,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
                 break
         except OperationalError as e:
             if attempt == max_retries - 1:
-                metrics.connection_failure()
+                metrics.connection_failures.inc()
                 logger.error(f"Database connection failed after {max_retries} attempts: {str(e)}")
                 raise
             logger.warning(f"Database connection failed (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay} seconds...")

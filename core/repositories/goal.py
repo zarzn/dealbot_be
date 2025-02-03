@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update, delete
 from sqlalchemy.exc import SQLAlchemyError
-from redis import asyncio as aioredis
+import aioredis
 
 from core.models.goal import Goal
 from core.exceptions import (

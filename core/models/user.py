@@ -14,7 +14,7 @@ Classes:
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, EmailStr, Field, field_validator, validator, conint
+from pydantic import BaseModel, EmailStr, Field, field_validator, conint
 from sqlalchemy import (
     Column, String, Boolean, DateTime, Numeric, text, Text, Integer,
     Index, CheckConstraint, UniqueConstraint, Enum as SQLEnum,
@@ -23,29 +23,33 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.sql import func, expression
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from base58 import b58decode
+try:
+    from base58 import b58decode
+except ImportError:
+    raise ImportError("Please install base58: pip install base58")
 import json
 import logging
+from enum import Enum
 
-from backend.core.models.base import Base
-from backend.core.exceptions import (
+from core.models.base import Base
+from core.exceptions import (
     UserError,
     TokenError,
     WalletError,
     ValidationError
 )
-from backend.core.config import settings
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-class UserStatus(str, SQLEnum):
+class UserStatus(str, Enum):
     """User status types."""
     ACTIVE = "active"
     INACTIVE = "inactive"
     SUSPENDED = "suspended"
     DELETED = "deleted"
 
-class NotificationPreference(str, SQLEnum):
+class NotificationPreference(str, Enum):
     """User notification preference types."""
     ALL = "all"
     IMPORTANT = "important"
@@ -73,7 +77,7 @@ class UserBase(BaseModel):
     preferences: Dict[str, Any] = Field(
         default_factory=lambda: {
             "theme": "light",
-            "notifications": NotificationPreference.ALL.value,
+            "notifications": "all",
             "email_notifications": True,
             "push_notifications": False,
             "telegram_notifications": False,
@@ -86,7 +90,7 @@ class UserBase(BaseModel):
             "timezone": "UTC"
         }
     )
-    status: UserStatus = Field(default=UserStatus.ACTIVE)
+    status: str = Field(default=UserStatus.ACTIVE.value)
     notification_channels: List[str] = Field(
         default=["in_app", "email"],
         description="Enabled notification channels"
@@ -152,8 +156,8 @@ class UserCreate(UserBase):
         ...,
         min_length=8,
         max_length=128,
-        pattern=r'^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*#?&])[A-Za-z\d@$!%*#?&]{8,}$',
-        description="User password (must contain letters, numbers, and special characters)"
+        pattern=r'[A-Za-z\d@$!%*#?&]{8,}',
+        description="User password (must be at least 8 characters long and contain letters, numbers, and special characters)"
     )
 
     class Config:
@@ -173,12 +177,12 @@ class UserUpdate(BaseModel):
         None,
         min_length=8,
         max_length=128,
-        pattern=r'^(?=.*[A-Za-z])(?=.*\d)(?=.*[@$!%*#?&])[A-Za-z\d@$!%*#?&]{8,}$'
+        pattern=r'[A-Za-z\d@$!%*#?&]{8,}'
     )
     sol_address: Optional[str] = None
     preferences: Optional[Dict[str, Any]] = None
     notification_channels: Optional[List[str]] = None
-    status: Optional[UserStatus] = None
+    status: Optional[str] = None
 
     class Config:
         json_schema_extra = {
@@ -214,6 +218,17 @@ class UserResponse(UserBase):
             NotificationPreference: lambda v: v.value
         }
 
+class UserInDB(UserBase):
+    """Model for user in database with password."""
+    password: str
+    id: UUID
+    created_at: datetime
+    updated_at: datetime
+    last_payment_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
 class User(Base):
     """SQLAlchemy model for user table"""
     __tablename__ = 'users'
@@ -234,16 +249,29 @@ class User(Base):
     referral_code: Mapped[str] = mapped_column(String(10), unique=True, nullable=False, index=True)
     referred_by: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     token_balance: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
-    status: Mapped[UserStatus] = mapped_column(
+    status: Mapped[str] = mapped_column(
         SQLEnum(UserStatus),
         nullable=False,
-        default=UserStatus.ACTIVE,
-        server_default=UserStatus.ACTIVE.value
+        default=UserStatus.ACTIVE.value,
+        server_default=text(f"'{UserStatus.ACTIVE.value}'")
     )
     preferences: Mapped[Dict[str, Any]] = mapped_column(
         JSONB,
         nullable=False,
-        default=UserBase.__fields__['preferences'].default_factory()
+        default={
+            "theme": "light",
+            "notifications": "all",
+            "email_notifications": True,
+            "push_notifications": False,
+            "telegram_notifications": False,
+            "discord_notifications": False,
+            "deal_alert_threshold": 0.8,
+            "auto_buy_enabled": False,
+            "auto_buy_threshold": 0.95,
+            "max_auto_buy_amount": 100.0,
+            "language": "en",
+            "timezone": "UTC"
+        }
     )
     notification_channels: Mapped[List[str]] = mapped_column(
         JSONB,
@@ -255,13 +283,13 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=expression.func.now()
+        server_default=text('CURRENT_TIMESTAMP')
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=expression.func.now(),
-        onupdate=expression.func.now()
+        server_default=text('CURRENT_TIMESTAMP'),
+        onupdate=text('CURRENT_TIMESTAMP')
     )
     active_goals_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_deals_found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -337,7 +365,7 @@ class User(Base):
         """Get user by wallet address"""
         try:
             if not wallet_address:
-                raise InvalidWalletAddressError("Wallet address is required")
+                raise WalletError("Wallet address is required")
                 
             return await db.query(cls).filter(
                 cls.sol_address == wallet_address,

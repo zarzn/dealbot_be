@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     REDIS_PORT: conint(ge=1, le=65535) = 6379
     REDIS_DB: conint(ge=0) = 0
     REDIS_PASSWORD: Optional[SecretStr] = None
-    REDIS_SSL: bool = True
+    REDIS_SSL: bool = False  # Set to False by default for local development
     REDIS_POOL_SIZE: conint(ge=1) = 20
     REDIS_TIMEOUT: conint(ge=1) = 3
     REDIS_URL: Optional[RedisDsn] = None

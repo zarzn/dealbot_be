@@ -8,13 +8,13 @@ from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
-from backend.core.models import (
+from core.models import (
     TokenTransaction,
     TokenBalanceHistory,
     TokenPricing,
     User
 )
-from backend.core.exceptions import (
+from core.exceptions import (
     RepositoryError,
     InsufficientBalanceError,
     WalletConnectionError,
