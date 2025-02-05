@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
-from ..models.market import MarketType
-from ..exceptions import IntegrationError
 from decimal import Decimal
+from core.models.enums import MarketType
+from core.exceptions import BaseError, IntegrationError
 
 class BaseMarketIntegration(ABC):
     def __init__(self, credentials: Dict[str, str]):
@@ -50,7 +50,7 @@ class BaseMarketIntegration(ABC):
     def _handle_error(self, error: Exception, operation: str) -> None:
         """Handle and standardize error responses"""
         error_message = f"Error during {operation}: {str(error)}"
-        raise IntegrationError(error_message)
+        raise IntegrationError(message=error_message, operation=operation)
 
     @staticmethod
     def format_product_response(raw_data: Dict[str, Any]) -> Dict[str, Any]:

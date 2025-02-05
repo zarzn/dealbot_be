@@ -10,14 +10,20 @@ from uuid import UUID
 import logging
 
 from pydantic import BaseModel, Field, ConfigDict
-from sqlalchemy import Column, String, JSON, DateTime, Enum, Integer, text, select, func
+from sqlalchemy import Column, String, JSON, DateTime, Enum, Integer, text, select
+from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import declarative_base, sessionmaker, Mapped, mapped_column
 from sqlalchemy.sql import Select
 
 from core.config import settings
-from core.exceptions import DatabaseError, ValidationError, NotFoundError
+from core.exceptions.base import (
+    DatabaseError,
+    ValidationError,
+    NotFoundError,
+    RepositoryError
+)
 
 logger = logging.getLogger(__name__)
 

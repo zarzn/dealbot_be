@@ -4,16 +4,12 @@ This module provides database operations for analytics data.
 """
 
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 from uuid import UUID
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, desc
-from sqlalchemy.sql import text
 
-from ..models.market import Market, MarketStatus
-from ..exceptions import DatabaseError
-
+from core.exceptions import DatabaseError, RepositoryError
 logger = logging.getLogger(__name__)
 
 class AnalyticsRepository:
@@ -23,7 +19,17 @@ class AnalyticsRepository:
         self.session = session
 
     async def get_market_analytics(self, market_id: UUID) -> Dict[str, Any]:
-        """Get analytics for a specific market."""
+        """Get analytics for a specific market.
+        
+        Args:
+            market_id: The UUID of the market to get analytics for
+            
+        Returns:
+            Dict containing market analytics data
+            
+        Raises:
+            DatabaseError: If there is an error retrieving the analytics
+        """
         try:
             # In a real implementation, this would query analytics tables
             # For now, returning mock data
@@ -57,7 +63,18 @@ class AnalyticsRepository:
         market_ids: List[UUID],
         metrics: Optional[List[str]] = None
     ) -> Dict[str, Any]:
-        """Compare multiple markets."""
+        """Compare multiple markets.
+        
+        Args:
+            market_ids: List of market UUIDs to compare
+            metrics: Optional list of specific metrics to compare
+            
+        Returns:
+            Dict containing market comparison data
+            
+        Raises:
+            DatabaseError: If there is an error comparing markets
+        """
         try:
             # In a real implementation, this would query analytics tables
             # For now, returning mock data
@@ -93,7 +110,20 @@ class AnalyticsRepository:
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None
     ) -> Dict[str, Any]:
-        """Get price history for a product in a market."""
+        """Get price history for a product in a market.
+        
+        Args:
+            market_id: The UUID of the market
+            product_id: The product identifier
+            start_date: Optional start date for history range
+            end_date: Optional end date for history range
+            
+        Returns:
+            Dict containing price history data
+            
+        Raises:
+            DatabaseError: If there is an error retrieving price history
+        """
         try:
             # In a real implementation, this would query price history tables
             # For now, returning mock data
@@ -115,7 +145,17 @@ class AnalyticsRepository:
             raise DatabaseError(f"Failed to get price history: {str(e)}")
 
     async def get_market_availability(self, market_id: UUID) -> Dict[str, Any]:
-        """Get availability metrics for a market."""
+        """Get availability metrics for a market.
+        
+        Args:
+            market_id: The UUID of the market
+            
+        Returns:
+            Dict containing availability metrics
+            
+        Raises:
+            DatabaseError: If there is an error retrieving availability data
+        """
         try:
             # In a real implementation, this would query availability tables
             # For now, returning mock data
@@ -136,7 +176,18 @@ class AnalyticsRepository:
         market_id: UUID,
         trend_period: str = "24h"
     ) -> Dict[str, Any]:
-        """Get market trends."""
+        """Get market trends.
+        
+        Args:
+            market_id: The UUID of the market
+            trend_period: Time period for trends (e.g. "24h", "7d")
+            
+        Returns:
+            Dict containing market trend data
+            
+        Raises:
+            DatabaseError: If there is an error retrieving trends
+        """
         try:
             # In a real implementation, this would query trends tables
             # For now, returning mock data
@@ -168,7 +219,17 @@ class AnalyticsRepository:
             raise DatabaseError(f"Failed to get market trends: {str(e)}")
 
     async def get_market_performance(self, market_id: UUID) -> Dict[str, Any]:
-        """Get market performance metrics."""
+        """Get market performance metrics.
+        
+        Args:
+            market_id: The UUID of the market
+            
+        Returns:
+            Dict containing performance metrics
+            
+        Raises:
+            DatabaseError: If there is an error retrieving performance data
+        """
         try:
             # In a real implementation, this would query performance tables
             # For now, returning mock data
@@ -208,7 +269,15 @@ class AnalyticsRepository:
         market_id: UUID,
         analytics_data: Dict[str, Any]
     ) -> None:
-        """Update analytics data for a market."""
+        """Update analytics data for a market.
+        
+        Args:
+            market_id: The UUID of the market
+            analytics_data: Dict containing analytics data to update
+            
+        Raises:
+            DatabaseError: If there is an error updating analytics data
+        """
         try:
             # In a real implementation, this would update analytics tables
             # For now, just logging the update
@@ -218,7 +287,14 @@ class AnalyticsRepository:
             raise DatabaseError(f"Failed to update market analytics: {str(e)}")
 
     async def aggregate_market_stats(self, market_id: UUID) -> None:
-        """Aggregate market statistics."""
+        """Aggregate market statistics.
+        
+        Args:
+            market_id: The UUID of the market
+            
+        Raises:
+            DatabaseError: If there is an error aggregating statistics
+        """
         try:
             # In a real implementation, this would aggregate statistics
             # For now, just logging the aggregation

@@ -13,22 +13,33 @@ from decimal import Decimal
 import base58
 from solana.rpc.async_api import AsyncClient
 from solana.transaction import Transaction
-from solana.system_program import TransferParams, transfer
-from solana.keypair import Keypair
-from solana.publickey import PublicKey
+from solders.pubkey import Pubkey
+from solders.system_program import TransferParams, transfer
+from solders.keypair import Keypair
+from solders.rpc.responses import GetLatestBlockhashResp
 
-from ..exceptions import (
+""" from core.exceptions import (
     SolanaError,
     SolanaTransactionError,
     SolanaConnectionError,
     InsufficientTokensError,
     TokenValidationError,
-    TokenError
-)
-from ..config import settings
-from ..models.user import User
-from ..models.token_transaction import TokenTransaction
-from ..models.token_balance import TokenBalance
+    TokenError,
+    TokenTransactionError,
+    TokenBalanceError,
+    DatabaseError,
+    ValidationError,
+    NetworkError,
+    CacheOperationError,
+    APIError,
+    APIServiceUnavailableError
+) 
+DO NOT DELETE THIS COMMENT
+"""
+from core.config import settings
+from core.models.user import User
+from core.models.token_transaction import TokenTransaction
+from core.models.token_balance import TokenBalance
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
@@ -53,7 +64,7 @@ class TokenService:
             search_cost: Token cost per search
         """
         self.rpc_url = rpc_url
-        self.token_address = PublicKey(token_address)
+        self.token_address = Pubkey.from_string(token_address)
         self.required_balance = Decimal(str(required_balance))
         self.search_cost = Decimal(str(search_cost))
         self.client: Optional[AsyncClient] = None
@@ -66,10 +77,8 @@ class TokenService:
                 # Test connection
                 await self.client.is_connected()
             except Exception as e:
-                raise SolanaConnectionError(
-                    endpoint=self.rpc_url,
-                    message="Failed to connect to Solana network",
-                    details={"error": str(e)}
+                raise Exception(
+                    f"Failed to connect to Solana network: {str(e)}"
                 )
         return self
 
@@ -89,20 +98,18 @@ class TokenService:
             Token balance as Decimal
             
         Raises:
-            SolanaConnectionError: If connection to Solana network fails
-            TokenValidationError: If wallet address is invalid
+            Exception: If connection fails or wallet is invalid
         """
         if not self.client:
             raise RuntimeError("TokenService must be used as a context manager")
 
         try:
-            pubkey = PublicKey(wallet_address)
+            pubkey = Pubkey.from_string(wallet_address)
             response = await self.client.get_token_account_balance(pubkey)
             
             if "result" not in response or "value" not in response["result"]:
-                raise TokenValidationError(
-                    message="Invalid response from Solana network",
-                    details={"wallet": wallet_address}
+                raise Exception(
+                    f"Invalid response from Solana network for wallet {wallet_address}"
                 )
                 
             amount = response["result"]["value"]["amount"]
@@ -111,15 +118,10 @@ class TokenService:
             return Decimal(amount) / Decimal(10 ** decimals)
 
         except ValueError:
-            raise TokenValidationError(
-                message="Invalid wallet address",
-                details={"wallet": wallet_address}
-            )
+            raise Exception(f"Invalid wallet address: {wallet_address}")
         except Exception as e:
-            raise SolanaConnectionError(
-                endpoint=self.rpc_url,
-                message="Failed to get token balance",
-                details={"wallet": wallet_address, "error": str(e)}
+            raise Exception(
+                f"Failed to get token balance for wallet {wallet_address}: {str(e)}"
             )
 
     async def validate_balance(self, wallet_address: str) -> bool:
@@ -141,13 +143,12 @@ class TokenService:
             wallet_address: Solana wallet address
             
         Raises:
-            InsufficientTokensError: If balance is insufficient for search
+            Exception: If balance is insufficient for search
         """
         balance = await self.get_balance(wallet_address)
         if balance < self.search_cost:
-            raise InsufficientTokensError(
-                required=float(self.search_cost),
-                available=float(balance)
+            raise Exception(
+                f"Insufficient balance for search. Required: {self.search_cost}, Available: {balance}"
             )
 
     async def process_transaction(
@@ -171,7 +172,7 @@ class TokenService:
             Created TokenTransaction instance
             
         Raises:
-            TokenError: If transaction processing fails
+            Exception: If transaction processing fails
         """
         try:
             # Get user's current balance
@@ -208,14 +209,8 @@ class TokenService:
 
         except Exception as e:
             await db.rollback()
-            raise TokenError(
-                message="Failed to process token transaction",
-                details={
-                    "user_id": user_id,
-                    "amount": str(amount),
-                    "type": transaction_type,
-                    "error": str(e)
-                }
+            raise Exception(
+                f"Failed to process token transaction: {str(e)}"
             )
 
     async def deduct_search_cost(
@@ -238,12 +233,8 @@ class TokenService:
             db=db,
             user_id=user_id,
             amount=-self.search_cost,
-            transaction_type="search_payment",
-            details={
-                "operation": "search",
-                "cost": str(self.search_cost),
-                "params": search_params
-            }
+            transaction_type="search_cost",
+            details={"search_params": search_params}
         )
 
     async def refund_search_cost(
@@ -323,26 +314,35 @@ class TokenService:
             Transaction signature
             
         Raises:
-            SolanaTransactionError: If transaction fails
+            Exception: If transfer fails
         """
         if not self.client:
             raise RuntimeError("TokenService must be used as a context manager")
 
         try:
+            # Convert addresses to Pubkey
+            from_pubkey = Pubkey.from_string(from_wallet)
+            to_pubkey = Pubkey.from_string(to_wallet)
+            
             # Create keypair from private key
-            keypair = Keypair.from_secret_key(private_key)
+            keypair = Keypair.from_bytes(private_key)
+            
+            # Get recent blockhash
+            recent_blockhash: GetLatestBlockhashResp = await self.client.get_latest_blockhash()
             
             # Create transfer instruction
+            lamports = int(amount * Decimal(10 ** 9))  # Convert to lamports
             transfer_ix = transfer(
                 TransferParams(
-                    from_pubkey=PublicKey(from_wallet),
-                    to_pubkey=PublicKey(to_wallet),
-                    lamports=int(amount * Decimal(10 ** 9))  # Convert to lamports
+                    from_pubkey=from_pubkey,
+                    to_pubkey=to_pubkey,
+                    lamports=lamports
                 )
             )
             
             # Create and sign transaction
             transaction = Transaction().add(transfer_ix)
+            transaction.recent_blockhash = recent_blockhash.value.blockhash
             transaction.sign(keypair)
             
             # Send transaction
@@ -353,22 +353,9 @@ class TokenService:
             )
             
             if "result" not in result:
-                raise SolanaTransactionError(
-                    signature="unknown",
-                    message="Failed to send transaction",
-                    details={"error": str(result)}
-                )
+                raise Exception("Failed to get transaction result")
                 
             return result["result"]
 
         except Exception as e:
-            raise SolanaTransactionError(
-                signature="unknown",
-                message="Token transfer failed",
-                details={
-                    "from": from_wallet,
-                    "to": to_wallet,
-                    "amount": str(amount),
-                    "error": str(e)
-                }
-            ) 
+            raise Exception(f"Failed to transfer tokens: {str(e)}") 

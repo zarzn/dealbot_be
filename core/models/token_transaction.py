@@ -13,6 +13,7 @@ Classes:
 
 from uuid import UUID
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field, field_validator
@@ -21,7 +22,7 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.sql import func, expression
 from sqlalchemy.orm import Mapped, mapped_column
 from core.models.base import Base
-from core.exceptions import InvalidTransactionError
+#from core.exceptions import InvalidTransactionError DO NOT DELETE THIS COMMENT
 
 class TransactionType(str, Enum):
     PAYMENT = "payment"
@@ -52,7 +53,7 @@ class TokenTransactionBase(BaseModel):
     @classmethod
     def validate_amount(cls, v: float) -> float:
         if v <= 0:
-            raise InvalidTransactionError("Transaction amount must be positive")
+            raise ValueError("Transaction amount must be positive")
         return v
 
 class TokenTransactionCreate(TokenTransactionBase):
@@ -75,20 +76,20 @@ class TokenTransactionInDB(TokenTransactionBase):
         from_attributes = True
 
 class TokenTransaction(Base):
-    __tablename__ = 'token_transactions'
+    __tablename__ = 'tokentransaction'
 
-    id = Column(UUID(as_uuid=True), primary_key=True, server_default=expression.text("gen_random_uuid()"))
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    type = Column(Enum(TransactionType), nullable=False)
-    status = Column(Enum(TransactionStatus), nullable=False, default=TransactionStatus.PENDING)
-    amount = Column(DECIMAL(precision=18, scale=8), nullable=False)
-    balance_before = Column(DECIMAL(precision=18, scale=8), nullable=False)
-    balance_after = Column(DECIMAL(precision=18, scale=8), nullable=False)
-    details = Column(JSON, nullable=True)
-    signature = Column(String, nullable=True)  # Blockchain transaction signature
-    created_at = Column(DateTime(timezone=True), nullable=False, server_default=expression.text("now()"))
-    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=expression.text("now()"), onupdate=expression.text("now()"))
-    completed_at = Column(DateTime(timezone=True), nullable=True)
+    id: Mapped[UUID] = mapped_column(PG_UUID, primary_key=True, server_default=text("gen_random_uuid()"))
+    user_id: Mapped[UUID] = mapped_column(PG_UUID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    type: Mapped[TransactionType] = mapped_column(SQLEnum(TransactionType), nullable=False)
+    status: Mapped[TransactionStatus] = mapped_column(SQLEnum(TransactionStatus), nullable=False, default=TransactionStatus.PENDING)
+    amount: Mapped[Decimal] = mapped_column(DECIMAL(precision=18, scale=8), nullable=False)
+    balance_before: Mapped[Decimal] = mapped_column(DECIMAL(precision=18, scale=8), nullable=False)
+    balance_after: Mapped[Decimal] = mapped_column(DECIMAL(precision=18, scale=8), nullable=False)
+    details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    signature: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Blockchain transaction signature
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"), onupdate=text("now()"))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     def __repr__(self) -> str:
         return f"<TokenTransaction(id={self.id}, type={self.type}, amount={self.amount})>"
@@ -125,7 +126,7 @@ class TokenTransaction(Base):
             raise ValueError("Transaction not found")
             
         if tx_hash and not tx_hash.startswith('0x'):
-            raise InvalidTransactionError("Transaction hash must start with 0x")
+            raise ValueError("Transaction hash must start with 0x")
             
         transaction.status = status
         if tx_hash:

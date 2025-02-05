@@ -13,21 +13,35 @@ from sqlalchemy import select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import IsolationForest
+from uuid import UUID
+import logging
+import asyncio
+from decimal import Decimal
 
-from ..models.deal import Deal
-from ..models.goal import Goal
-from ..utils.redis import get_redis_client
-from ..utils.logger import get_logger
-from ..utils.metrics import MetricsCollector
-from ..exceptions import (
+from core.models.deal import Deal, DealStatus, DealPriority
+from core.models.goal import Goal, GoalStatus
+from core.utils.redis import get_redis_client
+from core.utils.logger import get_logger
+from core.utils.metrics import MetricsCollector
+from core.exceptions import (
+    BaseError,
     ValidationError,
+    DealError,
     DealAnalysisError,
     DataQualityError,
-    ModelError
+    APIServiceUnavailableError,
+    CacheOperationError,
+    DatabaseError
 )
-from ..config import settings
-from ..services.market import MarketService
-from ..services.deal import DealService
+from core.config import settings
+from core.services.market import MarketService
+from core.services.deal import DealService
+from core.exceptions import (
+    DealValidationError,
+    DealProcessingError,
+    DealScoreError,
+    ValidationError
+)
 
 logger = get_logger(__name__)
 

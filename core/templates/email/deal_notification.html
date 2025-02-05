@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>New Deal Alert!</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .deal-card {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            background-color: #f9f9f9;
+        }
+        .deal-title {
+            color: #007bff;
+            margin: 0 0 10px 0;
+        }
+        .deal-price {
+            font-size: 24px;
+            color: #28a745;
+            margin: 10px 0;
+        }
+        .button {
+            display: inline-block;
+            padding: 10px 20px;
+            background-color: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .footer {
+            margin-top: 30px;
+            font-size: 12px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <h2>New Deal Alert!</h2>
+    <p>Hello,</p>
+    <p>We've found a deal matching your criteria!</p>
+    
+    <div class="deal-card">
+        <h3 class="deal-title">{{ deal_title }}</h3>
+        <div class="deal-price">{{ deal_price }}</div>
+        <p>{{ deal_description }}</p>
+        <a href="{{ deal_url }}" class="button">View Deal</a>
+    </div>
+    
+    <p>Don't miss out on this opportunity! Click the button above to view the deal.</p>
+    
+    <div class="footer">
+        <p>This is an automated message from AI Agentic Deals System.</p>
+        <p>You received this email because you set up deal alerts. To manage your notifications, visit your account settings.</p>
+        <p>&copy; 2024 AI Agentic Deals System. All rights reserved.</p>
+    </div>
+</body>
+</html> 

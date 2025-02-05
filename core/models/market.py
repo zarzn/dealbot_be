@@ -24,42 +24,23 @@ from sqlalchemy.sql import expression, text
 from sqlalchemy import select, func
 
 from core.models.base import Base
-from core.exceptions import MarketError, ValidationError
+from core.models.enums import MarketType, MarketStatus, MarketCategory
+from core.exceptions import (
+    MarketError,
+    MarketValidationError,
+    MarketNotFoundError,
+    MarketConnectionError,
+    MarketRateLimitError,
+    MarketConfigurationError,
+    MarketOperationError,
+    ValidationError
+)
 from core.config import settings
 
 logger = logging.getLogger(__name__)
 
 # Constants
 MARKET_ERROR_THRESHOLD = 10  # Default value if not set in settings
-
-class MarketType(str, enum.Enum):
-    """Supported market types."""
-    AMAZON = "amazon"
-    WALMART = "walmart"
-    EBAY = "ebay"
-    TARGET = "target"
-    BESTBUY = "bestbuy"
-
-class MarketStatus(str, enum.Enum):
-    """Market operational statuses."""
-    ACTIVE = "active"
-    INACTIVE = "inactive"
-    MAINTENANCE = "maintenance"
-    RATE_LIMITED = "rate_limited"
-    ERROR = "error"
-
-class MarketCategory(str, enum.Enum):
-    """Market category types."""
-    ELECTRONICS = "electronics"
-    FASHION = "fashion"
-    HOME = "home"
-    TOYS = "toys"
-    BOOKS = "books"
-    SPORTS = "sports"
-    AUTOMOTIVE = "automotive"
-    HEALTH = "health"
-    GROCERY = "grocery"
-    OTHER = "other"
 
 class Market(Base):
     """Market database model."""
@@ -242,6 +223,9 @@ class Market(Base):
             if market_type:
                 query = query.where(cls.type == market_type)
                 
+            if category:
+                query = query.where(cls.config['category'].astext == category.value)
+                
             result = await db.execute(query)
             markets = result.scalars().all()
             
@@ -352,8 +336,8 @@ class MarketResponse(MarketBase):
     class Config:
         from_attributes = True
 
-class MarketCategory(BaseModel):
-    """Market category model."""
+class MarketCategoryInfo(BaseModel):
+    """Market category information model."""
     id: str
     name: str
     parent_id: Optional[str] = None
@@ -445,7 +429,7 @@ class MarketStats(BaseModel):
 class MarketRepository:
     """Repository for market operations."""
     
-    def __init__(self, db):
+    def __init__(self, db: AsyncSession):
         """Initialize repository."""
         self.db = db
         
@@ -477,7 +461,10 @@ class MarketRepository:
     async def update(self, market_id: UUID, market_data: MarketUpdate) -> Market:
         """Update existing market."""
         try:
-            market = await self.db.query(Market).filter(Market.id == market_id).first()
+            stmt = select(Market).where(Market.id == market_id)
+            result = await self.db.execute(stmt)
+            market = result.scalar_one_or_none()
+            
             if not market:
                 raise MarketError(f"Market {market_id} not found")
                 
@@ -506,8 +493,6 @@ class MarketRepository:
                     'error': str(e)
                 }
             )
-            if isinstance(e, MarketError):
-                raise
             raise MarketError(f"Failed to update market: {str(e)}")
             
     async def get_stats(self, market_id: UUID) -> MarketStats:

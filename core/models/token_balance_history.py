@@ -20,7 +20,11 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column
 from core.models.base import Base
-from core.exceptions import InvalidBalanceChangeError
+from core.exceptions import (
+    ValidationError,
+    InvalidBalanceChangeError,
+    TokenBalanceError
+)
 
 class BalanceChangeType(str, Enum):
     DEDUCTION = "deduction"

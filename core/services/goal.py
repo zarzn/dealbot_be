@@ -2,7 +2,6 @@ from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
 import logging
 import asyncio
-from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update, delete
@@ -13,17 +12,23 @@ import json
 
 from core.models.goal import GoalCreate, GoalResponse, GoalUpdate
 from core.models.database import Goal as GoalModel
+from core.models.goal_types import GoalStatus
 from core.exceptions import (
+    GoalError,
     GoalNotFoundError,
-    GoalCreationError,
-    GoalUpdateError,
-    InvalidGoalStatusError,
-    RedisConnectionError,
-    CacheOperationError
+    InvalidGoalDataError,
+    GoalConstraintError,
+    GoalLimitExceededError,
+    APIServiceUnavailableError,
+    DatabaseError,
+    ValidationError,
+    CacheOperationError,
+    TokenError,
+    NetworkError
 )
 from core.services.token import TokenService
 from core.config import settings
-from core.utils.redis import get_redis_pool
+from core.utils.redis import get_redis_client
 from core.tasks.goal_tasks import update_goal_status_task
 
 logger = logging.getLogger(__name__)
@@ -44,16 +49,16 @@ class GoalService:
         self.db = db
         self.token_service = token_service
         self.background_tasks = background_tasks
-        self.redis_pool = None
+        self.redis_client = None
         
     async def init_redis(self) -> None:
-        """Initialize Redis connection pool with retry mechanism"""
+        """Initialize Redis connection with retry mechanism"""
         max_retries = 3
         retry_delay = 1.0
         
         for attempt in range(max_retries):
             try:
-                self.redis_pool = await get_redis_pool()
+                self.redis_client = await get_redis_client()
                 logger.info("Successfully connected to Redis")
                 return
             except Exception as e:
@@ -65,18 +70,17 @@ class GoalService:
                     retry_delay *= 2
                     
         logger.error("Failed to connect to Redis after multiple attempts")
-        raise RedisConnectionError("Failed to establish Redis connection")
+        raise APIServiceUnavailableError("Failed to establish Redis connection")
             
     async def close_redis(self) -> None:
-        """Close Redis connection pool with error handling"""
+        """Close Redis connection with error handling"""
         try:
-            if self.redis_pool:
-                await self.redis_pool.close()
-                await self.redis_pool.wait_closed()
-                logger.info("Redis connection pool closed successfully")
+            if self.redis_client:
+                await self.redis_client.close()
+                logger.info("Redis connection closed successfully")
         except Exception as e:
             logger.error(f"Error closing Redis connection: {str(e)}")
-            raise CacheOperationError("Failed to close Redis connection") from e
+            raise APIServiceUnavailableError("Failed to close Redis connection") from e
 
     async def create_goal(
         self, 
@@ -103,10 +107,10 @@ class GoalService:
             # Cache the new goal
             await self._cache_goal(db_goal)
             
-            # Schedule background status update check
-            if background_tasks:
-                background_tasks.add_task(
-                    update_goal_status_task,
+            # Schedule background status update check if needed
+            if background_tasks and self.background_tasks:
+                self.background_tasks.add_task(
+                    "update_goal_status",
                     goal_id=db_goal.id,
                     user_id=user_id
                 )
@@ -124,7 +128,7 @@ class GoalService:
                 exc_info=True,
                 extra={"user_id": user_id}
             )
-            raise GoalCreationError(f"Failed to create goal: {str(e)}") from e
+            raise InvalidGoalDataError(f"Failed to create goal: {str(e)}") from e
 
     async def get_goals(self, user_id: UUID) -> List[GoalResponse]:
         """Get all goals for a user with caching"""
@@ -208,10 +212,9 @@ class GoalService:
         background_tasks: Optional[BackgroundTasks] = None
     ) -> GoalResponse:
         """Update goal status with validation and cache invalidation"""
-        valid_statuses = ['active', 'paused', 'completed', 'expired']
-        if status not in valid_statuses:
-            raise InvalidGoalStatusError(
-                f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+        if status not in GoalStatus.list():
+            raise InvalidGoalDataError(
+                f"Invalid status. Must be one of: {', '.join(GoalStatus.list())}"
             )
             
         try:
@@ -229,10 +232,10 @@ class GoalService:
             # Invalidate cache
             await self._invalidate_goal_cache(user_id, goal_id)
             
-            # Schedule background status update check
-            if background_tasks:
-                background_tasks.add_task(
-                    update_goal_status_task,
+            # Schedule background status update check if needed
+            if background_tasks and self.background_tasks:
+                self.background_tasks.add_task(
+                    "update_goal_status",
                     goal_id=goal_id,
                     user_id=user_id
                 )
@@ -249,7 +252,7 @@ class GoalService:
                 exc_info=True,
                 extra={"goal_id": goal_id}
             )
-            raise GoalUpdateError(f"Failed to update status: {str(e)}") from e
+            raise GoalError(f"Failed to update goal status: {str(e)}") from e
 
     async def delete_goal(self, user_id: UUID, goal_id: UUID) -> None:
         """Delete a goal with cache invalidation"""
@@ -283,9 +286,9 @@ class GoalService:
     async def _cache_goal(self, goal: GoalModel) -> None:
         """Cache a single goal"""
         try:
-            if self.redis_pool:
+            if self.redis_client:
                 cache_key = GoalCacheKey(user_id=goal.user_id, goal_id=goal.id)
-                await self.redis_pool.set(
+                await self.redis_client.set(
                     cache_key.json(),
                     GoalResponse.from_orm(goal).json(),
                     ex=settings.GOAL_CACHE_TTL
@@ -296,14 +299,14 @@ class GoalService:
                 exc_info=True,
                 extra={"goal_id": goal.id}
             )
-            raise CacheOperationError("Failed to cache goal") from e
+            raise APIServiceUnavailableError("Failed to cache goal") from e
             
     async def _cache_goals(self, user_id: UUID, goals: List[GoalModel]) -> None:
         """Cache multiple goals for a user"""
         try:
-            if self.redis_pool:
+            if self.redis_client:
                 cache_key = GoalCacheKey(user_id=user_id, goal_id="all")
-                await self.redis_pool.set(
+                await self.redis_client.set(
                     cache_key.json(),
                     [GoalResponse.from_orm(goal).json() for goal in goals],
                     ex=settings.GOAL_CACHE_TTL
@@ -314,14 +317,14 @@ class GoalService:
                 exc_info=True,
                 extra={"user_id": user_id}
             )
-            raise CacheOperationError("Failed to cache goals") from e
+            raise APIServiceUnavailableError("Failed to cache goals") from e
             
     async def _get_cached_goal(self, user_id: UUID, goal_id: UUID) -> Optional[GoalResponse]:
         """Get a cached goal"""
         try:
-            if self.redis_pool:
+            if self.redis_client:
                 cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
-                cached_data = await self.redis_pool.get(cache_key.json())
+                cached_data = await self.redis_client.get(cache_key.json())
                 if cached_data:
                     return GoalResponse.parse_raw(cached_data)
             return None
@@ -331,14 +334,14 @@ class GoalService:
                 exc_info=True,
                 extra={"goal_id": goal_id}
             )
-            raise CacheOperationError("Failed to get cached goal") from e
+            raise APIServiceUnavailableError("Failed to get cached goal") from e
             
     async def _get_cached_goals(self, user_id: UUID) -> Optional[List[GoalResponse]]:
         """Get cached goals for a user"""
         try:
-            if self.redis_pool:
+            if self.redis_client:
                 cache_key = GoalCacheKey(user_id=user_id, goal_id="all")
-                cached_data = await self.redis_pool.get(cache_key.json())
+                cached_data = await self.redis_client.get(cache_key.json())
                 if cached_data:
                     return [GoalResponse.parse_raw(data) for data in cached_data]
             return None
@@ -348,23 +351,23 @@ class GoalService:
                 exc_info=True,
                 extra={"user_id": user_id}
             )
-            raise CacheOperationError("Failed to get cached goals") from e
+            raise APIServiceUnavailableError("Failed to get cached goals") from e
             
     async def _invalidate_goal_cache(self, user_id: UUID, goal_id: UUID) -> None:
         """Invalidate cache for a goal"""
         try:
-            if self.redis_pool:
+            if self.redis_client:
                 # Invalidate individual goal cache
                 cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
-                await self.redis_pool.delete(cache_key.json())
+                await self.redis_client.delete(cache_key.json())
                 
                 # Invalidate user's goals list cache
                 cache_key = GoalCacheKey(user_id=user_id, goal_id="all")
-                await self.redis_pool.delete(cache_key.json())
+                await self.redis_client.delete(cache_key.json())
         except Exception as e:
             logger.warning(
                 f"Failed to invalidate cache for goal {goal_id}: {str(e)}",
                 exc_info=True,
                 extra={"goal_id": goal_id}
             )
-            raise CacheOperationError("Failed to invalidate cache") from e
+            raise APIServiceUnavailableError("Failed to invalidate cache") from e

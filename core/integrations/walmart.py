@@ -5,10 +5,11 @@ from datetime import datetime
 import hashlib
 import time
 
-from .base import BaseMarketIntegration
-from ..models.market import MarketType
-from ..exceptions import IntegrationError, ValidationError
-from ..utils.redis import get_redis_client
+from core.integrations.base import BaseMarketIntegration, IntegrationError
+from core.models.market import MarketType
+from core.exceptions import ValidationError
+from core.utils.redis import get_redis_client
+
 
 class WalmartIntegration(BaseMarketIntegration):
     REQUIRED_CREDENTIALS = ["client_id", "client_secret"]

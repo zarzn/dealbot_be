@@ -20,7 +20,14 @@ from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.sql import expression
 
 from core.models.base import Base
-from core.exceptions import NotificationError
+from core.exceptions import (
+    ValidationError,
+    NotificationError,
+    NotificationDeliveryError,
+    NotificationNotFoundError,
+    NotificationRateLimitError,
+    InvalidNotificationTemplateError
+)
 
 logger = logging.getLogger(__name__)
 

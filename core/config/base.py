@@ -36,7 +36,6 @@ class BaseConfig(BaseSettings):
     DB_POOL_TIMEOUT: int = 30
     DB_POOL_RECYCLE: int = 1800
     DB_ECHO: bool = False
-    DB_STATEMENT_TIMEOUT: int = 30
     DB_IDLE_TIMEOUT: int = 300
     DB_MAX_OVERFLOW: int = 10
     DB_MAX_RETRIES: int = 3
@@ -45,6 +44,7 @@ class BaseConfig(BaseSettings):
     @model_validator(mode='before')
     @classmethod
     def assemble_db_url(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Assemble database URL with the correct format for asyncpg."""
         if isinstance(data.get("DATABASE_URL"), str):
             return data
         
@@ -52,6 +52,7 @@ class BaseConfig(BaseSettings):
         if isinstance(port, str):
             port = int(port)
         
+        # Construct URL as a string
         data["DATABASE_URL"] = f"postgresql+asyncpg://{data.get('POSTGRES_USER')}:{data.get('POSTGRES_PASSWORD')}@{data.get('POSTGRES_HOST')}:{port}/{data.get('POSTGRES_DB')}"
         return data
 

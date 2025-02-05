@@ -14,12 +14,12 @@ from bs4 import BeautifulSoup
 import logging
 from urllib.parse import urljoin, urlparse
 
-from ..exceptions import (
+from core.exceptions import (
     MarketConnectionError,
     MarketRateLimitError,
     InvalidDealDataError
 )
-from ..config import settings
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 

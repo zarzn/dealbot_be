@@ -13,25 +13,32 @@ from tenacity import (
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Commitment
 from solana.transaction import Transaction
-from solana.system_program import TransactionInstruction
+from base58 import b58decode
 
-from core.database import get_db
 from core.repositories.token import TokenRepository
-from core.models import (
+from core.models.token import (
     TokenTransaction,
-    TokenPricing,
-    TokenBalanceHistory
+    TransactionStatus as TokenTransactionStatus,
+    TransactionType as TokenTransactionType
 )
+from core.models.token_pricing import TokenPricing
+from core.models.token_balance_history import TokenBalanceHistory
 from core.exceptions import (
-    InsufficientBalanceError,
-    InvalidWalletAddressError,
-    TransactionProcessingError,
+    TokenError,
+    TokenBalanceError,
+    TokenTransactionError,
+    TokenValidationError,
+    TokenRateLimitError,
     TokenServiceError,
     TokenOperationError,
     WalletConnectionError,
     SmartContractError,
     NetworkError,
-    RepositoryError
+    RepositoryError,
+    APIError,
+    APIServiceUnavailableError,
+    APIAuthenticationError,
+    APITimeoutError
 )
 from core.config import settings
 from core.utils.logger import get_logger
@@ -107,9 +114,10 @@ class SolanaTokenService(ITokenService):
             
         except Exception as e:
             logger.error(f"Failed to initialize Solana client: {str(e)}")
-            raise WalletConnectionError(
-                "Failed to initialize Solana client",
-                str(e)
+            raise APIAuthenticationError(
+                endpoint=settings.SOL_NETWORK_RPC,
+                auth_type="rpc",
+                error_details={"error": str(e)}
             )
         self._setup_retry_policy()
 
@@ -118,7 +126,7 @@ class SolanaTokenService(ITokenService):
         self.retry_policy = retry(
             stop=stop_after_attempt(3),
             wait=wait_exponential(multiplier=1, min=4, max=10),
-            retry=retry_if_exception_type((NetworkError, SmartContractError)),
+            retry=retry_if_exception_type((APIError, TokenError)),
             reraise=True
         )
 
@@ -129,27 +137,27 @@ class SolanaTokenService(ITokenService):
             balance = await self.repository.get_user_balance(user_id)
             logger.debug(f"Retrieved balance for user {user_id}: {balance}")
             return balance
-        except RepositoryError as e:
+        except Exception as e:
             logger.error(f"Failed to check balance for user {user_id}: {str(e)}")
-            raise
+            raise TokenBalanceError(f"Failed to check balance: {str(e)}")
 
     async def connect_wallet(self, user_id: str, wallet_address: str) -> bool:
         """Connect user's wallet address"""
         if not self.validate_wallet_address(wallet_address):
             logger.error(f"Invalid wallet address format: {wallet_address}")
-            raise WalletConnectionError("Invalid wallet address format")
+            raise TokenValidationError("Invalid wallet address format")
         
         try:
             # Verify wallet exists on Solana
             if not await self._verify_wallet_exists(wallet_address):
-                raise WalletConnectionError("Wallet not found on Solana network")
+                raise TokenValidationError("Wallet not found on Solana network")
                 
             result = await self.repository.connect_wallet(user_id, wallet_address)
             logger.info(f"Successfully connected wallet for user {user_id}")
             return result
         except Exception as e:
             logger.error(f"Failed to connect wallet for user {user_id}: {str(e)}")
-            raise
+            raise TokenError(f"Failed to connect wallet: {str(e)}")
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def get_transaction_history(
@@ -165,9 +173,9 @@ class SolanaTokenService(ITokenService):
             )
             logger.debug(f"Retrieved {len(transactions)} transactions for user {user_id}")
             return transactions
-        except RepositoryError as e:
+        except Exception as e:
             logger.error(f"Failed to get transaction history for user {user_id}: {str(e)}")
-            raise
+            raise TokenTransactionError(f"Failed to get transaction history: {str(e)}")
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def get_pricing_info(self, service_type: str) -> Optional[TokenPricing]:
@@ -176,7 +184,7 @@ class SolanaTokenService(ITokenService):
             pricing = await self.repository.get_pricing_by_service(service_type)
             logger.debug(f"Retrieved pricing info for service {service_type}")
             return pricing
-        except RepositoryError as e:
+        except Exception as e:
             logger.error(f"Failed to get pricing info for service {service_type}: {str(e)}")
             raise
 
@@ -189,18 +197,18 @@ class SolanaTokenService(ITokenService):
         """Deduct tokens from user's balance"""
         if amount <= 0:
             logger.error(f"Invalid token deduction amount: {amount}")
-            raise TokenOperationError("deduct_tokens", "Amount must be positive")
+            raise TokenValidationError("Amount must be positive")
         
         try:
             transaction = await self.repository.deduct_tokens(user_id, amount, reason)
             logger.info(f"Successfully deducted {amount} tokens from user {user_id}")
             return transaction
-        except InsufficientBalanceError:
+        except TokenBalanceError:
             logger.error(f"Insufficient balance for user {user_id}")
             raise
         except Exception as e:
             logger.error(f"Failed to deduct tokens for user {user_id}: {str(e)}")
-            raise TokenOperationError("deduct_tokens", str(e))
+            raise TokenTransactionError(f"Failed to deduct tokens: {str(e)}")
 
     async def add_reward(
         self,
@@ -211,7 +219,7 @@ class SolanaTokenService(ITokenService):
         """Add reward tokens to user's balance"""
         if amount <= 0:
             logger.error(f"Invalid reward amount: {amount}")
-            raise TokenOperationError("add_reward", "Amount must be positive")
+            raise TokenValidationError("Amount must be positive")
         
         try:
             transaction = await self.repository.add_reward(user_id, amount, reason)
@@ -219,7 +227,7 @@ class SolanaTokenService(ITokenService):
             return transaction
         except Exception as e:
             logger.error(f"Failed to add reward for user {user_id}: {str(e)}")
-            raise TokenOperationError("add_reward", str(e))
+            raise TokenTransactionError(f"Failed to add reward: {str(e)}")
 
     async def rollback_transaction(self, tx_id: str) -> bool:
         """Rollback a failed transaction"""
@@ -229,7 +237,7 @@ class SolanaTokenService(ITokenService):
             return result
         except Exception as e:
             logger.error(f"Failed to rollback transaction {tx_id}: {str(e)}")
-            raise TokenOperationError("rollback_transaction", str(e))
+            raise TokenTransactionError(f"Failed to rollback transaction: {str(e)}")
 
     async def disconnect_wallet(self, user_id: str) -> bool:
         """Disconnect user's wallet"""
@@ -239,7 +247,7 @@ class SolanaTokenService(ITokenService):
             return result
         except Exception as e:
             logger.error(f"Failed to disconnect wallet for user {user_id}: {str(e)}")
-            raise TokenOperationError("disconnect_wallet", str(e))
+            raise TokenTransactionError(f"Failed to disconnect wallet: {str(e)}")
 
     async def validate_wallet(self, wallet_address: str) -> bool:
         """Validate wallet address and check balance"""
@@ -260,7 +268,7 @@ class SolanaTokenService(ITokenService):
             return result
         except Exception as e:
             logger.error(f"Failed to process transaction {tx_id}: {str(e)}")
-            raise TokenOperationError("process_transaction", str(e))
+            raise TokenTransactionError(f"Failed to process transaction: {str(e)}")
 
     async def monitor_transactions(self) -> Dict[str, Any]:
         """Monitor transaction status and health"""
@@ -270,7 +278,7 @@ class SolanaTokenService(ITokenService):
             return stats
         except Exception as e:
             logger.error(f"Failed to monitor transactions: {str(e)}")
-            raise TokenOperationError("monitor_transactions", str(e))
+            raise TokenTransactionError(f"Failed to monitor transactions: {str(e)}")
 
     async def _verify_wallet_exists(self, wallet_address: str) -> bool:
         """Verify wallet exists on Solana network"""
@@ -288,7 +296,6 @@ class SolanaTokenService(ITokenService):
             if not address or len(address) < 32 or len(address) > 44:
                 return False
             # Check if address is valid base58
-            from base58 import b58decode
             b58decode(address)
             return True
         except Exception:
@@ -304,3 +311,6 @@ class SolanaTokenService(ITokenService):
         except Exception as e:
             logger.error(f"Failed to validate pricing for {service_type}: {str(e)}")
             return False
+
+# Export SolanaTokenService as TokenService for backward compatibility
+TokenService = SolanaTokenService

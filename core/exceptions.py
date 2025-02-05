@@ -79,12 +79,13 @@ class AuthenticationError(BaseAppException):
     def __init__(
         self,
         message: str = "Authentication failed",
-        details: Optional[Dict[str, Any]] = None
+        details: Optional[Dict[str, Any]] = None,
+        error_code: str = "authentication_error"
     ):
         super().__init__(
             message=message,
             status_code=status.HTTP_401_UNAUTHORIZED,
-            error_code="authentication_error",
+            error_code=error_code,
             details=details
         )
 
@@ -296,7 +297,28 @@ class TokenTransactionError(BaseAppException):
             details=error_details
         )
 
-class TokenExpiredError(AuthenticationError):
+class DealError(BaseAppException):
+    """Base class for deal-related errors."""
+    
+    def __init__(
+        self,
+        message: str,
+        deal_id: Optional[str] = None,
+        error_code: str = "deal_error",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if deal_id:
+            error_details["deal_id"] = deal_id
+            
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code=error_code,
+            details=error_details
+        )
+
+class TokenExpiredError(BaseAppException):
     """Token expiration error."""
     
     def __init__(
@@ -306,11 +328,12 @@ class TokenExpiredError(AuthenticationError):
     ):
         super().__init__(
             message=message,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             error_code="token_expired",
             details=details
         )
 
-class InvalidTokenError(AuthenticationError):
+class InvalidTokenError(BaseAppException):
     """Invalid token error."""
     
     def __init__(
@@ -320,11 +343,12 @@ class InvalidTokenError(AuthenticationError):
     ):
         super().__init__(
             message=message,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             error_code="token_invalid",
             details=details
         )
 
-class TokenRevokedError(AuthenticationError):
+class TokenRevokedError(BaseAppException):
     """Revoked token error."""
     
     def __init__(
@@ -334,6 +358,7 @@ class TokenRevokedError(AuthenticationError):
     ):
         super().__init__(
             message=message,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             error_code="token_revoked",
             details=details
         )
@@ -426,17 +451,18 @@ class ExternalServiceError(BaseAppException):
     def __init__(
         self,
         service: str,
-        operation: str,
-        message: str = "External service error occurred",
-        response: Optional[Dict[str, Any]] = None,
+        message: str = "External service error",
+        status_code: Optional[int] = None,
+        response_data: Optional[Dict[str, Any]] = None,
         original_error: Optional[Exception] = None
     ):
         details = {
-            "service": service,
-            "operation": operation
+            "service": service
         }
-        if response:
-            details["response"] = response
+        if status_code:
+            details["status_code"] = status_code
+        if response_data:
+            details["response_data"] = response_data
             
         super().__init__(
             message=message,
@@ -452,8 +478,8 @@ class TokenError(BaseAppException):
     def __init__(
         self,
         message: str = "Token error occurred",
-        error_code: str = "token_error",
-        details: Optional[Dict[str, Any]] = None
+        details: Optional[Dict[str, Any]] = None,
+        error_code: str = "token_error"
     ):
         super().__init__(
             message=message,
@@ -472,11 +498,10 @@ class InvalidCredentialsError(AuthenticationError):
     ):
         super().__init__(
             message=message,
-            error_code="invalid_credentials",
             details=details
         )
 
-class TokenValidationError(TokenError):
+class TokenValidationError(BaseAppException):
     """Token validation error."""
     
     def __init__(
@@ -486,6 +511,7 @@ class TokenValidationError(TokenError):
     ):
         super().__init__(
             message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
             error_code="token_validation_error",
             details=details
         )
@@ -496,11 +522,21 @@ class RateLimitExceededError(RateLimitError):
     def __init__(
         self,
         message: str = "Rate limit exceeded",
+        limit: Optional[int] = None,
+        reset_after: Optional[int] = None,
         details: Optional[Dict[str, Any]] = None
     ):
+        error_details = details or {}
+        if limit:
+            error_details["limit"] = limit
+        if reset_after:
+            error_details["reset_after"] = reset_after
+            
         super().__init__(
             message=message,
-            details=details
+            limit=limit,
+            reset_after=reset_after,
+            details=error_details
         )
 
 class AccountLockedError(AuthenticationError):
@@ -513,11 +549,10 @@ class AccountLockedError(AuthenticationError):
     ):
         super().__init__(
             message=message,
-            error_code="account_locked",
             details=details
         )
 
-class TokenRefreshError(TokenError):
+class TokenRefreshError(BaseAppException):
     """Token refresh error."""
     
     def __init__(
@@ -527,6 +562,7 @@ class TokenRefreshError(TokenError):
     ):
         super().__init__(
             message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
             error_code="token_refresh_error",
             details=details
         )
@@ -727,32 +763,39 @@ class UserNotFoundError(NotFoundError):
             message=message or f"User with ID {user_id} not found"
         )
 
-class DealNotFoundError(NotFoundError):
-    """Error raised when a deal is not found."""
+class DealNotFoundError(NotFoundException):
+    """Deal not found error."""
     
     def __init__(
         self,
-        deal_id: Any,
-        message: Optional[str] = None
-    ):
-        super().__init__(
-            resource_type="deal",
-            identifier=deal_id,
-            message=message or f"Deal with ID {deal_id} not found"
-        )
-
-class InvalidDealDataError(DealError):
-    """Error raised when deal data is invalid."""
-    
-    def __init__(
-        self,
-        message: str,
+        message: str = "Deal not found",
+        deal_id: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None
     ):
+        error_details = details or {}
+        if deal_id:
+            error_details["deal_id"] = deal_id
+            
         super().__init__(
             message=message,
-            error_code="invalid_deal_data",
-            details=details
+            resource_type="deal",
+            resource_id=deal_id
+        )
+
+class InvalidDealDataError(ValidationError):
+    """Invalid deal data error."""
+    
+    def __init__(
+        self,
+        message: str = "Invalid deal data",
+        errors: Optional[List[Dict[str, Any]]] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        super().__init__(
+            message=message,
+            errors=errors,
+            field_prefix="deal"
         )
 
 class DealExpirationError(DealError):
@@ -831,6 +874,94 @@ class MarketNotFoundError(NotFoundError):
             resource_type="market",
             identifier=market_id,
             message=message or f"Market with ID {market_id} not found"
+        )
+
+class DealAnalysisError(BaseAppException):
+    """Raised when deal analysis fails."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="deal_analysis_error",
+            details=details
+        )
+
+class DataQualityError(BaseAppException):
+    """Raised when data quality is insufficient."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="data_quality_error",
+            details=details
+        )
+
+class ModelError(BaseAppException):
+    """Raised when ML model operations fail."""
+    
+    def __init__(
+        self,
+        message: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="model_error",
+            details=details
+        )
+
+class ConfigurationError(BaseAppException):
+    """Configuration error."""
+    
+    def __init__(
+        self,
+        message: str = "Configuration error",
+        config_key: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if config_key:
+            error_details["config_key"] = config_key
+            
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            error_code="configuration_error",
+            details=error_details
+        )
+
+class CacheError(BaseAppException):
+    """Cache operation error."""
+    
+    def __init__(
+        self,
+        message: str = "Cache operation failed",
+        operation: Optional[str] = None,
+        key: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if operation:
+            error_details["operation"] = operation
+        if key:
+            error_details["key"] = key
+            
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            error_code="cache_error",
+            details=error_details
         )
 
 def http_exception_handler(exc: HTTPException) -> Dict[str, Any]:

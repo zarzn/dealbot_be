@@ -1,19 +1,20 @@
 from typing import List, Optional, Dict, Any
 from uuid import UUID
-import logging
+from datetime import datetime
+from sqlalchemy import select, update, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from sqlalchemy import update, delete
+import logging
 from sqlalchemy.exc import SQLAlchemyError
-import aioredis
+from redis.asyncio import Redis, ConnectionPool
 
-from core.models.goal import Goal
+from core.models.goal import Goal, GoalStatus
+from core.models.user import User
 from core.exceptions import (
+    GoalError,
+    GoalNotFoundError,
+    GoalValidationError,
     DatabaseError,
-    RecordNotFoundError,
-    DuplicateRecordError,
-    RedisConnectionError,
-    CacheOperationError
+    ValidationError
 )
 from core.repositories.base import BaseRepository
 from core.config import settings
@@ -26,7 +27,7 @@ class GoalRepository(BaseRepository):
 
     def __init__(self, db: AsyncSession):
         super().__init__(db)
-        self.redis_pool = None
+        self.redis_pool: Optional[ConnectionPool] = None
 
     async def init_redis(self) -> None:
         """Initialize Redis connection pool"""
@@ -225,7 +226,7 @@ class GoalRepository(BaseRepository):
                     ex=settings.GOAL_CACHE_TTL
                 )
         except Exception as e:
-            logger.warning("Failed to cache active goals: {str(e)}")
+            logger.warning(f"Failed to cache active goals: {str(e)}")
             raise CacheOperationError("Failed to cache active goals") from e
 
     async def _get_cached_goal(self, goal_id: UUID) -> Optional[Goal]:

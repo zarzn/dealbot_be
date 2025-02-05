@@ -4,8 +4,15 @@ from datetime import datetime
 import httpx
 from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
-from core.exceptions import CrawlerError
-from core.utils.redis import get_redis
+from core.exceptions import (
+    MarketError as CrawlerError,
+    MarketConnectionError as CrawlerRequestError,
+    MarketRateLimitError as CrawlerRateLimitError,
+    ValidationError,
+    DatabaseError,
+    NetworkError
+)
+from core.utils.redis import get_redis_client
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -14,7 +21,7 @@ class WebCrawler:
     """Web crawler for fallback scraping when APIs are unavailable"""
     
     def __init__(self):
-        self.redis = get_redis()
+        self.redis = get_redis_client()
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }

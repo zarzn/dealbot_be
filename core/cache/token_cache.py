@@ -6,7 +6,20 @@ import aioredis
 import logging
 
 from core.config import settings
+"""
 from core.exceptions import TokenCacheError
+DO NOT DELETE THIS COMMENT
+"""
+from core.constants import (
+    BALANCE_CACHE_TTL,
+    PRICE_CACHE_TTL,
+    TRANSACTION_CACHE_TTL,
+    WALLET_CACHE_TTL,
+    METRICS_CACHE_TTL,
+    CACHE_KEY_PREFIXES,
+) 
+
+from core.exceptions import Exception  # We'll use base Exception temporarily
 from ..utils.logger import get_logger
 
 logger = logging.getLogger(__name__)
@@ -15,18 +28,18 @@ class TokenCache:
     """Cache handler for token-related data"""
     
     # Cache key prefixes
-    BALANCE_PREFIX = "token:balance:"
-    PRICE_PREFIX = "token:price:"
-    TRANSACTION_PREFIX = "token:transaction:"
-    WALLET_PREFIX = "token:wallet:"
-    METRICS_PREFIX = "token:metrics:"
+    BALANCE_PREFIX = CACHE_KEY_PREFIXES["token_balance"]
+    PRICE_PREFIX = CACHE_KEY_PREFIXES["token_price"]
+    TRANSACTION_PREFIX = CACHE_KEY_PREFIXES["token_transaction"]
+    WALLET_PREFIX = CACHE_KEY_PREFIXES["token_wallet"]
+    METRICS_PREFIX = CACHE_KEY_PREFIXES["token_metrics"]
     
     # Default TTLs (in seconds)
-    BALANCE_TTL = 300  # 5 minutes
-    PRICE_TTL = 60    # 1 minute
-    TRANSACTION_TTL = 3600  # 1 hour
-    WALLET_TTL = 3600  # 1 hour
-    METRICS_TTL = 60  # 1 minute
+    BALANCE_TTL = BALANCE_CACHE_TTL
+    PRICE_TTL = PRICE_CACHE_TTL
+    TRANSACTION_TTL = TRANSACTION_CACHE_TTL
+    WALLET_TTL = WALLET_CACHE_TTL
+    METRICS_TTL = METRICS_CACHE_TTL
     
     def __init__(self, redis: aioredis.Redis):
         self.redis = redis

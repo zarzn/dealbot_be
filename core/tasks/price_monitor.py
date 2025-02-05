@@ -1,19 +1,32 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import asyncio
-from celery import shared_task
+from celery.decorators import task
 from sqlalchemy import select, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+import logging
+from enum import Enum
 
-from ..database import async_session_maker
-from ..models.deal import Deal
-from ..models.goal import Goal
-from ..services.market_search import MarketSearchService
-from ..repositories.market import MarketRepository
-from ..repositories.goal import GoalRepository
-from ..utils.redis import get_redis_client
-from ..exceptions import ValidationError
+from core.database import get_db
+from core.models.deal import Deal
+from core.models.goal import Goal
+from core.services.market_search import MarketSearchService
+from core.repositories.market import MarketRepository
+from core.repositories.goal import GoalRepository
+from core.utils.redis import RedisClient
+from core.exceptions.base import BaseException
+from core.exceptions.deal_exceptions import DealValidationError
+from core.utils.logger import get_logger
 
-@shared_task(
+class DealStatus(str, Enum):
+    """Deal status enum"""
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    INVALID = "invalid"
+
+logger = get_logger(__name__)
+
+@task(
     name="monitor_prices",
     bind=True,
     max_retries=3,
@@ -23,10 +36,10 @@ from ..exceptions import ValidationError
 async def monitor_prices(self) -> None:
     """Monitor prices for all active goals and update deals accordingly"""
     try:
-        async with async_session_maker() as session:
+        async with get_db() as session:
             market_service = MarketSearchService(MarketRepository(session))
             goal_repo = GoalRepository(session)
-            redis = await get_redis_client()
+            redis = RedisClient()
 
             # Get all active goals
             active_goals = await goal_repo.get_active_goals()
@@ -61,16 +74,16 @@ async def monitor_prices(self) -> None:
                         ex=300  # 5 minutes
                     )
 
-                except Exception as e:
+                except DealValidationError as e:
                     # Log the error but continue with other goals
-                    print(f"Error monitoring goal {goal.id}: {str(e)}")
+                    logger.error(f"Error monitoring goal {goal.id}: {str(e)}")
 
-    except Exception as e:
+    except (DealValidationError, BaseException) as e:
         # Retry the task with exponential backoff
         self.retry(exc=e)
 
 async def process_deal(
-    session,
+    session: AsyncSession,
     goal: Goal,
     deal_data: Dict[str, Any]
 ) -> None:
@@ -81,8 +94,8 @@ async def process_deal(
             select(Deal).where(
                 and_(
                     Deal.goal_id == goal.id,
-                    Deal.product_id == deal_data["id"],
-                    Deal.market_type == deal_data["marketplace"]
+                    Deal.external_id == deal_data["id"],
+                    Deal.marketplace == deal_data["marketplace"]
                 )
             )
         )
@@ -112,8 +125,8 @@ async def process_deal(
             # Create new deal
             new_deal = Deal(
                 goal_id=goal.id,
-                product_id=deal_data["id"],
-                market_type=deal_data["marketplace"],
+                external_id=deal_data["id"],
+                marketplace=deal_data["marketplace"],
                 title=deal_data["title"],
                 description=deal_data.get("description", ""),
                 price=float(deal_data["price"]),
@@ -139,13 +152,13 @@ async def process_deal(
 
     except Exception as e:
         await session.rollback()
-        raise ValidationError(f"Error processing deal: {str(e)}")
+        raise DealValidationError(f"Error processing deal: {str(e)}")
 
 async def create_price_alert(goal: Goal, deal: Deal, price_change: float) -> None:
     """Create a price alert notification"""
-    from ..services.notification import NotificationService
+    from core.services.notification import NotificationService
     
-    notification_service = NotificationService()
+    notification_service = NotificationService(session=None)  # Session not needed for notifications
     
     message = (
         f"Price {('increased' if price_change > 0 else 'decreased')} by "
@@ -164,4 +177,4 @@ async def create_price_alert(goal: Goal, deal: Deal, price_change: float) -> Non
             "price_change": price_change,
             "type": "price_alert"
         }
-    ) 
+    )

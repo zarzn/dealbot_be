@@ -4,7 +4,26 @@ from fastapi import HTTPException, status
 
 from ..repositories.market import MarketRepository
 from ..models.market import MarketCreate, MarketUpdate, Market, MarketType, MarketStatus
-from ..exceptions import NotFoundException, ValidationError
+from ..exceptions import (
+    NotFoundException,
+    ValidationError,
+    MarketError,
+    MarketNotFoundError,
+    MarketValidationError,
+    MarketConnectionError,
+    MarketRateLimitError,
+    MarketConfigurationError,
+    MarketOperationError,
+    APIError,
+    APIAuthenticationError,
+    APIServiceUnavailableError,
+    DatabaseError,
+    CacheOperationError,
+    RepositoryError,
+    NetworkError,
+    DataProcessingError
+)
+
 
 class MarketService:
     def __init__(self, market_repository: MarketRepository):

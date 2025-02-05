@@ -1,168 +1,216 @@
 from typing import List, Optional, Dict
 from datetime import datetime, timedelta
-from sqlalchemy.orm import Session, Query
-from sqlalchemy import func, and_, or_
+from uuid import UUID
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, and_, or_, delete
+from sqlalchemy.exc import SQLAlchemyError
 import logging
 
-from core.models.deal import Deal
-from core.models.goal import Goal
-from core.models.deal_score import DealScore
+# Import models
+from core.models import (
+    Deal,
+    DealStatus,
+    Goal,
+    DealScore,
+    GoalStatus
+)
+
+# Import exceptions
 from core.exceptions import (
+    DatabaseError,
     DealNotFoundError,
-    InvalidDealDataError,
-    ExternalServiceError
+    InvalidDealDataError
 )
 
 logger = logging.getLogger(__name__)
 
 class DealRepository:
-    def __init__(self, db: Session):
+    def __init__(self, db: AsyncSession):
         self.db = db
 
-    def create(self, deal_data: Dict) -> Deal:
+    async def create(self, deal_data: Dict) -> Deal:
         """Create a new deal"""
         try:
             deal = Deal(**deal_data)
             self.db.add(deal)
-            self.db.commit()
-            self.db.refresh(deal)
+            await self.db.commit()
+            await self.db.refresh(deal)
             return deal
-        except Exception as e:
-            self.db.rollback()
+        except SQLAlchemyError as e:
+            await self.db.rollback()
             logger.error(f"Failed to create deal: {str(e)}")
             raise InvalidDealDataError(f"Invalid deal data: {str(e)}")
 
-    def get_by_id(self, deal_id: str) -> Optional[Deal]:
+    async def get_by_id(self, deal_id: str) -> Optional[Deal]:
         """Get deal by ID"""
-        return self.db.query(Deal).filter(Deal.id == deal_id).first()
-
-    def search(self, query: str, limit: int = 10) -> List[Deal]:
-        """Search deals by product name or description"""
-        return (
-            self.db.query(Deal)
-            .filter(
-                or_(
-                    Deal.product_name.ilike(f"%{query}%"),
-                    Deal.description.ilike(f"%{query}%")
-                )
+        try:
+            result = await self.db.execute(
+                select(Deal).where(Deal.id == deal_id)
             )
-            .limit(limit)
-            .all()
-        )
+            return result.scalar_one_or_none()
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get deal: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-    def bulk_create(self, deals: List[Dict]) -> List[Deal]:
+    async def search(self, query: str, limit: int = 10) -> List[Deal]:
+        """Search deals by product name or description"""
+        try:
+            result = await self.db.execute(
+                select(Deal)
+                .where(
+                    or_(
+                        Deal.product_name.ilike(f"%{query}%"),
+                        Deal.description.ilike(f"%{query}%")
+                    )
+                )
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to search deals: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
+
+    async def bulk_create(self, deals: List[Dict]) -> List[Deal]:
         """Create multiple deals in a single transaction"""
         try:
             deal_objects = [Deal(**deal_data) for deal_data in deals]
-            self.db.bulk_save_objects(deal_objects)
-            self.db.commit()
+            self.db.add_all(deal_objects)
+            await self.db.commit()
             return deal_objects
-        except Exception as e:
-            self.db.rollback()
+        except SQLAlchemyError as e:
+            await self.db.rollback()
             logger.error(f"Failed to bulk create deals: {str(e)}")
             raise InvalidDealDataError(f"Invalid deal data in batch: {str(e)}")
 
-    def get_price_history(self, product_name: str, days: int = 30) -> List[Dict]:
+    async def get_price_history(self, product_name: str, days: int = 30) -> List[Dict]:
         """Get price history for a product"""
-        return (
-            self.db.query(
-                func.date_trunc('day', Deal.found_at).label('date'),
-                func.min(Deal.price).label('min_price'),
-                func.max(Deal.price).label('max_price'),
-                func.avg(Deal.price).label('avg_price')
-            )
-            .filter(
-                and_(
-                    Deal.product_name == product_name,
-                    Deal.found_at >= datetime.now() - timedelta(days=days)
+        try:
+            result = await self.db.execute(
+                select(
+                    func.date_trunc('day', Deal.found_at).label('date'),
+                    func.min(Deal.price).label('min_price'),
+                    func.max(Deal.price).label('max_price'),
+                    func.avg(Deal.price).label('avg_price')
                 )
+                .where(
+                    and_(
+                        Deal.product_name == product_name,
+                        Deal.found_at >= datetime.now(tz=datetime.UTC) - timedelta(days=days)
+                    )
+                )
+                .group_by(func.date_trunc('day', Deal.found_at))
+                .order_by(func.date_trunc('day', Deal.found_at).desc())
             )
-            .group_by(func.date_trunc('day', Deal.found_at))
-            .order_by(func.date_trunc('day', Deal.found_at).desc())
-            .all()
-        )
+            return [dict(row) for row in result.all()]
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get price history: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-    def get_active_deals(self, page: int = 1, per_page: int = 20) -> List[Deal]:
+    async def get_active_deals(self, page: int = 1, per_page: int = 20) -> List[Deal]:
         """Get paginated list of active deals"""
-        return (
-            self.db.query(Deal)
-            .filter(Deal.status == 'active')
-            .offset((page - 1) * per_page)
-            .limit(per_page)
-            .all()
-        )
+        try:
+            result = await self.db.execute(
+                select(Deal)
+                .where(Deal.status == DealStatus.ACTIVE)
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+            )
+            return list(result.scalars().all())
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get active deals: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-    def get_deals_by_source(self, source: str, limit: int = 100) -> List[Deal]:
+    async def get_deals_by_source(self, source: str, limit: int = 100) -> List[Deal]:
         """Get deals by source with limit"""
-        return (
-            self.db.query(Deal)
-            .filter(Deal.source == source)
-            .limit(limit)
-            .all()
-        )
+        try:
+            result = await self.db.execute(
+                select(Deal)
+                .where(Deal.source == source)
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get deals by source: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-    def get_deal_metrics(self) -> Dict:
+    async def get_deal_metrics(self) -> Dict:
         """Get aggregate deal metrics"""
-        return {
-            'total_deals': self.db.query(func.count(Deal.id)).scalar(),
-            'active_deals': self.db.query(func.count(Deal.id))
-                             .filter(Deal.status == 'active')
-                             .scalar(),
-            'avg_price': self.db.query(func.avg(Deal.price)).scalar(),
-            'min_price': self.db.query(func.min(Deal.price)).scalar(),
-            'max_price': self.db.query(func.max(Deal.price)).scalar()
-        }
+        try:
+            total = await self.db.scalar(select(func.count(Deal.id)))
+            active = await self.db.scalar(
+                select(func.count(Deal.id))
+                .where(Deal.status == DealStatus.ACTIVE)
+            )
+            avg_price = await self.db.scalar(select(func.avg(Deal.price)))
+            min_price = await self.db.scalar(select(func.min(Deal.price)))
+            max_price = await self.db.scalar(select(func.max(Deal.price)))
+            
+            return {
+                'total_deals': total,
+                'active_deals': active,
+                'avg_price': avg_price,
+                'min_price': min_price,
+                'max_price': max_price
+            }
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get deal metrics: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-    def update_deal_status(self, deal_id: str, status: str) -> Deal:
+    async def update_deal_status(self, deal_id: str, status: DealStatus) -> Deal:
         """Update deal status"""
-        deal = self.get_by_id(deal_id)
+        deal = await self.get_by_id(deal_id)
         if not deal:
             raise DealNotFoundError(f"Deal {deal_id} not found")
         
-        deal.status = status
-        self.db.commit()
-        self.db.refresh(deal)
-        return deal
+        try:
+            deal.status = status
+            await self.db.commit()
+            await self.db.refresh(deal)
+            return deal
+        except SQLAlchemyError as e:
+            await self.db.rollback()
+            logger.error(f"Failed to update deal status: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-    def delete(self, deal_id: str) -> None:
+    async def delete(self, deal_id: str) -> None:
         """Delete a deal"""
-        deal = self.get_by_id(deal_id)
-        if not deal:
-            raise DealNotFoundError(f"Deal {deal_id} not found")
-        
-        self.db.delete(deal)
-        self.db.commit()
+        try:
+            result = await self.db.execute(
+                delete(Deal).where(Deal.id == deal_id)
+            )
+            if result.rowcount == 0:
+                raise DealNotFoundError(f"Deal {deal_id} not found")
+            await self.db.commit()
+        except SQLAlchemyError as e:
+            await self.db.rollback()
+            logger.error(f"Failed to delete deal: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-    def get_active_goals(self) -> List[Dict]:
+    async def get_active_goals(self) -> List[Goal]:
         """Get active goals for deal monitoring"""
-        return (
-            self.db.query(Goal)
-            .filter(Goal.status == 'active')
-            .all()
-        )
+        try:
+            result = await self.db.execute(
+                select(Goal).where(Goal.status == GoalStatus.ACTIVE)
+            )
+            return list(result.scalars().all())
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get active goals: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-    def get_deal_scores(self, product_name: str) -> List[float]:
-        """Get historical scores for a product"""
-        return (
-            self.db.query(Deal.score)
-            .filter(Deal.product_name == product_name)
-            .order_by(Deal.found_at.desc())
-            .all()
-        )
-
-    def create_deal_score(self, product_name: str, score_data: Dict) -> None:
+    async def create_deal_score(self, deal_id: UUID, score_data: Dict) -> DealScore:
         """Create a new deal score record"""
         try:
             deal_score = DealScore(
-                product_name=product_name,
+                deal_id=deal_id,
                 score=score_data['score'],
-                moving_average=score_data['moving_average'],
-                std_dev=score_data['std_dev'],
-                is_anomaly=score_data['is_anomaly']
+                confidence=score_data.get('confidence', 1.0),
+                metadata=score_data.get('metrics')
             )
             self.db.add(deal_score)
-            self.db.commit()
-        except Exception as e:
-            self.db.rollback()
+            await self.db.commit()
+            await self.db.refresh(deal_score)
+            return deal_score
+        except SQLAlchemyError as e:
+            await self.db.rollback()
             logger.error(f"Failed to create deal score: {str(e)}")
             raise InvalidDealDataError(f"Invalid deal score data: {str(e)}")

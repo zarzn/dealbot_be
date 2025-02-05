@@ -12,21 +12,21 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from functools import partial
 
-from ..models.market import MarketType
-from ..repositories.market import MarketRepository
-from ..integrations.factory import MarketIntegrationFactory
-from ..utils.redis import RedisCache
-from ..utils.logger import get_logger
-from ..utils.metrics import MetricsCollector
-from ..utils.rate_limiter import RateLimiter
-from ..exceptions import (
+from core.models.market import MarketType
+from core.repositories.market import MarketRepository
+from core.integrations.factory import MarketIntegrationFactory
+from core.utils.redis import get_redis_client, set_cache, get_cache
+from core.utils.logger import get_logger
+from core.utils.metrics import MetricsCollector
+from core.exceptions import (
+    BaseError,
     ValidationError,
-    MarketError,
-    RateLimitError,
     IntegrationError,
-    DataQualityError
+    NetworkError,
+    ServiceError
 )
-from ..config import settings
+from core.config import settings
+
 
 logger = get_logger(__name__)
 
@@ -45,8 +45,17 @@ class MarketSearchService:
 
     def __init__(self, market_repository: MarketRepository):
         self.market_repository = market_repository
-        self.cache = RedisCache("market_search")
-        self.rate_limiter = RateLimiter()
+        self.redis_client = None
+
+    async def _check_rate_limit(self, key: str, limit: int) -> bool:
+        """Check rate limit using Redis."""
+        if not self.redis_client:
+            self.redis_client = await get_redis_client()
+
+        current = await self.redis_client.incr(f"ratelimit:{key}")
+        if current == 1:
+            await self.redis_client.expire(f"ratelimit:{key}", 60)  # 1 minute window
+        return current <= limit
 
     async def search_products(
         self,
@@ -96,7 +105,7 @@ class MarketSearchService:
                 cache_key = self._generate_cache_key(
                     query, market_types, category, min_price, max_price, limit
                 )
-                cached_result = await self.cache.get(cache_key)
+                cached_result = await get_cache(cache_key)
                 if cached_result:
                     logger.info(f"Cache hit for query: {query}")
                     MetricsCollector.track_search_cache_hit()
@@ -116,7 +125,7 @@ class MarketSearchService:
             search_tasks = []
             for market in active_markets:
                 # Check rate limits
-                if not await self.rate_limiter.check_rate_limit(
+                if not await self._check_rate_limit(
                     f"market_search:{market.type}",
                     settings.MARKET_RATE_LIMIT_PER_MINUTE
                 ):
@@ -187,7 +196,7 @@ class MarketSearchService:
 
             # Cache result if successful
             if use_cache and sorted_products:
-                await self.cache.set(
+                await set_cache(
                     cache_key,
                     result.__dict__,
                     expire=cache_ttl
@@ -238,7 +247,7 @@ class MarketSearchService:
             # Check cache first
             if use_cache:
                 cache_key = f"product_details:{market_type}:{product_id}"
-                cached_result = await self.cache.get(cache_key)
+                cached_result = await get_cache(cache_key)
                 if cached_result:
                     logger.info(f"Cache hit for product details: {product_id}")
                     MetricsCollector.track_product_details_cache_hit()
@@ -251,13 +260,6 @@ class MarketSearchService:
 
             integration = await self._get_market_integration(market)
 
-            # Check rate limit
-            if not await self.rate_limiter.check_rate_limit(
-                f"product_details:{market_type}",
-                settings.MARKET_RATE_LIMIT_PER_MINUTE
-            ):
-                raise RateLimitError(f"Rate limit exceeded for market: {market_type}")
-
             # Get product details
             start_time = datetime.utcnow()
             try:
@@ -267,7 +269,7 @@ class MarketSearchService:
 
                 # Cache result
                 if use_cache:
-                    await self.cache.set(
+                    await set_cache(
                         cache_key,
                         details,
                         expire=cache_ttl
@@ -324,7 +326,7 @@ class MarketSearchService:
             # Check cache first
             if use_cache:
                 cache_key = f"product_availability:{market_type}:{product_id}"
-                cached_result = await self.cache.get(cache_key)
+                cached_result = await get_cache(cache_key)
                 if cached_result:
                     logger.info(f"Cache hit for availability check: {product_id}")
                     return cached_result
@@ -335,13 +337,6 @@ class MarketSearchService:
                 raise ValidationError(f"Market not found for type: {market_type}")
 
             integration = await self._get_market_integration(market)
-
-            # Check rate limit
-            if not await self.rate_limiter.check_rate_limit(
-                f"availability_check:{market_type}",
-                settings.MARKET_RATE_LIMIT_PER_MINUTE
-            ):
-                raise RateLimitError(f"Rate limit exceeded for market: {market_type}")
 
             # Check availability
             start_time = datetime.utcnow()
@@ -356,7 +351,7 @@ class MarketSearchService:
 
                 # Cache result
                 if use_cache:
-                    await self.cache.set(
+                    await set_cache(
                         cache_key,
                         availability_data,
                         expire=cache_ttl
@@ -419,7 +414,7 @@ class MarketSearchService:
             # Check cache first
             if use_cache:
                 cache_key = f"price_history:{market_type}:{product_id}:{days}"
-                cached_result = await self.cache.get(cache_key)
+                cached_result = await get_cache(cache_key)
                 if cached_result:
                     logger.info(f"Cache hit for price history: {product_id}")
                     return cached_result
@@ -430,13 +425,6 @@ class MarketSearchService:
                 raise ValidationError(f"Market not found for type: {market_type}")
 
             integration = await self._get_market_integration(market)
-
-            # Check rate limit
-            if not await self.rate_limiter.check_rate_limit(
-                f"price_history:{market_type}",
-                settings.MARKET_RATE_LIMIT_PER_MINUTE
-            ):
-                raise RateLimitError(f"Rate limit exceeded for market: {market_type}")
 
             # Get price history
             start_time = datetime.utcnow()
@@ -451,7 +439,7 @@ class MarketSearchService:
 
                 # Cache result
                 if use_cache and processed_history:
-                    await self.cache.set(
+                    await set_cache(
                         cache_key,
                         processed_history,
                         expire=cache_ttl

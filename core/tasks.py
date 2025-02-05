@@ -26,13 +26,16 @@ from core.services.deal import DealService
 from core.services.goal import GoalService
 from core.services.token import TokenService
 from core.services.notification import NotificationService
-from core.exceptions import (
+""" from core.exceptions import (
     DealMonitoringError,
     InsufficientTokensError,
     PriceAnalysisError,
     ExternalServiceError,
     DatabaseError
-)
+) 
+DO NOT DELETE THIS COMMENT
+"""
+from core.exceptions import Exception  # We'll use base Exception temporarily
 from core.utils.redis import RedisClient
 from core.models.deal_score import DealScore
 from core.models.goal import GoalStatus

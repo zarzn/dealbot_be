@@ -9,6 +9,7 @@ Classes:
     UserUpdate: Model for user updates
     UserInDB: Model for database representation
     User: SQLAlchemy model for database table
+    UserPreferences: Model for user preferences
 """
 
 from uuid import UUID, uuid4
@@ -36,7 +37,9 @@ from core.exceptions import (
     UserError,
     TokenError,
     WalletError,
-    ValidationError
+    ValidationError,
+    InsufficientBalanceError,
+    SmartContractError
 )
 from core.config import settings
 
@@ -246,51 +249,31 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     password: Mapped[str] = mapped_column(String(255), nullable=False)
     sol_address: Mapped[Optional[str]] = mapped_column(String(44), unique=True, nullable=True, index=True)
-    referral_code: Mapped[str] = mapped_column(String(10), unique=True, nullable=False, index=True)
-    referred_by: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    referral_code: Mapped[Optional[str]] = mapped_column(String(10), unique=True, nullable=True, index=True)
+    referred_by: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
     token_balance: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
-    status: Mapped[str] = mapped_column(
-        SQLEnum(UserStatus),
-        nullable=False,
-        default=UserStatus.ACTIVE.value,
-        server_default=text(f"'{UserStatus.ACTIVE.value}'")
-    )
-    preferences: Mapped[Dict[str, Any]] = mapped_column(
-        JSONB,
-        nullable=False,
-        default={
+    status: Mapped[str] = mapped_column(SQLEnum(UserStatus), nullable=False, default=UserStatus.ACTIVE, index=True)
+    preferences: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("""
+        '{
             "theme": "light",
             "notifications": "all",
-            "email_notifications": True,
-            "push_notifications": False,
-            "telegram_notifications": False,
-            "discord_notifications": False,
+            "email_notifications": true,
+            "push_notifications": false,
+            "telegram_notifications": false,
+            "discord_notifications": false,
             "deal_alert_threshold": 0.8,
-            "auto_buy_enabled": False,
+            "auto_buy_enabled": false,
             "auto_buy_threshold": 0.95,
             "max_auto_buy_amount": 100.0,
             "language": "en",
             "timezone": "UTC"
-        }
-    )
-    notification_channels: Mapped[List[str]] = mapped_column(
-        JSONB,
-        nullable=False,
-        default=['in_app', 'email']
-    )
-    last_payment_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+        }'::jsonb
+    """))
+    notification_channels: Mapped[List[str]] = mapped_column(JSONB, nullable=False, server_default='["in_app", "email"]')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    last_payment_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=text('CURRENT_TIMESTAMP')
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=text('CURRENT_TIMESTAMP'),
-        onupdate=text('CURRENT_TIMESTAMP')
-    )
     active_goals_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_deals_found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     success_rate: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False, default=0.0)
@@ -300,6 +283,7 @@ class User(Base):
     # Relationships
     goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
+    chat_history = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
     token_transactions = relationship("TokenTransaction", back_populates="user", cascade="all, delete-orphan")
     token_balance_history = relationship("TokenBalanceHistory", back_populates="user", cascade="all, delete-orphan")
     token_wallets = relationship("TokenWallet", back_populates="user", cascade="all, delete-orphan")
@@ -307,7 +291,7 @@ class User(Base):
 
     def __repr__(self) -> str:
         """String representation of the user."""
-        return f"<User {self.email} ({self.status.value})>"
+        return f"<User {self.email}>"
 
     def to_json(self) -> str:
         """Convert user to JSON string."""
@@ -318,7 +302,7 @@ class User(Base):
             'referral_code': self.referral_code,
             'referred_by': str(self.referred_by) if self.referred_by else None,
             'token_balance': float(self.token_balance),
-            'status': self.status.value,
+            'status': self.status,
             'preferences': self.preferences,
             'notification_channels': self.notification_channels,
             'last_payment_at': self.last_payment_at.isoformat() if self.last_payment_at else None,
@@ -383,18 +367,22 @@ class User(Base):
         amount: float,
         operation: str = 'deduction'
     ) -> 'User':
-        """Update user token balance"""
+        """Update user token balance with improved error handling"""
         if operation not in ['deduction', 'reward', 'refund']:
             raise ValidationError("Invalid operation type")
         
         try:
-            user = await db.query(cls).filter(cls.id == user_id, cls.status == UserStatus.ACTIVE).first()
+            user = await db.query(cls).filter(
+                cls.id == user_id,
+                cls.status == UserStatus.ACTIVE
+            ).with_for_update().first()
+
             if not user:
                 raise UserError("User not found or inactive")
                 
             if operation == 'deduction':
                 if user.token_balance < amount:
-                    raise TokenError(
+                    raise InsufficientBalanceError(
                         f"Insufficient token balance. Required: {amount}, Available: {user.token_balance}"
                     )
                 user.token_balance -= amount
@@ -405,6 +393,18 @@ class User(Base):
                     user.total_rewards_earned += amount
                 
             user.last_payment_at = datetime.utcnow()
+            
+            # Create balance history record
+            history = {
+                "user_id": user_id,
+                "balance_before": user.token_balance + amount if operation == 'deduction' else user.token_balance - amount,
+                "balance_after": user.token_balance,
+                "change_amount": amount,
+                "change_type": operation,
+                "reason": f"Token {operation}"
+            }
+            db.add(TokenBalanceHistory(**history))
+            
             await db.commit()
             await db.refresh(user)
             
@@ -429,7 +429,7 @@ class User(Base):
                     'error': str(e)
                 }
             )
-            if isinstance(e, (UserError, TokenError, ValidationError)):
+            if isinstance(e, (UserError, InsufficientBalanceError, ValidationError)):
                 raise
             raise TokenError(f"Failed to update token balance: {str(e)}")
 
@@ -440,9 +440,9 @@ class User(Base):
         user_id: UUID,
         wallet_address: str
     ) -> 'User':
-        """Connect wallet to user account"""
+        """Connect wallet to user account with improved validation"""
         try:
-            # Validate Solana address
+            # Validate Solana address format
             if not wallet_address or len(wallet_address) < 32 or len(wallet_address) > 44:
                 raise WalletError("Invalid Solana address format")
             
@@ -452,7 +452,11 @@ class User(Base):
             except Exception:
                 raise WalletError("Invalid Solana address encoding")
                 
-            user = await db.query(cls).filter(cls.id == user_id, cls.status == UserStatus.ACTIVE).first()
+            user = await db.query(cls).filter(
+                cls.id == user_id,
+                cls.status == UserStatus.ACTIVE
+            ).with_for_update().first()
+            
             if not user:
                 raise UserError("User not found or inactive")
                 
@@ -462,12 +466,22 @@ class User(Base):
                 cls.id != user_id,
                 cls.status == UserStatus.ACTIVE
             ).first()
+            
             if existing_wallet:
                 raise WalletError("Wallet already connected to another user")
                 
             # Update user's wallet address
             user.sol_address = wallet_address
             user.updated_at = datetime.utcnow()
+            
+            # Create wallet record
+            wallet = {
+                "user_id": user_id,
+                "address": wallet_address,
+                "is_active": True,
+                "network": "mainnet-beta"
+            }
+            db.add(TokenWallet(**wallet))
             
             await db.commit()
             await db.refresh(user)
@@ -493,7 +507,7 @@ class User(Base):
             )
             if isinstance(e, (UserError, WalletError)):
                 raise
-            raise WalletError(f"Failed to connect wallet: {str(e)}")
+            raise SmartContractError("connect_wallet", str(e))
 
     @staticmethod
     async def generate_referral_code(db) -> str:
@@ -506,3 +520,33 @@ class User(Base):
             exists = await db.query(User).filter(User.referral_code == code).first()
             if not exists:
                 return code
+
+class UserPreferences(BaseModel):
+    """Model for user preferences"""
+    theme: str = Field(default="light", pattern="^(light|dark)$")
+    notifications: NotificationPreference = Field(default=NotificationPreference.ALL)
+    email_notifications: bool = Field(default=True)
+    push_notifications: bool = Field(default=False)
+    telegram_notifications: bool = Field(default=False)
+    discord_notifications: bool = Field(default=False)
+    deal_alert_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    auto_buy_enabled: bool = Field(default=False)
+    auto_buy_threshold: float = Field(default=0.95, ge=0.0, le=1.0)
+    max_auto_buy_amount: float = Field(default=100.0, ge=0.0)
+    language: str = Field(default="en", pattern="^[a-z]{2}(-[A-Z]{2})?$")
+    timezone: str = Field(default="UTC")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "theme": "dark",
+                "notifications": "important",
+                "email_notifications": True,
+                "deal_alert_threshold": 0.85,
+                "auto_buy_enabled": False,
+                "auto_buy_threshold": 0.95,
+                "max_auto_buy_amount": 100.0,
+                "language": "en",
+                "timezone": "UTC"
+            }
+        }

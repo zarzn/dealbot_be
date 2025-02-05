@@ -1,6 +1,12 @@
 """Development configuration for the AI Agentic Deals System."""
 
-from core.config.base import BaseConfig
+from .base import BaseConfig
+from ..constants import (
+    MIN_TOKEN_BALANCE,
+    SEARCH_COST,
+    RATE_LIMIT_DEFAULT,
+    RATE_LIMIT_AUTHENTICATED
+)
 
 class DevelopmentConfig(BaseConfig):
     # Application
@@ -23,8 +29,9 @@ class DevelopmentConfig(BaseConfig):
     DB_POOL_SIZE: int = 5
     DB_POOL_OVERFLOW: int = 10
     
+
     # Redis
-    REDIS_HOST: str = "redis"
+    REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_PASSWORD: str = "your_redis_password"
@@ -52,8 +59,8 @@ class DevelopmentConfig(BaseConfig):
     SOL_NETWORK_RPC: str = "https://api.devnet.solana.com"
     SOL_NETWORK: str = "devnet"
     TOKEN_CONTRACT_ADDRESS: str = "your_token_program_id"
-    TOKEN_REQUIRED_BALANCE: float = 1.0
-    TOKEN_SEARCH_COST: float = 0.1
+    TOKEN_REQUIRED_BALANCE: float = MIN_TOKEN_BALANCE
+    TOKEN_SEARCH_COST: float = SEARCH_COST
     
     # Market API Credentials
     AMAZON_ACCESS_KEY: str = "your-amazon-access-key"
@@ -75,8 +82,8 @@ class DevelopmentConfig(BaseConfig):
     CORS_HEADERS: list[str] = ["*"]
     
     # Rate Limiting
-    RATE_LIMIT_PER_SECOND: int = 20
-    RATE_LIMIT_PER_MINUTE: int = 300
+    RATE_LIMIT_PER_SECOND: int = RATE_LIMIT_DEFAULT // 60
+    RATE_LIMIT_PER_MINUTE: int = RATE_LIMIT_AUTHENTICATED
     
     class Config:
-        case_sensitive = True 
+        case_sensitive = True

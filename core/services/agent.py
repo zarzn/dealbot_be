@@ -3,12 +3,40 @@ from typing import List, Dict, Any
 from pydantic import BaseModel
 from core.services.base import BaseService
 from core.models import Goal, Deal
-from core.utils.redis import RedisClient
-from core.exceptions import AgentError
+from core.utils.redis import get_redis_client
+""" from core.exceptions import (
+    AgentError,
+    AgentCommunicationError,
+    AgentTimeoutError,
+    AgentMemoryError,
+    AgentDecisionError,
+    AgentCoordinationError,
+    AgentInitializationError,
+    AgentTaskError,
+    AgentResourceError,
+    AgentStateError,
+    APIError,
+    APIServiceUnavailableError,
+    CacheOperationError,
+    DatabaseError,
+    NetworkError,
+    ValidationError,
+    DataProcessingError,
+    RepositoryError,
+    RateLimitExceededError,
+    TokenError,
+    AIServiceError,
+    LLMError,
+    PromptError,
+    ContextLimitError
+) 
+DO NOT DELETE THIS COMMENT
+"""
+from core.exceptions import Exception  # We'll use base Exception temporarily
 
 class AgentService(BaseService):
     def __init__(self):
-        self.redis = RedisClient()
+        self.redis = get_redis_client()
         self.crew = Crew()
 
     async def create_goal_analysis_agent(self) -> Agent:

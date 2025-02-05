@@ -1,35 +1,52 @@
-from typing import List, Optional
+from typing import List, Optional, Dict
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_, func
+from sqlalchemy import select, update, and_, func, or_, delete
 from datetime import datetime, timedelta
+from sqlalchemy.exc import SQLAlchemyError
+import logging
+from sqlalchemy.orm import selectinload
 
-from ..models.market import Market, MarketCreate, MarketUpdate, MarketType, MarketStatus
+from core.models.market import Market, MarketCreate, MarketUpdate, MarketType, MarketStatus, MarketCategory
+from core.exceptions import (
+    MarketNotFoundError,
+    InvalidMarketDataError,
+    DatabaseError
+)
 
+logger = logging.getLogger(__name__)
+
+# Repository for market operations
 class MarketRepository:
-    def __init__(self, session: AsyncSession):
-        self.session = session
+    def __init__(self, db: AsyncSession):
+        self.db = db
 
-    async def create(self, market_data: MarketCreate) -> Market:
-        market = Market(**market_data.model_dump())
-        self.session.add(market)
-        await self.session.commit()
-        await self.session.refresh(market)
-        return market
+    async def create(self, market_data: Dict) -> Market:
+        """Create a new market"""
+        try:
+            market = Market(**market_data)
+            self.db.add(market)
+            await self.db.commit()
+            await self.db.refresh(market)
+            return market
+        except SQLAlchemyError as e:
+            await self.db.rollback()
+            logger.error(f"Failed to create market: {str(e)}")
+            raise InvalidMarketDataError(f"Invalid market data: {str(e)}")
 
-    async def get_by_id(self, market_id: UUID) -> Optional[Market]:
-        result = await self.session.execute(
-            select(Market).where(
-                and_(
-                    Market.id == market_id,
-                    Market.is_active == True
-                )
+    async def get_by_id(self, market_id: str) -> Optional[Market]:
+        """Get market by ID"""
+        try:
+            result = await self.db.execute(
+                select(Market).where(Market.id == market_id)
             )
-        )
-        return result.scalar_one_or_none()
+            return result.scalar_one_or_none()
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get market: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
     async def get_by_type(self, market_type: MarketType) -> Optional[Market]:
-        result = await self.session.execute(
+        result = await self.db.execute(
             select(Market).where(
                 and_(
                     Market.type == market_type,
@@ -40,7 +57,7 @@ class MarketRepository:
         return result.scalar_one_or_none()
 
     async def get_all_active(self) -> List[Market]:
-        result = await self.session.execute(
+        result = await self.db.execute(
             select(Market).where(
                 and_(
                     Market.is_active == True,
@@ -50,104 +67,171 @@ class MarketRepository:
         )
         return list(result.scalars().all())
 
-    async def update(self, market_id: UUID, market_data: MarketUpdate) -> Optional[Market]:
-        update_data = {k: v for k, v in market_data.model_dump().items() if v is not None}
-        if not update_data:
-            return await self.get_by_id(market_id)
+    async def get_all(self, page: int = 1, per_page: int = 20) -> List[Market]:
+        """Get paginated list of markets"""
+        try:
+            result = await self.db.execute(
+                select(Market)
+                .offset((page - 1) * per_page)
+                .limit(per_page)
+            )
+            return list(result.scalars().all())
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get markets: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-        await self.session.execute(
-            update(Market)
-            .where(Market.id == market_id)
-            .values(**update_data)
-        )
-        await self.session.commit()
-        return await self.get_by_id(market_id)
+    async def get_by_category(self, category: MarketCategory) -> List[Market]:
+        """Get markets by category"""
+        try:
+            result = await self.db.execute(
+                select(Market).where(Market.category == category)
+            )
+            return list(result.scalars().all())
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get markets by category: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-    async def delete(self, market_id: UUID) -> bool:
+    async def update(self, market_id: str, market_data: Dict) -> Market:
+        """Update market data"""
         market = await self.get_by_id(market_id)
         if not market:
-            return False
+            raise MarketNotFoundError(f"Market {market_id} not found")
         
-        await self.session.execute(
-            update(Market)
-            .where(Market.id == market_id)
-            .values(is_active=False)
-        )
-        await self.session.commit()
-        return True
+        try:
+            for key, value in market_data.items():
+                setattr(market, key, value)
+            await self.db.commit()
+            await self.db.refresh(market)
+            return market
+        except SQLAlchemyError as e:
+            await self.db.rollback()
+            logger.error(f"Failed to update market: {str(e)}")
+            raise InvalidMarketDataError(f"Invalid market data: {str(e)}")
 
-    async def get_all(self) -> List[Market]:
-        result = await self.session.execute(
-            select(Market).where(Market.is_active == True)
-        )
-        return list(result.scalars().all())
+    async def delete(self, market_id: str) -> None:
+        """Delete a market"""
+        try:
+            result = await self.db.execute(
+                delete(Market).where(Market.id == market_id)
+            )
+            if result.rowcount == 0:
+                raise MarketNotFoundError(f"Market {market_id} not found")
+            await self.db.commit()
+        except SQLAlchemyError as e:
+            await self.db.rollback()
+            logger.error(f"Failed to delete market: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-    async def update_market_stats(self, market_id: UUID, success: bool, response_time: float) -> None:
-        """Update market statistics after a request."""
+    async def get_active_markets(self) -> List[Market]:
+        """Get all active markets"""
+        try:
+            result = await self.db.execute(
+                select(Market).where(Market.status == MarketStatus.ACTIVE)
+            )
+            return list(result.scalars().all())
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get active markets: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
+
+    async def update_market_stats(self, market_id: str, stats_data: Dict) -> Market:
+        """Update market statistics"""
         market = await self.get_by_id(market_id)
         if not market:
-            return
+            raise MarketNotFoundError(f"Market {market_id} not found")
+        
+        try:
+            market.last_update = datetime.now(tz=datetime.UTC)
+            market.stats = stats_data
+            await self.db.commit()
+            await self.db.refresh(market)
+            return market
+        except SQLAlchemyError as e:
+            await self.db.rollback()
+            logger.error(f"Failed to update market stats: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
-        # Calculate new success rate
-        total_requests = market.total_requests + 1
-        success_count = int(market.success_rate * market.total_requests) + (1 if success else 0)
-        new_success_rate = success_count / total_requests
+    async def get_market_performance(self, market_id: str, days: int = 30) -> List[Dict]:
+        """Get market performance metrics"""
+        try:
+            market = await self.get_by_id(market_id)
+            if not market:
+                raise MarketNotFoundError(f"Market {market_id} not found")
 
-        # Calculate new average response time
-        new_avg_response_time = (
-            (market.avg_response_time * market.total_requests + response_time) / total_requests
-        )
-
-        update_data = {
-            "total_requests": total_requests,
-            "requests_today": market.requests_today + 1,
-            "success_rate": new_success_rate,
-            "avg_response_time": new_avg_response_time,
-            "last_successful_request": None if not success else func.now()
-        }
-
-        if not success:
-            update_data.update({
-                "error_count": market.error_count + 1,
-                "last_error_at": func.now()
-            })
-
-        await self.session.execute(
-            update(Market)
-            .where(Market.id == market_id)
-            .values(**update_data)
-        )
-        await self.session.commit()
-
-    async def reset_daily_stats(self) -> None:
-        """Reset daily statistics for all markets."""
-        await self.session.execute(
-            update(Market)
-            .where(Market.is_active == True)
-            .values(
-                requests_today=0,
-                error_count=0,
-                last_reset_at=func.now()
-            )
-        )
-        await self.session.commit()
-
-    async def get_market_stats(self, market_id: UUID) -> Optional[Market]:
-        """Get detailed statistics for a specific market."""
-        result = await self.session.execute(
-            select(Market)
-            .where(
-                and_(
-                    Market.id == market_id,
-                    Market.is_active == True
+            result = await self.db.execute(
+                select(
+                    func.date_trunc('day', Market.last_update).label('date'),
+                    func.jsonb_path_query(Market.stats, '$.performance').label('performance'),
+                    func.jsonb_path_query(Market.stats, '$.volume').label('volume')
                 )
+                .where(
+                    and_(
+                        Market.id == market_id,
+                        Market.last_update >= datetime.now(tz=datetime.UTC) - timedelta(days=days)
+                    )
+                )
+                .group_by(func.date_trunc('day', Market.last_update))
+                .order_by(func.date_trunc('day', Market.last_update).desc())
             )
-        )
-        return result.scalar_one_or_none()
+            return [dict(row) for row in result.all()]
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get market performance: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
+
+    async def get_market_metrics(self) -> Dict:
+        """Get aggregate market metrics"""
+        try:
+            total = await self.db.scalar(select(func.count(Market.id)))
+            active = await self.db.scalar(
+                select(func.count(Market.id))
+                .where(Market.status == MarketStatus.ACTIVE)
+            )
+            categories = await self.db.execute(
+                select(Market.category, func.count(Market.id))
+                .group_by(Market.category)
+            )
+            
+            return {
+                'total_markets': total,
+                'active_markets': active,
+                'categories': dict(categories.all())
+            }
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get market metrics: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
+
+    async def update_market_status(self, market_id: str, status: MarketStatus) -> Market:
+        """Update market status"""
+        market = await self.get_by_id(market_id)
+        if not market:
+            raise MarketNotFoundError(f"Market {market_id} not found")
+        
+        try:
+            market.status = status
+            market.last_status_update = datetime.now(tz=datetime.UTC)
+            await self.db.commit()
+            await self.db.refresh(market)
+            return market
+        except SQLAlchemyError as e:
+            await self.db.rollback()
+            logger.error(f"Failed to update market status: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
+
+    async def get_markets_with_deals(self) -> List[Market]:
+        """Get markets with their associated deals"""
+        try:
+            result = await self.db.execute(
+                select(Market)
+                .options(selectinload(Market.deals))
+                .where(Market.status == MarketStatus.ACTIVE)
+            )
+            return list(result.scalars().all())
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get markets with deals: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
 
     async def get_markets_by_performance(self, limit: int = 10) -> List[Market]:
         """Get top performing markets based on success rate and response time."""
-        result = await self.session.execute(
+        result = await self.db.execute(
             select(Market)
             .where(Market.is_active == True)
             .order_by(
@@ -160,7 +244,7 @@ class MarketRepository:
 
     async def get_markets_by_status(self, status: MarketStatus) -> List[Market]:
         """Get markets by their operational status."""
-        result = await self.session.execute(
+        result = await self.db.execute(
             select(Market)
             .where(
                 and_(
@@ -171,19 +255,9 @@ class MarketRepository:
         )
         return list(result.scalars().all())
 
-    async def update_market_status(self, market_id: UUID, status: MarketStatus) -> Optional[Market]:
-        """Update market operational status."""
-        await self.session.execute(
-            update(Market)
-            .where(Market.id == market_id)
-            .values(status=status)
-        )
-        await self.session.commit()
-        return await self.get_by_id(market_id)
-
     async def get_markets_with_high_error_rate(self, threshold: float = 0.1) -> List[Market]:
         """Get markets with error rate above threshold."""
-        result = await self.session.execute(
+        result = await self.db.execute(
             select(Market)
             .where(
                 and_(
@@ -196,7 +270,7 @@ class MarketRepository:
 
     async def get_markets_by_request_volume(self, min_requests: int = 1000) -> List[Market]:
         """Get markets with high request volume."""
-        result = await self.session.execute(
+        result = await self.db.execute(
             select(Market)
             .where(
                 and_(

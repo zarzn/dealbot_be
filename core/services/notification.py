@@ -1,16 +1,42 @@
-from typing import Dict, Any, List, Optional, UUID
+from typing import Dict, Any, List, Optional
+from uuid import UUID
 from datetime import datetime
 import aiohttp
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-import aioredis
 import json
 import logging
 
-from ..models.notification import Notification, NotificationType, NotificationChannel, NotificationPriority
-from ..models.user import User
-from ..utils.redis import get_redis_pool
-from ..exceptions import ValidationError
+from core.models.notification import (
+    Notification,
+    NotificationType,
+    NotificationChannel,
+    NotificationPriority,
+    NotificationStatus
+)
+from core.models.user import User
+from core.utils.redis import get_redis_client
+""" from core.exceptions import (
+    NotificationError,
+    NotificationNotFoundError,
+    NotificationDeliveryError,
+    NotificationRateLimitError,
+    InvalidNotificationTemplateError,
+    APIServiceUnavailableError,
+    CacheOperationError,
+    DatabaseError,
+    ValidationError,
+    NetworkError,
+    DataProcessingError,
+    RepositoryError,
+    UserNotFoundError,
+    TokenError,
+    RateLimitExceededError
+) 
+DO NOT DELETE THIS COMMENT
+"""
+from core.exceptions import Exception  # We'll use base Exception temporarily
+
 
 class NotificationService:
     def __init__(self, session: Optional[AsyncSession] = None):
@@ -63,7 +89,7 @@ class NotificationService:
         except Exception as e:
             if self.session:
                 await self.session.rollback()
-            raise ValidationError(f"Error sending notification: {str(e)}")
+            raise NotificationError(f"Error sending notification: {str(e)}")
 
     async def get_user_notifications(
         self,
@@ -74,7 +100,7 @@ class NotificationService:
     ) -> List[Notification]:
         """Get notifications for a user"""
         if not self.session:
-            raise ValidationError("Database session required for this operation")
+            raise NotificationNotFoundError("Database session required for this operation")
 
         try:
             query = select(Notification).where(
@@ -91,7 +117,7 @@ class NotificationService:
             return list(result.scalars().all())
 
         except Exception as e:
-            raise ValidationError(f"Error getting notifications: {str(e)}")
+            raise NotificationNotFoundError(f"Error getting notifications: {str(e)}")
 
     async def mark_as_read(
         self,
@@ -100,7 +126,7 @@ class NotificationService:
     ) -> List[Notification]:
         """Mark notifications as read"""
         if not self.session:
-            raise ValidationError("Database session required for this operation")
+            raise NotificationNotFoundError("Database session required for this operation")
 
         try:
             notifications = await self.session.execute(
@@ -119,18 +145,18 @@ class NotificationService:
 
         except Exception as e:
             await self.session.rollback()
-            raise ValidationError(f"Error marking notifications as read: {str(e)}")
+            raise NotificationError(f"Error marking notifications as read: {str(e)}")
 
     async def _send_email_notification(self, notification: Notification) -> None:
         """Send email notification"""
         if not self.session:
-            raise ValidationError("Database session required for this operation")
+            raise NotificationNotFoundError("Database session required for this operation")
 
         try:
             # Get user email
             user = await self.session.get(User, notification.user_id)
             if not user or not user.email:
-                raise ValidationError("User email not found")
+                raise NotificationNotFoundError("User email not found")
 
             # Prepare email data
             email_data = {
@@ -149,18 +175,18 @@ class NotificationService:
             print(f"Sending email to {user.email}: {notification.title}")
 
         except Exception as e:
-            raise ValidationError(f"Error sending email notification: {str(e)}")
+            raise NotificationError(f"Error sending email notification: {str(e)}")
 
     async def _send_push_notification(self, notification: Notification) -> None:
         """Send push notification"""
         if not self.session:
-            raise ValidationError("Database session required for this operation")
+            raise NotificationNotFoundError("Database session required for this operation")
 
         try:
             # Get user's push tokens
             user = await self.session.get(User, notification.user_id)
             if not user or not user.push_tokens:
-                raise ValidationError("User push tokens not found")
+                raise NotificationNotFoundError("User push tokens not found")
 
             # Prepare push notification data
             push_data = {
@@ -180,18 +206,18 @@ class NotificationService:
                         print(f"Error sending push notification to token {token}: {str(e)}")
 
         except Exception as e:
-            raise ValidationError(f"Error sending push notification: {str(e)}")
+            raise NotificationError(f"Error sending push notification: {str(e)}")
 
     async def _send_sms_notification(self, notification: Notification) -> None:
         """Send SMS notification"""
         if not self.session:
-            raise ValidationError("Database session required for this operation")
+            raise NotificationNotFoundError("Database session required for this operation")
 
         try:
             # Get user's phone number
             user = await self.session.get(User, notification.user_id)
             if not user or not user.phone_number:
-                raise ValidationError("User phone number not found")
+                raise NotificationNotFoundError("User phone number not found")
 
             # Prepare SMS data
             sms_data = {
@@ -203,24 +229,35 @@ class NotificationService:
             print(f"Sending SMS to {user.phone_number}: {notification.title}")
 
         except Exception as e:
-            raise ValidationError(f"Error sending SMS notification: {str(e)}")
+            raise NotificationError(f"Error sending SMS notification: {str(e)}")
 
     async def _cache_notification(self, notification: Notification) -> None:
         """Cache notification in Redis for real-time access"""
         try:
-            redis = await get_redis_pool()
+            redis = await get_redis_client()
             
             # Cache individual notification
             notification_key = f"notification:{notification.id}"
+            notification_data = {
+                "id": str(notification.id),
+                "user_id": str(notification.user_id),
+                "title": notification.title,
+                "message": notification.message,
+                "type": notification.type.value,
+                "data": notification.data,
+                "priority": notification.priority,
+                "created_at": notification.created_at.isoformat(),
+                "read_at": notification.read_at.isoformat() if notification.read_at else None
+            }
             await redis.set(
                 notification_key,
-                notification.model_dump(),
+                json.dumps(notification_data),
                 ex=86400  # 24 hours
             )
 
             # Add to user's recent notifications list
             user_notifications_key = f"user:{notification.user_id}:notifications"
-            await redis.lpush(user_notifications_key, notification.id)
+            await redis.lpush(user_notifications_key, str(notification.id))
             await redis.ltrim(user_notifications_key, 0, 99)  # Keep last 100 notifications
 
         except Exception as e:
@@ -229,7 +266,7 @@ class NotificationService:
     async def get_unread_count(self, user_id: str) -> int:
         """Get count of unread notifications for a user"""
         if not self.session:
-            raise ValidationError("Database session required for this operation")
+            raise NotificationNotFoundError("Database session required for this operation")
 
         try:
             result = await self.session.execute(
@@ -241,7 +278,7 @@ class NotificationService:
             return len(list(result.scalars().all()))
 
         except Exception as e:
-            raise ValidationError(f"Error getting unread count: {str(e)}")
+            raise NotificationError(f"Error getting unread count: {str(e)}")
 
     async def delete_notifications(
         self,
@@ -250,7 +287,7 @@ class NotificationService:
     ) -> None:
         """Delete notifications"""
         if not self.session:
-            raise ValidationError("Database session required for this operation")
+            raise NotificationNotFoundError("Database session required for this operation")
 
         try:
             # Delete from database
@@ -268,18 +305,18 @@ class NotificationService:
             await self.session.commit()
 
             # Delete from Redis
-            redis = await get_redis_pool()
+            redis = await get_redis_client()
             for notification_id in notification_ids:
                 await redis.delete(f"notification:{notification_id}")
 
         except Exception as e:
             await self.session.rollback()
-            raise ValidationError(f"Error deleting notifications: {str(e)}")
+            raise NotificationError(f"Error deleting notifications: {str(e)}")
 
     async def clear_all_notifications(self, user_id: str) -> None:
         """Clear all notifications for a user"""
         if not self.session:
-            raise ValidationError("Database session required for this operation")
+            raise NotificationNotFoundError("Database session required for this operation")
 
         try:
             # Delete from database
@@ -294,12 +331,12 @@ class NotificationService:
             await self.session.commit()
 
             # Clear from Redis
-            redis = await get_redis_pool()
+            redis = await get_redis_client()
             await redis.delete(f"user:{user_id}:notifications")
 
         except Exception as e:
             await self.session.rollback()
-            raise ValidationError(f"Error clearing notifications: {str(e)}")
+            raise NotificationError(f"Error clearing notifications: {str(e)}")
 
     async def create_notification(
         self,
@@ -356,4 +393,4 @@ class NotificationService:
         except Exception as e:
             if self.session:
                 await self.session.rollback()
-            raise ValidationError(f"Error creating notification: {str(e)}") 
+            raise NotificationError(f"Error creating notification: {str(e)}") 

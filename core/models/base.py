@@ -10,7 +10,7 @@ from uuid import UUID
 import json
 import logging
 
-from sqlalchemy import Column, DateTime
+from sqlalchemy import Column, DateTime, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from sqlalchemy.ext.declarative import declared_attr
@@ -36,19 +36,19 @@ class Base(DeclarativeBase):
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=expression.func.now()
+        server_default=text('CURRENT_TIMESTAMP')
     )
     updated_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=expression.func.now(),
-        onupdate=expression.func.now()
+        server_default=text('CURRENT_TIMESTAMP'),
+        onupdate=text('CURRENT_TIMESTAMP')
     )
     
-    @declared_attr.directive
-    def __tablename__(cls) -> str:
+    @declared_attr
+    def __tablename__(self) -> str:
         """Generate table name from class name."""
-        return cls.__name__.lower()
+        return self.__class__.__name__.lower()
 
     def dict(self) -> Dict[str, Any]:
         """Convert model instance to dictionary."""

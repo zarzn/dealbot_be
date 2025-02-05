@@ -2,6 +2,7 @@
 
 import os
 from functools import lru_cache
+from .base import BaseConfig
 from .development import DevelopmentConfig
 from .production import ProductionConfig
 
@@ -17,4 +18,4 @@ def get_settings():
 
 settings = get_settings()
 
-__all__ = ['settings', 'get_settings'] 
+__all__ = ['settings', 'get_settings', 'BaseConfig']

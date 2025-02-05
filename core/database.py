@@ -29,12 +29,7 @@ engine = create_async_engine(
     pool_timeout=settings.DB_POOL_TIMEOUT,
     pool_recycle=settings.DB_POOL_RECYCLE,
     pool_pre_ping=True,
-    echo=settings.DEBUG,
-    connect_args={
-        "statement_timeout": settings.DB_STATEMENT_TIMEOUT * 1000,  # Convert to milliseconds
-        "command_timeout": settings.DB_STATEMENT_TIMEOUT,
-        "idle_in_transaction_session_timeout": settings.DB_IDLE_TIMEOUT * 1000,  # Convert to milliseconds
-    }
+    echo=settings.DEBUG
 )
 
 # Configure session factory with transaction management
@@ -55,7 +50,7 @@ def set_search_path(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
         cursor.execute("SET search_path TO public")
         cursor.execute("SET timezone TO 'UTC'")
-        cursor.execute(f"SET statement_timeout TO '{settings.DB_STATEMENT_TIMEOUT}s'")
+        cursor.execute(f"SET idle_in_transaction_session_timeout TO '{settings.DB_IDLE_TIMEOUT * 1000}'")  # Convert to milliseconds
         cursor.close()
     except Exception as e:
         logger.error(f"Failed to set database connection parameters: {str(e)}")

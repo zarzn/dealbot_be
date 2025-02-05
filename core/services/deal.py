@@ -24,17 +24,41 @@ import httpx
 from uuid import UUID
 from decimal import Decimal
 
-from core.models.deal import Deal, DealCreate, DealUpdate, DealStatus
+from core.models.deal import (
+    Deal,
+    DealCreate,
+    DealUpdate,
+    DealStatus,
+    DealPriority,
+    DealSource
+)
 from core.models.goal import Goal
 from core.repositories.deal import DealRepository
-from core.utils.redis import get_redis, RedisError, get_redis_pool
+from core.utils.redis import get_redis_client
 from core.exceptions import (
+    DealError,
     DealNotFoundError,
     InvalidDealDataError,
+    DealExpirationError,
+    DealPriceError,
+    DealValidationError,
+    DealProcessingError,
+    DealScoreError,
+    APIError,
+    APIRateLimitError,
+    APIServiceUnavailableError,
+    DatabaseError,
+    CacheOperationError,
     ExternalServiceError,
+    ValidationError,
+    NetworkError,
+    DataProcessingError,
+    RepositoryError,
+    AIServiceError,
     RateLimitExceededError,
-    AIServiceError
+    TokenError
 )
+
 from core.config import settings
 from core.utils.ecommerce import (
     AmazonAPI,
@@ -63,7 +87,7 @@ class DealService:
     def __init__(self, db: Session):
         self.db = db
         self.repository = DealRepository(db)
-        self.redis: Redis = get_redis()
+        self.redis = get_redis_client()
         self.llm_chain = self._initialize_llm_chain()
         self.scheduler = AsyncIOScheduler()
         self.amazon_api = AmazonAPI()
@@ -521,7 +545,7 @@ class DealService:
             
         except Exception as e:
             logger.error(f"Failed to cache deal {deal.id}: {str(e)}")
-            raise RedisError(f"Failed to cache deal {deal.id}")
+            raise
 
     def _get_cached_deal(self, deal_id: str) -> Optional[Deal]:
         """Get cached deal from Redis with extended information"""

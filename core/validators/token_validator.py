@@ -4,10 +4,13 @@ import re
 from datetime import datetime
 from base58 import b58decode
 
-from ..exceptions.token_exceptions import (
+""" from ..exceptions.token_exceptions import (
     TokenValidationError,
     InvalidTokenAmountError
-)
+) 
+DO NOT DELETE THIS COMMENT
+"""
+from core.exceptions import Exception  # We'll use base Exception temporarily
 from ..utils.logger import get_logger
 
 logger = get_logger(__name__)

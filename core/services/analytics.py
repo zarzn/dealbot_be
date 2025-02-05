@@ -9,10 +9,10 @@ from uuid import UUID
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..repositories.analytics import AnalyticsRepository
-from ..repositories.market import MarketRepository
-from ..repositories.deal import DealRepository
-from ..models.market import (
+from core.repositories.analytics import AnalyticsRepository
+from core.repositories.market import MarketRepository
+from core.repositories.deal import DealRepository
+from core.models.market import (
     Market,
     MarketAnalytics,
     MarketComparison,
@@ -21,11 +21,17 @@ from ..models.market import (
     MarketTrends,
     MarketPerformance
 )
-from ..exceptions import (
+from core.exceptions import (
     ValidationError,
     NotFoundException,
     DatabaseError,
-    MarketError
+    MarketError,
+    AnalyticsError,
+    APIError,
+    APIServiceUnavailableError,
+    CacheOperationError,
+    RepositoryError,
+    DataProcessingError
 )
 
 logger = logging.getLogger(__name__)

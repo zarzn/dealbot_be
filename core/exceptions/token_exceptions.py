@@ -1,11 +1,83 @@
-from typing import Optional, Dict, Any
+"""Token-related exceptions module."""
 
-class TokenError(Exception):
+from typing import Optional, Dict, Any
+from .base import BaseError
+
+class TokenError(BaseError):
     """Base class for token-related exceptions"""
     def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
-        self.message = message
-        self.details = details or {}
-        super().__init__(self.message)
+        super().__init__(
+            message=message,
+            error_code="token_error",
+            details=details or {}
+        )
+
+class TokenNotFoundError(TokenError):
+    """Raised when a token transaction or record is not found"""
+    def __init__(
+        self,
+        token_id: str,
+        message: str = "Token not found",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        error_details["token_id"] = token_id
+        super().__init__(
+            message=message,
+            details=error_details
+        )
+
+class TokenServiceError(TokenError):
+    """Raised when a token service operation fails"""
+    def __init__(
+        self,
+        service: str,
+        operation: str,
+        reason: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        self.service = service
+        self.operation = operation
+        self.reason = reason
+        message = f"Token service error in {service} during {operation}: {reason}"
+        service_details = {
+            "service": service,
+            "operation": operation,
+            "reason": reason
+        }
+        if details:
+            service_details.update(details)
+        super().__init__(message, service_details)
+
+class TokenBalanceError(TokenError):
+    """Raised when there's an error with token balance operations"""
+    def __init__(self, operation: str, reason: str, balance: Optional[float] = None):
+        self.operation = operation
+        self.reason = reason
+        self.balance = balance
+        message = f"Token balance error during {operation}: {reason}"
+        details = {"operation": operation, "reason": reason}
+        if balance is not None:
+            details["balance"] = balance
+        super().__init__(message, details)
+
+class InvalidBalanceChangeError(TokenError):
+    """Raised when a balance change operation is invalid"""
+    def __init__(
+        self,
+        message: str,
+        balance_before: Optional[float] = None,
+        balance_after: Optional[float] = None,
+        change_amount: Optional[float] = None
+    ):
+        details = {}
+        if balance_before is not None:
+            details["balance_before"] = balance_before
+        if balance_after is not None:
+            details["balance_after"] = balance_after
+        if change_amount is not None:
+            details["change_amount"] = change_amount
+        super().__init__(message, details)
 
 class InsufficientBalanceError(TokenError):
     """Raised when user has insufficient token balance"""
@@ -118,4 +190,84 @@ class TokenValidationError(TokenError):
         self.reason = reason
         message = f"Token validation error for {field}: {reason}"
         details = {"field": field, "reason": reason}
-        super().__init__(message, details) 
+        super().__init__(message, details)
+
+class TokenTransactionError(TokenError):
+    """Raised when there's an error processing a token transaction"""
+    def __init__(self, transaction_id: str, operation: str, reason: str, details: Optional[Dict[str, Any]] = None):
+        self.transaction_id = transaction_id
+        self.operation = operation
+        self.reason = reason
+        message = f"Token transaction error {transaction_id} during {operation}: {reason}"
+        transaction_details = {
+            "transaction_id": transaction_id,
+            "operation": operation,
+            "reason": reason
+        }
+        if details:
+            transaction_details.update(details)
+        super().__init__(message, transaction_details)
+
+class TokenRateLimitError(TokenError):
+    """Raised when token operations exceed rate limits"""
+    def __init__(self, operation: str, limit: int, window: str):
+        self.operation = operation
+        self.limit = limit
+        self.window = window
+        message = f"Rate limit exceeded for {operation}: limit {limit} per {window}"
+        details = {
+            "operation": operation,
+            "limit": limit,
+            "window": window
+        }
+        super().__init__(message, details)
+
+class TokenPricingError(TokenError):
+    """Raised when there's an error with token pricing operations"""
+    def __init__(
+        self,
+        operation: str,
+        reason: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = {
+            "operation": operation,
+            "reason": reason
+        }
+        if details:
+            error_details.update(details)
+        super().__init__(
+            message=f"Token pricing error during {operation}: {reason}",
+            details=error_details
+        )
+
+class InvalidPricingError(TokenError):
+    """Raised when token pricing data is invalid"""
+    def __init__(
+        self,
+        message: str,
+        service_type: Optional[str] = None,
+        token_cost: Optional[float] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = {}
+        if service_type:
+            error_details["service_type"] = service_type
+        if token_cost is not None:
+            error_details["token_cost"] = token_cost
+        if details:
+            error_details.update(details)
+        super().__init__(message, error_details)
+
+class InsufficientTokensError(InsufficientBalanceError):
+    """Alias for InsufficientBalanceError for backward compatibility."""
+    pass
+
+__all__ = [
+    "TokenError",
+    "TokenNotFoundError",
+    "TokenServiceError",
+    "TokenRateLimitError",
+    "TokenPricingError",
+    "InvalidPricingError"
+]

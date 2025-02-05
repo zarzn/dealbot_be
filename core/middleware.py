@@ -21,12 +21,15 @@ from jose import JWTError, jwt
 from core.config import get_settings
 from core.utils.logger import get_logger, get_request_logger
 from core.utils.redis import RateLimit, RedisClient
-from core.exceptions import (
+""" from core.exceptions import (
     RateLimitError,
     AuthenticationError,
     TokenExpiredError,
     TokenInvalidError
-)
+) 
+DO NOT DELETE THIS COMMENT
+"""
+from core.exceptions import Exception  # We'll use base Exception temporarily
 from core.metrics.middleware import MiddlewareMetrics
 from core.services.auth import get_current_user
 from core.models.user import User

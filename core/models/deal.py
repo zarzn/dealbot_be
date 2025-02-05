@@ -39,6 +39,14 @@ class DealSource(str, enum.Enum):
     BESTBUY = "bestbuy"
     MANUAL = "manual"
 
+class DealPriority(int, enum.Enum):
+    """Deal priority levels."""
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    URGENT = 4
+    CRITICAL = 5
+
 class DealBase(BaseModel):
     """Base deal model."""
     title: str = Field(..., min_length=1, max_length=255)
@@ -54,6 +62,7 @@ class DealBase(BaseModel):
     expires_at: Optional[datetime] = None
     status: DealStatus = Field(default=DealStatus.ACTIVE)
 
+    @classmethod
     @validator('original_price')
     def validate_original_price(cls, v: Optional[Decimal], values: Dict[str, Any]) -> Optional[Decimal]:
         """Validate original price is greater than current price."""
@@ -61,6 +70,7 @@ class DealBase(BaseModel):
             raise ValueError("Original price must be greater than current price")
         return v
 
+    @classmethod
     @validator('expires_at')
     def validate_expiry(cls, v: Optional[datetime]) -> Optional[datetime]:
         """Validate expiry date is in the future."""
@@ -85,6 +95,7 @@ class DealUpdate(BaseModel):
     deal_metadata: Optional[Dict[str, Any]] = None
     availability: Optional[Dict[str, Any]] = None
 
+    @classmethod
     @validator('original_price')
     def validate_original_price(cls, v: Optional[Decimal], values: Dict[str, Any]) -> Optional[Decimal]:
         """Validate original price is greater than current price."""
@@ -141,10 +152,10 @@ class Deal(Base):
     price: Mapped[Decimal] = mapped_column(DECIMAL(10, 2))
     original_price: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(10, 2), nullable=True)
     currency: Mapped[str] = mapped_column(String(3), default="USD")
-    source: Mapped[str] = mapped_column(String(50))
+    source: Mapped[DealSource] = mapped_column(SQLAlchemyEnum(DealSource))
     image_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     category: Mapped[Optional[str]] = mapped_column(String(50))
-    found_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    found_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[DealStatus] = mapped_column(SQLAlchemyEnum(DealStatus), default=DealStatus.ACTIVE)
     seller_info: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)

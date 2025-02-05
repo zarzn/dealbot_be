@@ -12,6 +12,7 @@ from sqlalchemy.orm import relationship
 
 from .base import Base
 from .user import User
+from .token_pricing import TokenPricing  # Import TokenPricing from its own module
 
 class TransactionType(str, Enum):
     """Transaction types"""

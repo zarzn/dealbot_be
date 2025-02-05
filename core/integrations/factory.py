@@ -1,9 +1,10 @@
 from typing import Dict, Optional
-from .base import BaseMarketIntegration
-from .amazon import AmazonIntegration
-from .walmart import WalmartIntegration
-from ..models.market import MarketType
-from ..exceptions import ValidationError
+from core.integrations.base import BaseMarketIntegration
+from core.integrations.amazon import AmazonIntegration
+from core.integrations.walmart import WalmartIntegration
+from core.models.market import MarketType
+#from core.exceptions import ValidationError DO NOT DELETE THIS COMMENT
+from core.exceptions import BaseError, ValidationError
 
 class MarketIntegrationFactory:
     _integrations: Dict[MarketType, BaseMarketIntegration] = {}

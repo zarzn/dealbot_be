@@ -1,84 +1,333 @@
 """Core exceptions initialization."""
 
-class BaseError(Exception):
-    """Base error class for all custom exceptions."""
-    pass
+# Re-export base exceptions
+from .base import (
+    BaseError,
+    ValidationError,
+    NotFoundException,
+    NotFoundError,
+    DatabaseError,
+    RepositoryError,
+    NetworkError,
+    ServiceError,
+    ExternalServiceError,
+    RateLimitError,
+    RateLimitExceededError,
+    IntegrationError
+)
 
-class ValidationError(BaseError):
-    """Raised when validation fails."""
-    pass
+# Re-export deal exceptions
+from .deal_exceptions import (
+    DealError,
+    DealNotFoundError,
+    InvalidDealDataError,
+    DealExpirationError,
+    DealPriceError,
+    DealValidationError,
+    DealProcessingError,
+    DealScoreError,
+    DealAnalysisError
+)
 
-class NotFoundException(BaseError):
-    """Raised when a resource is not found."""
-    pass
+# Re-export data exceptions
+from .data_exceptions import (
+    DataError,
+    DataProcessingError,
+    DataValidationError,
+    DataTransformationError,
+    DataIntegrityError,
+    DataSyncError,
+    DataQualityError
+)
 
-class UserNotFoundError(NotFoundException):
-    """Raised when a user is not found."""
-    pass
+# Re-export user exceptions
+from .user_exceptions import (
+    UserError,
+    UserNotFoundError,
+    DuplicateUserError,
+    InvalidUserDataError,
+    UserValidationError
+)
 
-class TokenError(BaseError):
-    """Base class for token-related errors."""
-    pass
+# Re-export token exceptions
+from .token_exceptions import (
+    TokenError,
+    TokenBalanceError,
+    TokenTransactionError,
+    TokenValidationError,
+    TokenRateLimitError,
+    InsufficientBalanceError,
+    InsufficientTokensError,
+    SmartContractError,
+    InvalidBalanceChangeError,
+    TokenPricingError,
+    InvalidPricingError,
+    TokenNetworkError,
+    TokenOperationError,
+    TokenServiceError,
+    TokenNotFoundError
+)
 
-class TokenValidationError(TokenError):
-    """Raised when token validation fails."""
-    pass
+# Re-export wallet exceptions
+from .wallet_exceptions import (
+    WalletError,
+    WalletNotFoundError,
+    WalletConnectionError,
+    WalletValidationError,
+    WalletAlreadyConnectedError,
+    WalletOperationError
+)
 
-class TokenExpiredError(TokenError):
-    """Raised when a token has expired."""
-    pass
+# Re-export goal exceptions
+from .goal_exceptions import (
+    GoalError,
+    GoalValidationError,
+    GoalNotFoundError,
+    InvalidGoalDataError,
+    GoalConstraintError,
+    GoalLimitExceededError,
+    GoalStatusError,
+    GoalCreationError,
+    GoalUpdateError,
+    InvalidGoalConstraintsError,
+    DealMatchError
+)
 
-class TokenInvalidError(TokenError):
-    """Raised when a token is invalid."""
-    pass
+# Re-export agent exceptions
+from .agent_exceptions import (
+    AgentError,
+    AgentNotFoundError,
+    AgentCommunicationError,
+    AgentTimeoutError,
+    AgentMemoryError,
+    AgentDecisionError
+)
 
-class TokenRefreshError(TokenError):
-    """Raised when token refresh fails."""
-    pass
+# Re-export notification exceptions
+from .notification_exceptions import (
+    NotificationError,
+    NotificationNotFoundError,
+    NotificationDeliveryError,
+    NotificationRateLimitError,
+    InvalidNotificationTemplateError
+)
 
-class RateLimitError(BaseError):
-    """Raised when rate limit is exceeded."""
-    pass
+# Re-export crawler exceptions
+from .crawler_exceptions import (
+    CrawlerError,
+    CrawlerRequestError,
+    CrawlerParsingError,
+    CrawlerRateLimitError,
+    CrawlerBlockedError,
+    InvalidCrawlerConfigError
+)
 
-class AuthenticationError(BaseError):
-    """Raised when authentication fails."""
-    pass
+# Re-export auth exceptions
+from .auth_exceptions import (
+    AuthError,
+    AuthenticationError,
+    AuthorizationError,
+    InvalidCredentialsError,
+    TokenError,
+    SessionExpiredError,
+    PermissionDeniedError,
+    TwoFactorRequiredError,
+    InvalidTwoFactorCodeError,
+    AuthenticationError,
+    AuthorizationError
+)
 
-class PermissionError(BaseError):
-    """Raised when user lacks required permissions."""
-    pass
+# Re-export API exceptions
+from .api_exceptions import (
+    APIError,
+    APIRequestError,
+    APIRateLimitError,
+    APIAuthenticationError,
+    APITimeoutError,
+    APIResponseValidationError,
+    APIServiceUnavailableError,
+    AIServiceError
+)
 
-class DatabaseError(BaseError):
-    """Raised when database operations fail."""
-    pass
+# Re-export market exceptions
+from .market_exceptions import (
+    MarketError,
+    MarketValidationError,
+    InvalidMarketDataError,
+    MarketNotFoundError,
+    MarketConnectionError,
+    MarketRateLimitError,
+    MarketConfigurationError,
+    MarketOperationError,
+    MarketAuthenticationError,
+    InvalidDealDataError
+)
 
-class CacheOperationError(BaseError):
-    """Raised when cache operations fail."""
-    pass
+# Re-export analytics exceptions
+from .analytics_exceptions import (
+    AnalyticsError,
+    AnalyticsProcessingError,
+    AnalyticsDataError,
+    AnalyticsValidationError
+)
 
-class ExternalServiceError(BaseError):
-    """Raised when external service calls fail."""
-    pass
+# Re-export cache exceptions
+from .cache_exceptions import (
+    CacheError,
+    CacheOperationError,
+    CacheConnectionError,
+    CacheKeyError,
+    CacheTimeoutError,
+    CacheCapacityError
+)
 
-class ConfigurationError(BaseError):
-    """Raised when configuration is invalid."""
-    pass
-
+# Define what's available when importing from core.exceptions
 __all__ = [
+    # Base exceptions
     'BaseError',
     'ValidationError',
     'NotFoundException',
-    'UserNotFoundError',
-    'TokenError',
-    'TokenValidationError',
-    'TokenExpiredError',
-    'TokenInvalidError',
-    'TokenRefreshError',
-    'RateLimitError',
-    'AuthenticationError',
-    'PermissionError',
+    'NotFoundError',
     'DatabaseError',
-    'CacheOperationError',
+    'RepositoryError',
+    'NetworkError',
+    'ServiceError',
     'ExternalServiceError',
-    'ConfigurationError'
-] 
+    'RateLimitError',
+    'RateLimitExceededError',
+    'IntegrationError',
+    
+    # Market exceptions
+    'MarketError',
+    'MarketValidationError',
+    'InvalidMarketDataError',
+    'MarketNotFoundError',
+    'MarketConnectionError',
+    'MarketRateLimitError',
+    'MarketConfigurationError',
+    'MarketOperationError',
+    'MarketAuthenticationError',
+    'InvalidDealDataError',
+    
+    # Deal exceptions
+    'DealError',
+    'DealNotFoundError',
+    'InvalidDealDataError',
+    'DealExpirationError',
+    'DealPriceError',
+    'DealValidationError',
+    'DealProcessingError',
+    'DealScoreError',
+    'DealAnalysisError',
+    
+    # User exceptions
+    'UserError',
+    'UserNotFoundError',
+    'DuplicateUserError',
+    'InvalidUserDataError',
+    'UserValidationError',
+    
+    # Token exceptions
+    'TokenError',
+    'TokenBalanceError',
+    'TokenTransactionError',
+    'TokenValidationError',
+    'TokenRateLimitError',
+    'InsufficientBalanceError',
+    'InsufficientTokensError',
+    'SmartContractError',
+    'InvalidBalanceChangeError',
+    'TokenPricingError',
+    'InvalidPricingError',
+    'TokenNetworkError',
+    'TokenOperationError',
+    'TokenServiceError',
+    'TokenNotFoundError',
+    
+    # Wallet exceptions
+    'WalletError',
+    'WalletNotFoundError',
+    'WalletConnectionError',
+    'WalletValidationError',
+    'WalletAlreadyConnectedError',
+    'WalletOperationError',
+    
+    # Goal exceptions
+    'GoalError',
+    'GoalValidationError',
+    'GoalNotFoundError',
+    'InvalidGoalDataError',
+    'GoalConstraintError',
+    'GoalLimitExceededError',
+    'GoalStatusError',
+    'GoalCreationError',
+    'GoalUpdateError',
+    'InvalidGoalConstraintsError',
+    'DealMatchError',
+    
+    # Agent exceptions
+    'AgentError',
+    'AgentNotFoundError',
+    'AgentCommunicationError',
+    'AgentTimeoutError',
+    'AgentMemoryError',
+    'AgentDecisionError',
+    
+    # Notification exceptions
+    'NotificationError',
+    'NotificationNotFoundError',
+    'NotificationDeliveryError',
+    'NotificationRateLimitError',
+    'InvalidNotificationTemplateError',
+    
+    # Crawler exceptions
+    'CrawlerError',
+    'CrawlerRequestError',
+    'CrawlerParsingError',
+    'CrawlerRateLimitError',
+    'CrawlerBlockedError',
+    'InvalidCrawlerConfigError',
+    
+    # Auth exceptions
+    'AuthError',
+    'InvalidCredentialsError',
+    'SessionExpiredError',
+    'PermissionDeniedError',
+    'TwoFactorRequiredError',
+    'InvalidTwoFactorCodeError',
+    'AuthenticationError',
+    'AuthorizationError',
+    
+    # API exceptions
+    'APIError',
+    'APIRequestError',
+    'APIRateLimitError',
+    'APIAuthenticationError',
+    'APITimeoutError',
+    'APIResponseValidationError',
+    'APIServiceUnavailableError',
+    'AIServiceError',
+    
+    # Analytics exceptions
+    'AnalyticsError',
+    'AnalyticsProcessingError',
+    'AnalyticsDataError',
+    'AnalyticsValidationError',
+
+    # Cache exceptions
+    'CacheError',
+    'CacheOperationError',
+    'CacheConnectionError',
+    'CacheKeyError',
+    'CacheTimeoutError',
+    'CacheCapacityError',
+
+    # Data exceptions
+    'DataError',
+    'DataProcessingError',
+    'DataValidationError',
+    'DataTransformationError',
+    'DataIntegrityError',
+    'DataSyncError',
+    'DataQualityError'
+]

@@ -8,8 +8,23 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.models.user import User
-from core.exceptions import DatabaseError
+""" from core.exceptions import (
+    DatabaseError,
+    UserError,
+    ValidationError,
+    AuthenticationError,
+    NotFoundError,
+    DuplicateError,
+    PermissionDeniedError,
+    TokenError,
+    APIError,
+    CacheOperationError
+) 
+DO NOT DELETE THIS COMMENT
+"""
+from core.exceptions import Exception  # We'll use base Exception temporarily
 from core.database import get_db_session
+
 
 async def get_user_by_email(email: str) -> Optional[User]:
     """Retrieve a user by their email address.

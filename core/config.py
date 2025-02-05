@@ -10,32 +10,38 @@ from functools import lru_cache
 import os
 from pathlib import Path
 from pydantic import PostgresDsn, RedisDsn, SecretStr, HttpUrl, EmailStr, conint, confloat
+from . import constants
 
-# Get the backend directory path
-BACKEND_DIR = Path(__file__).resolve().parent.parent
+try:
+    BACKEND_DIR = Path(__file__).resolve().parent.parent
+except Exception:
+    BACKEND_DIR = Path(os.getcwd()) / 'backend'
 
 class Settings(BaseSettings):
     """Application settings"""
     # Application
-    APP_NAME: str = "AI Deals System"
-    APP_VERSION: str = "1.0.0"
+    APP_NAME: str = "AI Agentic Deals System"
+    APP_VERSION: str = constants.API_VERSION
+    APP_DESCRIPTION: str = "AI-powered deal monitoring system"
+    APP_ENV: str = "development"
     DEBUG: bool = False
+    TESTING: bool = False
     ENVIRONMENT: str = "production"
-    SECRET_KEY: SecretStr
-    API_PREFIX: str = "/api/v1"
+    SECRET_KEY: SecretStr = SecretStr("your-secret-key-here")  # Default for development
+    API_PREFIX: str = constants.API_PREFIX
     ALLOWED_HOSTS: List[str] = ["*"]
 
     # Database
-    POSTGRES_USER: str
-    POSTGRES_PASSWORD: SecretStr
-    POSTGRES_DB: str
-    POSTGRES_HOST: str
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: SecretStr = SecretStr("postgres")
+    POSTGRES_DB: str = "deals"
+    POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: conint(ge=1, le=65535) = 5432
     DATABASE_URL: Optional[PostgresDsn] = None
-    DB_POOL_SIZE: conint(ge=1) = 20
-    DB_MAX_OVERFLOW: conint(ge=0) = 10
-    DB_POOL_TIMEOUT: conint(ge=1) = 30
-    DB_POOL_RECYCLE: conint(ge=1) = 1800  # 30 minutes
+    DB_POOL_SIZE: conint(ge=1) = constants.DB_POOL_SIZE
+    DB_MAX_OVERFLOW: conint(ge=1) = constants.DB_MAX_OVERFLOW
+    DB_POOL_TIMEOUT: conint(ge=1) = constants.DB_POOL_TIMEOUT
+    DB_POOL_RECYCLE: conint(ge=1) = constants.DB_POOL_RECYCLE
     DB_MAX_RETRIES: conint(ge=1) = 3
     DB_RETRY_DELAY: confloat(ge=0.1) = 1.0
     DB_STATEMENT_TIMEOUT: conint(ge=1) = 30  # seconds
@@ -47,29 +53,34 @@ class Settings(BaseSettings):
         if self.DATABASE_URL:
             return str(self.DATABASE_URL)
         
-        return str(
-            PostgresDsn.build(
-                scheme="postgresql+asyncpg",
-                username=self.POSTGRES_USER,
-                password=self.POSTGRES_PASSWORD.get_secret_value(),
-                host=self.POSTGRES_HOST,
-                port=self.POSTGRES_PORT,
-                path=self.POSTGRES_DB
+        try:
+            return str(
+                PostgresDsn.build(
+                    scheme="postgresql+asyncpg",
+                    username=self.POSTGRES_USER,
+                    password=self.POSTGRES_PASSWORD.get_secret_value(),
+                    host=self.POSTGRES_HOST,
+                    port=self.POSTGRES_PORT,
+                    path=self.POSTGRES_DB
+                )
             )
-        )
+        except Exception as e:
+            raise ValueError(f"Invalid database configuration: {str(e)}")
 
     # Redis
-    REDIS_HOST: str
+    REDIS_HOST: str = "localhost"
     REDIS_PORT: conint(ge=1, le=65535) = 6379
     REDIS_DB: conint(ge=0) = 0
     REDIS_PASSWORD: Optional[SecretStr] = None
-    REDIS_SSL: bool = False  # Set to False by default for local development
+    REDIS_SSL: bool = False
     REDIS_POOL_SIZE: conint(ge=1) = 20
     REDIS_TIMEOUT: conint(ge=1) = 3
     REDIS_URL: Optional[RedisDsn] = None
     REDIS_MAX_RETRIES: conint(ge=1) = 3
     REDIS_RETRY_DELAY: confloat(ge=0.1) = 1.0
     REDIS_SOCKET_KEEPALIVE: bool = True
+    REDIS_KEY_PREFIX: str = constants.REDIS_KEY_PREFIX
+    REDIS_MAX_CONNECTIONS: conint(ge=1) = constants.REDIS_MAX_CONNECTIONS
 
     @property
     def redis_url(self) -> str:
@@ -77,18 +88,21 @@ class Settings(BaseSettings):
         if self.REDIS_URL:
             return str(self.REDIS_URL)
         
-        auth = f":{self.REDIS_PASSWORD.get_secret_value()}@" if self.REDIS_PASSWORD else ""
-        scheme = "rediss" if self.REDIS_SSL else "redis"
-        return f"{scheme}://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+        try:
+            auth = f":{self.REDIS_PASSWORD.get_secret_value()}@" if self.REDIS_PASSWORD else ""
+            scheme = "rediss" if self.REDIS_SSL else "redis"
+            return f"{scheme}://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+        except Exception as e:
+            raise ValueError(f"Invalid Redis configuration: {str(e)}")
 
     # Token System
-    SOL_NETWORK_RPC: HttpUrl
-    SOL_NETWORK: str = "mainnet-beta"  # mainnet-beta, testnet, or devnet
-    TOKEN_CONTRACT_ADDRESS: str  # SPL Token program address
+    SOL_NETWORK_RPC: HttpUrl = HttpUrl("https://api.mainnet-beta.solana.com")  # Default mainnet
+    SOL_NETWORK: str = "mainnet-beta"
+    TOKEN_CONTRACT_ADDRESS: str = ""  # Must be set in environment
     TOKEN_REQUIRED_BALANCE: confloat(ge=0) = 10.0
     TOKEN_SEARCH_COST: confloat(ge=0) = 1.0
-    TOKEN_DECIMALS: conint(ge=0, le=9) = 9  # Solana token decimals
-    COMMITMENT_LEVEL: str = "confirmed"  # Solana commitment level
+    TOKEN_DECIMALS: conint(ge=0, le=9) = 9
+    COMMITMENT_LEVEL: str = "confirmed"
     
     # Network settings
     MAX_RETRIES: conint(ge=1) = 3
@@ -97,16 +111,16 @@ class Settings(BaseSettings):
     WEBSOCKET_TIMEOUT: confloat(ge=1) = 60.0
 
     # Market APIs
-    AMAZON_ACCESS_KEY: SecretStr
-    AMAZON_SECRET_KEY: SecretStr
-    AMAZON_PARTNER_TAG: str
+    AMAZON_ACCESS_KEY: Optional[SecretStr] = None
+    AMAZON_SECRET_KEY: Optional[SecretStr] = None
+    AMAZON_PARTNER_TAG: str = ""
     AMAZON_COUNTRY: str = "US"
 
-    WALMART_CLIENT_ID: SecretStr
-    WALMART_CLIENT_SECRET: SecretStr
+    WALMART_CLIENT_ID: Optional[SecretStr] = None
+    WALMART_CLIENT_SECRET: Optional[SecretStr] = None
 
     # AI Services
-    DEEPSEEK_API_KEY: SecretStr
+    DEEPSEEK_API_KEY: Optional[SecretStr] = None
     OPENAI_API_KEY: Optional[SecretStr] = None
 
     # Rate Limiting
@@ -139,14 +153,14 @@ class Settings(BaseSettings):
         "https://deals.yourdomain.com",
         "https://api.deals.yourdomain.com"
     ]
-    JWT_ALGORITHM: str = "HS256"
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: conint(ge=1) = 30
-    JWT_REFRESH_TOKEN_EXPIRE_DAYS: conint(ge=1) = 7
+    JWT_ALGORITHM: str = constants.JWT_ALGORITHM
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: conint(ge=1) = constants.ACCESS_TOKEN_EXPIRE_MINUTES
+    JWT_REFRESH_TOKEN_EXPIRE_DAYS: conint(ge=1) = constants.REFRESH_TOKEN_EXPIRE_DAYS
     PASSWORD_RESET_TOKEN_EXPIRE_HOURS: conint(ge=1) = 24
-    MIN_PASSWORD_LENGTH: conint(ge=8) = 8
+    MIN_PASSWORD_LENGTH: conint(ge=8) = constants.PASSWORD_MIN_LENGTH
     REQUIRE_PASSWORD_CONFIRMATION: bool = True
-    MAX_LOGIN_ATTEMPTS: conint(ge=1) = 5
-    LOGIN_ATTEMPT_TIMEOUT: conint(ge=1) = 300  # 5 minutes
+    MAX_LOGIN_ATTEMPTS: conint(ge=1) = constants.MAX_LOGIN_ATTEMPTS
+    LOGIN_ATTEMPT_TIMEOUT: conint(ge=1) = constants.LOCKOUT_DURATION_MINUTES * 60
 
     # Logging
     LOG_LEVEL: str = "INFO"

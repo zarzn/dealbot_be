@@ -7,6 +7,9 @@ This module exports all models and their Pydantic schemas for the AI Agentic Dea
 from .base import Base
 from .database import BaseRepository, get_db
 
+# Enums
+from .enums import MarketType, MarketStatus, MarketCategory
+
 # User models
 from .user import (
     User, UserBase, UserCreate, UserUpdate, UserResponse,
@@ -32,16 +35,28 @@ from .deal import (
 
 # Token models
 from .token import (
-    TokenTransaction, TokenWallet,
-    TransactionType, TransactionStatus,
-    TransactionCreate, TransactionUpdate, TransactionResponse,
-    TokenWalletCreate, TokenWalletResponse
+    TokenTransaction,
+    TokenWallet,
+    TokenPrice,
+    TokenBalance,
+    TransactionType,
+    TransactionStatus,
+    TransactionCreate,
+    TransactionUpdate,
+    TransactionResponse,
+    TokenWalletCreate,
+    TokenWalletUpdate,
+    TokenWalletResponse,
+    TokenPriceResponse,
+    TokenBalanceResponse
 )
+from .token_balance_history import TokenBalanceHistory
+from .token_pricing import TokenPricing
 
 # Market models
 from .market import (
     Market, MarketCreate, MarketUpdate, MarketResponse,
-    MarketType, MarketStatus, MarketCategory, MarketStats
+    MarketStats
 )
 
 # Notification models
@@ -65,6 +80,11 @@ __all__ = [
     'Base',
     'BaseRepository',
     'get_db',
+
+    # Enums
+    'MarketType',
+    'MarketStatus',
+    'MarketCategory',
 
     # User
     'User',
@@ -96,22 +116,26 @@ __all__ = [
     # Token
     'TokenTransaction',
     'TokenWallet',
+    'TokenPrice',
+    'TokenBalance',
+    'TokenBalanceHistory',
+    'TokenPricing',
     'TransactionType',
     'TransactionStatus',
     'TransactionCreate',
     'TransactionUpdate',
     'TransactionResponse',
     'TokenWalletCreate',
+    'TokenWalletUpdate',
     'TokenWalletResponse',
+    'TokenPriceResponse',
+    'TokenBalanceResponse',
 
     # Market
     'Market',
     'MarketCreate',
     'MarketUpdate',
     'MarketResponse',
-    'MarketType',
-    'MarketStatus',
-    'MarketCategory',
     'MarketStats',
 
     # Notification

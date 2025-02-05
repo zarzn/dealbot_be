@@ -1,14 +1,16 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, NoReturn
 from datetime import datetime, timedelta
 import asyncio
 from celery import shared_task
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import async_session_factory
-from ..models.notification import Notification, NotificationType
-from ..services.notification import NotificationService
-from ..utils.redis import get_redis_client
-from ..utils.logger import get_logger
+from core.database import async_session_factory
+from core.models.notification import Notification, NotificationType
+from core.services.notification import NotificationService
+from core.utils.redis import get_redis_client, RedisError
+from core.utils.logger import get_logger
+from core.exceptions.notification_exceptions import NotificationProcessingError
 
 logger = get_logger(__name__)
 
@@ -19,7 +21,7 @@ logger = get_logger(__name__)
     default_retry_delay=60,
     rate_limit="100/m"
 )
-def process_notifications(self) -> Dict[str, Any]:
+def process_notifications(self, *, session: Optional[AsyncSession] = None) -> Dict[str, Any]:
     """Process pending notifications"""
     try:
         # Run async task
@@ -59,11 +61,11 @@ async def _process_notifications_async() -> Dict[str, Any]:
             for notification in notifications:
                 try:
                     if notification.type == NotificationType.EMAIL:
-                        await notification_service._send_email_notification(notification)
+                        await notification_service.send_email_notification(notification)
                     elif notification.type == NotificationType.PUSH:
-                        await notification_service._send_push_notification(notification)
+                        await notification_service.send_push_notification(notification)
                     elif notification.type == NotificationType.SMS:
-                        await notification_service._send_sms_notification(notification)
+                        await notification_service.send_sms_notification(notification)
 
                     notification.sent_at = datetime.utcnow()
                     processed += 1
@@ -130,13 +132,17 @@ async def _cleanup_old_notifications_async(days: int) -> Dict[str, Any]:
 
             await session.commit()
 
-            # Clean up Redis cache
-            redis = await get_redis_client()
-            for notification in notifications:
-                await redis.delete(f"notification:{notification.id}")
-                # Remove from user's notification list
-                user_key = f"user:{notification.user_id}:notifications"
-                await redis.lrem(user_key, 0, notification.id)
+            try:
+                # Clean up Redis cache
+                redis = await get_redis_client()
+                for notification in notifications:
+                    await redis.delete(f"notification:{notification.id}")
+                    # Remove from user's notification list
+                    user_key = f"user:{notification.user_id}:notifications"
+                    await redis.lrem(user_key, 0, notification.id)
+            except RedisError as e:
+                logger.error(f"Redis cleanup error: {str(e)}")
+                # Continue since DB cleanup was successful
 
             return {
                 "status": "success",
@@ -144,7 +150,7 @@ async def _cleanup_old_notifications_async(days: int) -> Dict[str, Any]:
                 "deleted": len(notifications)
             }
 
-        except Exception as e:
+        except (NotificationProcessingError, Exception) as e:
             await session.rollback()
             logger.error(f"Error in notification cleanup task: {str(e)}")
             raise
@@ -226,4 +232,4 @@ async def _send_batch_notifications_async(
 
         except Exception as e:
             logger.error(f"Error in batch notification task: {str(e)}")
-            raise 
+            raise

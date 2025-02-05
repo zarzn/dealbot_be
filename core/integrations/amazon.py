@@ -2,13 +2,13 @@ from typing import Dict, Any, List, Optional
 import aiohttp
 import asyncio
 from datetime import datetime
-from amazon.paapi import AmazonAPI
-from amazon.paapi import SearchIndex
+from amazon_paapi import AmazonApi
+from amazon_paapi.tools import get_asin
 
-from .base import BaseMarketIntegration
-from ..models.market import MarketType
-from ..exceptions import IntegrationError, ValidationError
-from ..utils.redis import get_redis_client
+from core.integrations.base import BaseMarketIntegration, IntegrationError
+from core.models.market import MarketType
+from core.exceptions import ValidationError
+from core.utils.redis import get_redis_client
 
 class AmazonIntegration(BaseMarketIntegration):
     REQUIRED_CREDENTIALS = ["access_key", "secret_key", "partner_tag", "country"]
@@ -24,7 +24,7 @@ class AmazonIntegration(BaseMarketIntegration):
 
     def _initialize_client(self) -> None:
         try:
-            self.client = AmazonAPI(
+            self.client = AmazonApi(
                 self.credentials["access_key"],
                 self.credentials["secret_key"],
                 self.credentials["partner_tag"],
@@ -49,7 +49,8 @@ class AmazonIntegration(BaseMarketIntegration):
             if cached_result:
                 return cached_result
 
-            search_index = SearchIndex.ALL if not category else getattr(SearchIndex, category.upper(), SearchIndex.ALL)
+            # Use category as search index if provided, otherwise search all
+            search_index = category.upper() if category else "All"
             
             products = await asyncio.to_thread(
                 self.client.search_items,

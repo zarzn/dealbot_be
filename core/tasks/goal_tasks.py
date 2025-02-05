@@ -1,12 +1,16 @@
 from typing import Optional
 from uuid import UUID
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_db
-from core.models.goal import GoalUpdate
-from core.services.goal import GoalService
-from core.exceptions import GoalProcessingError
+from core.models.goal_types import GoalStatus
+from core.services.token_service import TokenService
+from core.exceptions.base import BaseError as CoreBaseError
+from core.exceptions.goal_exceptions import GoalProcessingError
+from core.models.database import Goal as GoalModel
+from sqlalchemy.future import select
+from sqlalchemy import update
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +20,19 @@ async def update_goal_status_task(
     db: Optional[AsyncSession] = None
 ) -> None:
     """Background task to update goal status based on conditions"""
+    db_to_close: Optional[AsyncSession] = None
     try:
         if db is None:
-            db = await get_db()
+            db_to_close = await get_db()
+            db = db_to_close
             
-        goal_service = GoalService(db)
-        goal = await goal_service.get_goal(user_id, goal_id)
+        # Get the goal directly from database
+        result = await db.execute(
+            select(GoalModel)
+            .where(GoalModel.id == goal_id)
+            .where(GoalModel.user_id == user_id)
+        )
+        goal = result.scalar_one_or_none()
         
         if not goal:
             logger.warning(f"Goal {goal_id} not found for status update")
@@ -29,15 +40,20 @@ async def update_goal_status_task(
             
         # Check if goal has expired
         if goal.deadline and datetime.utcnow() > goal.deadline:
-            await goal_service.update_goal_status(user_id, goal_id, "expired")
+            await db.execute(
+                update(GoalModel)
+                .where(GoalModel.id == goal_id)
+                .values(status=GoalStatus.EXPIRED.value, updated_at=datetime.utcnow())
+            )
+            await db.commit()
             logger.info(f"Goal {goal_id} marked as expired")
             return
             
         # Add other status update logic here
         
-    except Exception as e:
+    except CoreBaseError as e:
         logger.error(f"Failed to update goal status: {str(e)}")
-        raise GoalProcessingError(f"Failed to update goal status: {str(e)}")
+        raise GoalProcessingError(f"Failed to update goal status: {str(e)}") from e
     finally:
-        if db:
-            await db.close() 
+        if db_to_close:
+            await db_to_close.close()

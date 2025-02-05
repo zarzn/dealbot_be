@@ -1,7 +1,7 @@
 """API dependencies."""
 
-from typing import AsyncGenerator
-from fastapi import Depends
+from typing import AsyncGenerator, Optional
+from fastapi import Depends, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db_session as get_db
@@ -44,16 +44,23 @@ async def get_deal_service(db: AsyncSession = Depends(get_db)) -> DealService:
     """Get deal service instance."""
     return DealService(DealRepository(db))
 
-async def get_goal_service(db: AsyncSession = Depends(get_db)) -> GoalService:
+async def get_goal_service(
+    db: AsyncSession = Depends(get_db),
+    token_service: TokenService = Depends(get_token_service),
+    background_tasks: Optional[BackgroundTasks] = None
+) -> GoalService:
     """Get goal service instance."""
-    return GoalService(GoalRepository(db))
+    return GoalService(
+        db=db,
+        token_service=token_service,
+        background_tasks=background_tasks
+    )
 
 async def get_market_search_service(
-    db: AsyncSession = Depends(get_db),
-    market_service: MarketService = Depends(get_market_service)
+    db: AsyncSession = Depends(get_db)
 ) -> MarketSearchService:
     """Get market search service instance."""
-    return MarketSearchService(db, market_service)
+    return MarketSearchService(market_repository=MarketRepository(db))
 
 async def get_deal_analysis_service(
     db: AsyncSession = Depends(get_db),
@@ -61,7 +68,11 @@ async def get_deal_analysis_service(
     deal_service: DealService = Depends(get_deal_service)
 ) -> DealAnalysisService:
     """Get deal analysis service instance."""
-    return DealAnalysisService(db, market_service, deal_service)
+    return DealAnalysisService(
+        session=db,
+        market_service=market_service,
+        deal_service=deal_service
+    )
 
 __all__ = [
     'get_token_service',

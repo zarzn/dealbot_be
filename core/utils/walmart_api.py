@@ -13,13 +13,13 @@ import urllib.parse
 import aiohttp
 import time
 
-from ..exceptions import (
+from core.exceptions import (
     MarketConnectionError,
     MarketRateLimitError,
     MarketAuthenticationError,
     InvalidDealDataError
 )
-from ..config import settings
+from core.config import settings
 from .web_crawler import WebCrawler
 
 logger = logging.getLogger(__name__)

@@ -20,7 +20,6 @@ from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.sql import expression
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-
 from core.models.base import Base
 from core.exceptions import ValidationError
 
@@ -42,7 +41,7 @@ class DealScore(Base):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     score_type: Mapped[str] = mapped_column(String(50), default="ai")
-    metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    score_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     # Relationships
@@ -61,7 +60,7 @@ class DealScore(Base):
             'confidence': float(self.confidence),
             'timestamp': self.timestamp.isoformat(),
             'score_type': self.score_type,
-            'metadata': self.metadata,
+            'score_metadata': self.score_metadata,
             'created_at': self.created_at.isoformat()
         })
 
@@ -85,7 +84,7 @@ class DealScore(Base):
                 deal_id=deal_id,
                 score=score,
                 confidence=confidence,
-                metadata=metrics
+                score_metadata=metrics
             )
             db.add(score_obj)
             await db.commit()
@@ -123,7 +122,7 @@ class DealScore(Base):
         """Update score metrics."""
         try:
             if metrics is not None:
-                self.metadata = metrics
+                self.score_metadata = metrics
 
             await db.commit()
             await db.refresh(self)
@@ -133,7 +132,7 @@ class DealScore(Base):
                 extra={
                     'id': str(self.id),
                     'deal_id': str(self.deal_id),
-                    'metadata': self.metadata
+                    'score_metadata': self.score_metadata
                 }
             )
 
@@ -183,7 +182,7 @@ class DealScoreResponse(BaseModel):
     confidence: float
     timestamp: datetime
     score_type: str
-    metadata: Optional[Dict[str, Any]]
+    score_metadata: Optional[Dict[str, Any]]
     created_at: datetime
 
     class Config:
