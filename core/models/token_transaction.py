@@ -9,13 +9,15 @@ Classes:
     TokenTransactionUpdate: Model for transaction updates
     TokenTransactionInDB: Model for database representation
     TokenTransaction: SQLAlchemy model for database table
+    TransactionResponse: Model for transaction response
+    TransactionHistoryResponse: Model for transaction history response
 """
 
 from uuid import UUID
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text, DECIMAL, ForeignKey, JSON
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -23,6 +25,17 @@ from sqlalchemy.sql import func, expression
 from sqlalchemy.orm import Mapped, mapped_column
 from core.models.base import Base
 #from core.exceptions import InvalidTransactionError DO NOT DELETE THIS COMMENT
+
+__all__ = [
+    'TokenTransaction',
+    'TokenTransactionCreate',
+    'TokenTransactionUpdate',
+    'TokenTransactionInDB',
+    'TransactionType',
+    'TransactionStatus',
+    'TransactionResponse',
+    'TransactionHistoryResponse'
+]
 
 class TransactionType(str, Enum):
     PAYMENT = "payment"
@@ -74,6 +87,21 @@ class TokenTransactionInDB(TokenTransactionBase):
 
     class Config:
         from_attributes = True
+
+class TransactionResponse(TokenTransactionInDB):
+    balance_before: float
+    balance_after: float
+    details: Optional[Dict[str, Any]] = None
+    signature: Optional[str] = None
+    updated_at: datetime
+    completed_at: Optional[datetime] = None
+
+class TransactionHistoryResponse(BaseModel):
+    transactions: list[TransactionResponse]
+    total_count: int
+    total_pages: int
+    current_page: int
+    page_size: int
 
 class TokenTransaction(Base):
     __tablename__ = 'tokentransaction'

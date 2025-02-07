@@ -710,4 +710,43 @@ class MarketRepository:
             )
             if isinstance(e, MarketError):
                 raise
-            raise MarketError(f"Failed to get market health: {str(e)}") 
+            raise MarketError(f"Failed to get market health: {str(e)}")
+
+class MarketCategory(str, enum.Enum):
+    """Market category types."""
+    ELECTRONICS = "electronics"
+    FASHION = "fashion"
+    HOME = "home"
+    TOYS = "toys"
+    SPORTS = "sports"
+    BOOKS = "books"
+    AUTOMOTIVE = "automotive"
+    HEALTH = "health"
+    BEAUTY = "beauty"
+    GROCERY = "grocery"
+    PETS = "pets"
+    OFFICE = "office"
+    TOOLS = "tools"
+    GARDEN = "garden"
+    OTHER = "other"
+
+class MarketCondition(str, enum.Enum):
+    """Product condition types."""
+    NEW = "new"
+    LIKE_NEW = "like_new"
+    VERY_GOOD = "very_good"
+    GOOD = "good"
+    ACCEPTABLE = "acceptable"
+    REFURBISHED = "refurbished"
+    USED = "used"
+    FOR_PARTS = "for_parts"
+
+class MarketSource(str, enum.Enum):
+    """Market source types."""
+    AMAZON = "amazon"
+    WALMART = "walmart"
+    EBAY = "ebay"
+    TARGET = "target"
+    BESTBUY = "bestbuy"
+    NEWEGG = "newegg"
+    OTHER = "other" 

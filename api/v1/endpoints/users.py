@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional, Any, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
+import logging
+from uuid import uuid4
 
 from core.database import get_db
 from core.services.auth import (
@@ -17,28 +19,119 @@ from core.services.auth import (
     get_password_hash
 )
 from core.services.email import send_password_reset_email, send_verification_email
-from core.models.user import UserPreferences, User
-from core.exceptions import UserNotFoundError
+from core.models.user import UserPreferences, User, UserCreate, UserResponse, UserStatus
+from core.exceptions import UserNotFoundError, UserError
 
-router = APIRouter(prefix="/users", tags=["users"])
+router = APIRouter(tags=["users"])
+logger = logging.getLogger(__name__)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-class UserCreate(BaseModel):
-    email: str
-    password: str
-    referral_code: Optional[str] = None
+class UserRegistrationRequest(BaseModel):
+    """Model for user registration request"""
+    email: EmailStr = Field(..., description="User's email address")
+    password: str = Field(
+        ...,
+        min_length=8,
+        max_length=128,
+        pattern=r'[A-Za-z\d@$!%*#?&]{8,}',
+        description="User password (must be at least 8 characters long and contain letters, numbers, and special characters)"
+    )
+    referral_code: Optional[str] = Field(
+        None,
+        min_length=6,
+        max_length=10,
+        pattern=r'^[A-Z0-9]{6,10}$',
+        description="User referral code"
+    )
 
 class UserResponse(BaseModel):
     id: str
     email: str
+    sol_address: Optional[str] = None
+    referral_code: Optional[str] = None
     token_balance: float
+    preferences: Optional[dict] = None
+    notification_channels: Optional[list] = None
+    status: UserStatus
     created_at: str
+    updated_at: Optional[str] = None
+    last_payment_at: Optional[str] = None
+    active_goals_count: int
+    total_deals_found: int
+    success_rate: float
+    total_tokens_spent: float
+    total_rewards_earned: float
 
-@router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register_user(user: UserCreate, db: AsyncSession = Depends(get_db)) -> Any:
-    """Register a new user"""
-    return {"message": "User registration endpoint"}
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+async def register_user(user: UserRegistrationRequest, db: AsyncSession = Depends(get_db)) -> Any:
+    """Register a new user with proper validation and error handling"""
+    try:
+        logger.info(f"Starting user registration process for email: {user.email}")
+        
+        # Check if user already exists
+        existing_user = await User.get_by_email(db, user.email)
+        if existing_user:
+            logger.warning(f"Registration failed: Email already exists: {user.email}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already registered"
+            )
+        
+        logger.info(f"Creating new user with email: {user.email}")
+        # Create new user with default values
+        new_user = await User.create(db, **{
+            "email": user.email,
+            "password": get_password_hash(user.password),
+            "referral_code": user.referral_code,
+            "token_balance": 0.0,
+            "status": UserStatus.ACTIVE,
+            "preferences": {
+                "theme": "light",
+                "notifications": "all",
+                "email_notifications": True,
+                "push_notifications": False,
+                "telegram_notifications": False,
+                "discord_notifications": False,
+                "deal_alert_threshold": 0.8,
+                "auto_buy_enabled": False,
+                "auto_buy_threshold": 0.95,
+                "max_auto_buy_amount": 100.0,
+                "language": "en",
+                "timezone": "UTC"
+            },
+            "notification_channels": ["in_app", "email"]
+        })
+        
+        logger.info(f"User created successfully with ID: {new_user.id}")
+        
+        return UserResponse(
+            id=str(new_user.id),
+            email=new_user.email,
+            sol_address=new_user.sol_address,
+            referral_code=new_user.referral_code,
+            token_balance=float(new_user.token_balance),
+            preferences=new_user.preferences,
+            notification_channels=new_user.notification_channels,
+            status=new_user.status,
+            created_at=str(new_user.created_at),
+            updated_at=str(new_user.updated_at) if new_user.updated_at else None,
+            last_payment_at=str(new_user.last_payment_at) if new_user.last_payment_at else None,
+            active_goals_count=0,
+            total_deals_found=0,
+            success_rate=0.0,
+            total_tokens_spent=0.0,
+            total_rewards_earned=0.0
+        )
+    except HTTPException as he:
+        logger.error(f"HTTP Exception during registration: {str(he)}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error during registration: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred during registration: {str(e)}"
+        )
 
 @router.post("/login", response_model=Token)
 async def login(
@@ -46,19 +139,34 @@ async def login(
     db: AsyncSession = Depends(get_db)
 ) -> Any:
     """Login user"""
-    user = await authenticate_user(form_data.username, form_data.password, db)
-    if not user:
+    try:
+        logger.info(f"Login attempt for user: {form_data.username}")
+        logger.debug(f"Received form data: username={form_data.username}, password_length={len(form_data.password) if form_data.password else 0}")
+        
+        user = await authenticate_user(form_data.username, form_data.password, db)
+        if not user:
+            logger.warning(f"Failed login attempt for user: {form_data.username}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            
+        logger.info(f"Successful login for user: {form_data.username}")
+        access_token, refresh_token = await create_tokens({"sub": str(user.id)})
+        
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer"
+        }
+    except Exception as e:
+        logger.error(f"Login error for user {form_data.username}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
+            detail="Authentication failed",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    access_token, refresh_token = await create_tokens({"sub": user.email})
-    return {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": "bearer"
-    }
 
 @router.get("/me", response_model=UserResponse)
 async def get_user_me(

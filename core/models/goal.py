@@ -21,7 +21,7 @@ from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator, model_validator, conint, confloat
 from sqlalchemy import (
     Column, String, Integer, DateTime, select, update, func, Numeric, text,
-    Index, CheckConstraint, UniqueConstraint, Enum as SQLAlchemyEnum
+    Index, CheckConstraint, UniqueConstraint, Enum as SQLEnum, ForeignKey
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -210,21 +210,24 @@ class Goal(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
-    item_category: Mapped[str] = mapped_column(SQLAlchemyEnum(MarketCategory), nullable=False)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    item_category: Mapped[str] = mapped_column(
+        SQLEnum(MarketCategory, name='marketcategory', create_constraint=True, native_enum=True, values_callable=lambda obj: [e.value for e in obj]),
+        nullable=False
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     constraints: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
     deadline: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(
-        SQLAlchemyEnum(GoalStatus),
+        SQLEnum(GoalStatus, name='goalstatus', create_constraint=True, native_enum=True, values_callable=lambda obj: [e.value for e in obj]),
         nullable=False,
-        default=GoalStatus.ACTIVE,
+        default=GoalStatus.ACTIVE.value,
         server_default=GoalStatus.ACTIVE.value
     )
     priority: Mapped[int] = mapped_column(
-        SQLAlchemyEnum(GoalPriority),
+        Integer,
         nullable=False,
-        default=GoalPriority.MEDIUM,
+        default=GoalPriority.MEDIUM.value,
         server_default=str(GoalPriority.MEDIUM.value)
     )
     max_matches: Mapped[Optional[int]] = mapped_column(Integer)
@@ -233,12 +236,12 @@ class Goal(Base):
     auto_buy_threshold: Mapped[Optional[float]] = mapped_column(Numeric(3, 2))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=text('NOW()')
+        server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=text('NOW()'),
-        onupdate=text('NOW()')
+        server_default=func.now(),
+        onupdate=func.now()
     )
     last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     matches_found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -250,44 +253,46 @@ class Goal(Base):
     best_match_score: Mapped[Optional[float]] = mapped_column(Numeric(3, 2))
     average_match_score: Mapped[Optional[float]] = mapped_column(Numeric(3, 2))
     active_deals_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    success_rate: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False, default=0.0)
+    success_rate: Mapped[float] = mapped_column(Numeric(3, 2), nullable=False, default=0.0)
 
     # Relationships
+    user = relationship("User", back_populates="goals")
     deals = relationship("Deal", back_populates="goal", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="goal", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         """String representation of the goal."""
-        return f"<Goal {self.title} ({self.status.value})>"
+        return f"<Goal {self.id}: {self.title} ({self.status})>"
 
-    def to_json(self) -> str:
-        """Convert goal to JSON string."""
-        return json.dumps({
-            'id': str(self.id),
-            'user_id': str(self.user_id),
-            'item_category': self.item_category.value if isinstance(self.item_category, MarketCategory) else self.item_category,
-            'title': self.title,
-            'constraints': self.constraints,
-            'deadline': self.deadline.isoformat() if self.deadline else None,
-            'status': self.status.value if isinstance(self.status, GoalStatus) else self.status,
-            'priority': int(self.priority.value if isinstance(self.priority, GoalPriority) else self.priority),
-            'max_matches': self.max_matches,
-            'max_tokens': float(self.max_tokens) if self.max_tokens is not None else None,
-            'notification_threshold': float(self.notification_threshold) if self.notification_threshold is not None else None,
-            'auto_buy_threshold': float(self.auto_buy_threshold) if self.auto_buy_threshold is not None else None,
-            'created_at': self.created_at.isoformat(),
-            'updated_at': self.updated_at.isoformat(),
-            'last_checked_at': self.last_checked_at.isoformat() if self.last_checked_at else None,
-            'matches_found': self.matches_found,
-            'deals_processed': self.deals_processed,
-            'tokens_spent': float(self.tokens_spent),
-            'rewards_earned': float(self.rewards_earned),
-            'last_processed_at': self.last_processed_at.isoformat() if self.last_processed_at else None,
-            'processing_stats': self.processing_stats,
-            'best_match_score': float(self.best_match_score) if self.best_match_score is not None else None,
-            'average_match_score': float(self.average_match_score) if self.average_match_score is not None else None,
-            'active_deals_count': self.active_deals_count,
-            'success_rate': float(self.success_rate)
-        })
+    def to_json(self) -> Dict[str, Any]:
+        """Convert goal to JSON representation."""
+        return {
+            "id": str(self.id),
+            "user_id": str(self.user_id),
+            "item_category": self.item_category,
+            "title": self.title,
+            "constraints": self.constraints,
+            "deadline": self.deadline.isoformat() if self.deadline else None,
+            "status": self.status,
+            "priority": int(self.priority),
+            "max_matches": self.max_matches,
+            "max_tokens": float(self.max_tokens) if self.max_tokens else None,
+            "notification_threshold": float(self.notification_threshold) if self.notification_threshold else None,
+            "auto_buy_threshold": float(self.auto_buy_threshold) if self.auto_buy_threshold else None,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else None,
+            "matches_found": self.matches_found,
+            "deals_processed": self.deals_processed,
+            "tokens_spent": float(self.tokens_spent),
+            "rewards_earned": float(self.rewards_earned),
+            "last_processed_at": self.last_processed_at.isoformat() if self.last_processed_at else None,
+            "processing_stats": self.processing_stats,
+            "best_match_score": float(self.best_match_score) if self.best_match_score else None,
+            "average_match_score": float(self.average_match_score) if self.average_match_score else None,
+            "active_deals_count": self.active_deals_count,
+            "success_rate": float(self.success_rate)
+        }
 
     @classmethod
     async def create(

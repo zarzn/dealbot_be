@@ -331,3 +331,166 @@ __all__ = [
     'DataSyncError',
     'DataQualityError'
 ]
+
+# Exceptions module for AI Agentic Deals System
+
+class BaseError(Exception):
+    """Base error class for all custom exceptions."""
+    pass
+
+# Authentication Exceptions
+class AuthError(BaseError):
+    """Base class for authentication-related errors."""
+    pass
+
+class InvalidCredentialsError(AuthError):
+    """Raised when credentials are invalid."""
+    pass
+
+class TokenError(AuthError):
+    """Base class for token-related errors."""
+    pass
+
+class TokenValidationError(TokenError):
+    """Raised when token validation fails."""
+    pass
+
+class TokenBalanceError(TokenError):
+    """Raised when there are token balance issues."""
+    pass
+
+class InsufficientBalanceError(TokenBalanceError):
+    """Raised when user has insufficient token balance."""
+    pass
+
+class TokenTransactionError(TokenError):
+    """Raised when token transaction fails."""
+    pass
+
+class SmartContractError(TokenError):
+    """Raised when smart contract operation fails."""
+    pass
+
+# User Exceptions
+class UserError(BaseError):
+    """Base class for user-related errors."""
+    pass
+
+class UserNotFoundError(UserError):
+    """Raised when user is not found."""
+    def __init__(self, user_id: str):
+        self.message = f"User not found: {user_id}"
+        super().__init__(self.message)
+
+class UserValidationError(UserError):
+    """Raised when user validation fails."""
+    pass
+
+# Market Exceptions
+class MarketError(BaseError):
+    """Base class for market-related errors."""
+    pass
+
+class MarketValidationError(MarketError):
+    """Raised when market validation fails."""
+    pass
+
+class MarketNotFoundError(MarketError):
+    """Raised when market is not found."""
+    pass
+
+class MarketConnectionError(MarketError):
+    """Raised when connection to market fails."""
+    pass
+
+class MarketRateLimitError(MarketError):
+    """Raised when market rate limit is exceeded."""
+    pass
+
+class MarketConfigurationError(MarketError):
+    """Raised when market configuration is invalid."""
+    pass
+
+class MarketOperationError(MarketError):
+    """Raised when market operation fails."""
+    pass
+
+# Goal Exceptions
+class GoalError(BaseError):
+    """Base class for goal-related errors."""
+    pass
+
+class GoalNotFoundError(GoalError):
+    """Raised when goal is not found."""
+    pass
+
+class GoalValidationError(GoalError):
+    """Raised when goal validation fails."""
+    pass
+
+class GoalConstraintError(GoalError):
+    """Raised when goal constraints are invalid."""
+    pass
+
+class GoalStatusError(GoalError):
+    """Raised when goal status transition is invalid."""
+    pass
+
+class GoalCreationError(GoalError):
+    """Raised when goal creation fails."""
+    pass
+
+class GoalUpdateError(GoalError):
+    """Raised when goal update fails."""
+    pass
+
+# Notification Exceptions
+class NotificationError(BaseError):
+    """Base class for notification-related errors."""
+    pass
+
+class NotificationDeliveryError(NotificationError):
+    """Raised when notification delivery fails."""
+    pass
+
+class NotificationNotFoundError(NotificationError):
+    """Raised when notification is not found."""
+    pass
+
+class NotificationRateLimitError(NotificationError):
+    """Raised when notification rate limit is exceeded."""
+    pass
+
+class InvalidNotificationTemplateError(NotificationError):
+    """Raised when notification template is invalid."""
+    pass
+
+# Wallet Exceptions
+class WalletError(BaseError):
+    """Base class for wallet-related errors."""
+    pass
+
+class WalletConnectionError(WalletError):
+    """Raised when wallet connection fails."""
+    pass
+
+class WalletValidationError(WalletError):
+    """Raised when wallet validation fails."""
+    pass
+
+# Database Exceptions
+class DatabaseError(BaseError):
+    """Base class for database-related errors."""
+    pass
+
+class ValidationError(BaseError):
+    """Base class for validation-related errors."""
+    pass
+
+class ServiceError(BaseError):
+    """Base class for service-related errors."""
+    pass
+
+class InvalidGoalConstraintsError(ValidationError):
+    """Raised when goal constraints are invalid."""
+    pass

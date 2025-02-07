@@ -5,9 +5,9 @@ import psutil
 import os
 from datetime import datetime
 
-from ....core.database import get_session
-from ....core.utils.redis import get_redis_client
-from ....core.utils.logger import get_logger
+from core.database import get_db
+from core.utils.redis import get_redis_client
+from core.utils.logger import get_logger
 
 router = APIRouter(prefix="/health", tags=["health"])
 logger = get_logger(__name__)
@@ -23,7 +23,7 @@ async def health_check() -> Dict[str, Any]:
 
 @router.get("/detailed")
 async def detailed_health_check(
-    session: AsyncSession = Depends(get_session)
+    session: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
     """Detailed health check with component status"""
     status = {
@@ -105,7 +105,7 @@ async def detailed_health_check(
 
 @router.get("/readiness")
 async def readiness_check(
-    session: AsyncSession = Depends(get_session)
+    session: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
     """Readiness check for kubernetes/container orchestration"""
     try:

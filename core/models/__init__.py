@@ -35,20 +35,24 @@ from .deal import (
 
 # Token models
 from .token import (
-    TokenTransaction,
-    TokenWallet,
     TokenPrice,
     TokenBalance,
-    TransactionType,
-    TransactionStatus,
-    TransactionCreate,
-    TransactionUpdate,
-    TransactionResponse,
+    TokenWallet,
+    TokenPriceResponse,
+    TokenBalanceResponse,
     TokenWalletCreate,
     TokenWalletUpdate,
-    TokenWalletResponse,
-    TokenPriceResponse,
-    TokenBalanceResponse
+    TokenWalletResponse
+)
+from .token_transaction import (
+    TokenTransaction,
+    TokenTransactionCreate,
+    TokenTransactionUpdate,
+    TokenTransactionInDB,
+    TransactionType,
+    TransactionStatus,
+    TransactionResponse,
+    TransactionHistoryResponse
 )
 from .token_balance_history import TokenBalanceHistory
 from .token_pricing import TokenPricing
@@ -120,16 +124,18 @@ __all__ = [
     'TokenBalance',
     'TokenBalanceHistory',
     'TokenPricing',
+    'TokenTransactionCreate',
+    'TokenTransactionUpdate',
+    'TokenTransactionInDB',
     'TransactionType',
     'TransactionStatus',
-    'TransactionCreate',
-    'TransactionUpdate',
     'TransactionResponse',
     'TokenWalletCreate',
     'TokenWalletUpdate',
     'TokenWalletResponse',
     'TokenPriceResponse',
     'TokenBalanceResponse',
+    'TransactionHistoryResponse',
 
     # Market
     'Market',

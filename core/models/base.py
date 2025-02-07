@@ -10,13 +10,12 @@ from uuid import UUID
 import json
 import logging
 
-from sqlalchemy import Column, DateTime, text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy import Column, DateTime, text, MetaData
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.sql import expression
 
-from core.config import settings
 from core.exceptions import DatabaseError
 
 if TYPE_CHECKING:
@@ -26,9 +25,13 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar('T', bound='Base')
 
+# Create a single metadata instance
+metadata = MetaData()
+
 class Base(DeclarativeBase):
     """Base model class with common functionality."""
     
+    metadata = metadata
     id: Any
     __table__: ClassVar['Table']
     
@@ -135,33 +138,3 @@ class Base(DeclarativeBase):
                 extra={'id': str(self.id), 'error': str(e)}
             )
             raise DatabaseError(f"Failed to delete {self.__class__.__name__}: {str(e)}")
-
-# Database configuration
-engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=settings.DB_ECHO,
-    pool_size=settings.DB_POOL_SIZE,
-    max_overflow=settings.DB_MAX_OVERFLOW,
-    pool_timeout=settings.DB_POOL_TIMEOUT,
-    pool_recycle=settings.DB_POOL_RECYCLE
-)
-
-AsyncSessionLocal = sessionmaker(
-    bind=engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-    autocommit=False,
-    autoflush=False
-)
-
-async def get_db() -> AsyncSession:
-    """Get database session."""
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        except Exception as e:
-            await session.rollback()
-            logger.error("Database session error", extra={'error': str(e)})
-            raise DatabaseError(f"Database session error: {str(e)}")
-        finally:
-            await session.close()

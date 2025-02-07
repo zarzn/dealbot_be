@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Optional
 from pydantic_settings import BaseSettings
-from pydantic import model_validator, PostgresDsn, RedisDsn
+from pydantic import model_validator, PostgresDsn, RedisDsn, SecretStr
 import os
 from pathlib import Path
 
@@ -18,8 +18,8 @@ class BaseConfig(BaseSettings):
     ENVIRONMENT: str = "development"
     
     # Security
-    SECRET_KEY: str
-    JWT_SECRET: str
+    SECRET_KEY: SecretStr
+    JWT_SECRET: SecretStr
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7

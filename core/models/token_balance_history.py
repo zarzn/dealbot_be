@@ -13,12 +13,11 @@ Classes:
 from uuid import UUID
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.sql import func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text, ForeignKey
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from core.models.base import Base
 from core.exceptions import (
     ValidationError,
@@ -65,15 +64,22 @@ class TokenBalanceHistoryInDB(TokenBalanceHistoryBase):
 
 class TokenBalanceHistory(Base):
     __tablename__ = 'token_balance_history'
+    __table_args__ = {'extend_existing': True}
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, index=True)
-    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_balance_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("token_balances.id", ondelete="CASCADE"), nullable=False)
     balance_before: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
     balance_after: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
     change_amount: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
     change_type: Mapped[BalanceChangeType] = mapped_column(SQLEnum(BalanceChangeType), nullable=False)
     reason: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('NOW()'))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
+    data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+
+    # Relationships
+    user = relationship("User", back_populates="token_balance_history")
+    token_balance = relationship("TokenBalance", back_populates="history")
 
     def __repr__(self):
         return f"<TokenBalanceHistory {self.id}>"
@@ -103,3 +109,18 @@ class TokenBalanceHistory(Base):
             .filter(cls.user_id == user_id)\
             .order_by(cls.created_at.desc())\
             .first()
+
+class TokenBalanceHistoryResponse(BaseModel):
+    """Schema for token balance history response"""
+    id: UUID
+    user_id: UUID
+    balance_before: float
+    balance_after: float
+    change_amount: float
+    change_type: str
+    reason: str
+    created_at: datetime
+    data: Optional[Dict[str, Any]]
+
+    class Config:
+        from_attributes = True

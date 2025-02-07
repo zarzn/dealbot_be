@@ -34,6 +34,27 @@ class TokenScope(str, Enum):
     WRITE = "write"
     ADMIN = "admin"
 
+class AuthToken(Base):
+    """Authentication token database model."""
+    __tablename__ = "auth_tokens"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("auth_users.id", ondelete="CASCADE"))
+    token: Mapped[str] = mapped_column(String, unique=True, index=True)
+    token_type: Mapped[TokenType] = mapped_column(SQLEnum(TokenType))
+    status: Mapped[TokenStatus] = mapped_column(SQLEnum(TokenStatus), default=TokenStatus.ACTIVE)
+    scope: Mapped[TokenScope] = mapped_column(SQLEnum(TokenScope), default=TokenScope.FULL)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
+
+    # Relationships
+    user = relationship("AuthUser", back_populates="tokens")
+
+    def __repr__(self) -> str:
+        """String representation of the token."""
+        return f"<AuthToken(user_id={self.user_id}, type={self.token_type}, status={self.status})>"
+
 class Token(BaseModel):
     """Token schema."""
     access_token: str
@@ -90,6 +111,27 @@ class UserResponse(UserBase):
         """Pydantic model configuration."""
         from_attributes = True
 
+class UserProfile(Base):
+    """User profile database model."""
+    __tablename__ = "user_profiles"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("auth_users.id", ondelete="CASCADE"), unique=True)
+    first_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    last_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    timezone: Mapped[str] = mapped_column(String(50), nullable=False, default="UTC")
+    language: Mapped[str] = mapped_column(String(10), nullable=False, default="en")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
+
+    # Relationships
+    user = relationship("AuthUser", back_populates="profile")
+
+    def __repr__(self) -> str:
+        """String representation of the profile."""
+        return f"<UserProfile(user_id={self.user_id})>"
+
 class AuthUser(Base):
     """Authentication user database model."""
     __tablename__ = "auth_users"
@@ -112,7 +154,7 @@ class AuthUser(Base):
     )
 
     # Relationships
-    tokens = relationship("Token", back_populates="user", cascade="all, delete-orphan")
+    tokens = relationship("AuthToken", back_populates="user", cascade="all, delete-orphan")
     profile = relationship("UserProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
 
     def __repr__(self) -> str:

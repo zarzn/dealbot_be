@@ -19,15 +19,9 @@ from uuid import UUID
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import Column, String, DateTime, Numeric, Boolean, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column
 from core.models.base import Base
-from core.exceptions import (
-    ValidationError,
-    TokenError,
-    TokenPricingError,
-    InvalidPricingError
-)
+from core.exceptions import ValidationError, TokenError
 
 class ServiceType(str, Enum):
     SEARCH = "search"
@@ -46,7 +40,7 @@ class TokenPricingBase(BaseModel):
     @classmethod
     def validate_dates(cls, v: Optional[datetime], values: dict) -> Optional[datetime]:
         if v and 'valid_from' in values and v <= values['valid_from']:
-            raise InvalidPricingError("valid_to must be after valid_from")
+            raise ValidationError("valid_to must be after valid_from")
         return v
 
 class TokenPricingCreate(TokenPricingBase):
@@ -66,6 +60,7 @@ class TokenPricingInDB(TokenPricingBase):
 
 class TokenPricing(Base):
     __tablename__ = 'token_pricing'
+    __table_args__ = {'extend_existing': True}
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, index=True)
     service_type: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -73,7 +68,7 @@ class TokenPricing(Base):
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     valid_to: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('NOW()'))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
 
     def __repr__(self):
         return f"<TokenPricing {self.id}>"

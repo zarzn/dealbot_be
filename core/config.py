@@ -149,7 +149,13 @@ class Settings(BaseSettings):
 
     # Security
     SSL_REQUIRED: bool = True
-    CORS_ORIGINS: List[HttpUrl] = [
+    CORS_ORIGINS: List[Union[str, HttpUrl]] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost",
+        "http://127.0.0.1",
         "https://deals.yourdomain.com",
         "https://api.deals.yourdomain.com"
     ]
@@ -308,13 +314,14 @@ class Settings(BaseSettings):
                 }
             },
             "root": {
-                "level": self.LOG_LEVEL,
+                "level": "DEBUG",
                 "handlers": ["console"]
             },
             "loggers": {
-                "uvicorn": {"level": "INFO"},
+                "uvicorn": {"level": "DEBUG"},
                 "sqlalchemy": {"level": "WARNING"},
-                "celery": {"level": "INFO"}
+                "celery": {"level": "INFO"},
+                "fastapi": {"level": "DEBUG"}
             }
         }
 

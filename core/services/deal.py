@@ -30,7 +30,8 @@ from core.models.deal import (
     DealUpdate,
     DealStatus,
     DealPriority,
-    DealSource
+    DealSource,
+    DealSearchFilters
 )
 from core.models.goal import Goal
 from core.repositories.deal import DealRepository
@@ -566,33 +567,154 @@ class DealService:
             logger.error(f"Failed to get cached deal: {str(e)}")
             raise
 
-    async def search_deals(self, query: str, limit: int = 10) -> List[Deal]:
-        """Search deals with caching and rate limiting"""
+    async def search_deals(
+        self,
+        query: str,
+        limit: int = 10,
+        filters: Optional[DealSearchFilters] = None
+    ) -> List[Deal]:
+        """
+        Search for deals with caching and rate limiting.
+        
+        Args:
+            query: Search query string
+            limit: Maximum number of results
+            filters: Optional search filters
+            
+        Returns:
+            List of matching deals
+        """
         try:
-            # Try to get from cache first
-            cached_results = self._get_cached_search(query)
+            # Generate cache key based on query and filters
+            cache_key = f"deal_search:{query}:{limit}"
+            if filters:
+                cache_key += f":{filters.json()}"
+                
+            # Try to get cached results first
+            cached_results = await self._get_cached_search(cache_key)
             if cached_results:
+                logger.info(f"Cache hit for search query: {query}")
                 return cached_results
                 
-            # Search in database with rate limiting
-            results = await self._search_with_rate_limit(query, limit)
+            # Apply rate limiting
+            await self._check_rate_limit("search")
             
-            # Cache results with extended information
-            self._cache_search(query, results)
+            # Perform search with filters
+            results = await self._search_with_rate_limit(query, limit, filters)
+            
+            # Cache the results
+            await self._cache_search(cache_key, results)
             
             return results
-        except RateLimitExceededError:
-            logger.warning("Rate limit exceeded for search")
-            return []
-        except Exception as e:
-            logger.error(f"Failed to search deals: {str(e)}")
+            
+        except RateLimitExceededError as e:
+            logger.error(f"Rate limit exceeded for search: {str(e)}")
             raise
+        except Exception as e:
+            logger.error(f"Error in search_deals: {str(e)}")
+            raise DealError(f"Failed to search deals: {str(e)}")
 
-    @sleep_and_retry
-    @limits(calls=API_CALLS_PER_MINUTE, period=60)
-    async def _search_with_rate_limit(self, query: str, limit: int) -> List[Deal]:
-        """Search deals with rate limiting"""
-        return self.repository.search(query, limit)
+    async def _check_rate_limit(self, operation: str) -> None:
+        """Check rate limiting for specific operations."""
+        key = f"rate_limit:{operation}"
+        current = await self.redis.incr(key)
+        
+        if current == 1:
+            await self.redis.expire(key, 60)  # Reset after 1 minute
+            
+        if current > settings.RATE_LIMIT_PER_MINUTE:
+            raise RateLimitExceededError(
+                f"Rate limit exceeded for {operation}. Try again later."
+            )
+            
+    async def _search_with_rate_limit(
+        self,
+        query: str,
+        limit: int,
+        filters: Optional[DealSearchFilters] = None
+    ) -> List[Deal]:
+        """Perform rate-limited search operation."""
+        try:
+            # Build base query
+            base_query = self.repository.build_search_query(query)
+            
+            # Apply filters if provided
+            if filters:
+                base_query = self._apply_search_filters(base_query, filters)
+                
+            # Execute query with limit
+            results = await self.repository.execute_query(base_query, limit)
+            
+            # Enrich results with additional data
+            enriched_results = await self._enrich_search_results(results)
+            
+            return enriched_results
+            
+        except Exception as e:
+            logger.error(f"Error in _search_with_rate_limit: {str(e)}")
+            raise
+            
+    def _apply_search_filters(self, query: Any, filters: DealSearchFilters) -> Any:
+        """Apply search filters to the base query."""
+        if filters.min_price is not None:
+            query = query.filter(Deal.price >= filters.min_price)
+        if filters.max_price is not None:
+            query = query.filter(Deal.price <= filters.max_price)
+        if filters.categories:
+            query = query.filter(Deal.category.in_(filters.categories))
+        if filters.brands:
+            query = query.filter(Deal.brand.in_(filters.brands))
+        if filters.condition:
+            query = query.filter(Deal.condition.in_(filters.condition))
+        if filters.sort_by:
+            query = self._apply_sorting(query, filters.sort_by)
+        return query
+        
+    def _apply_sorting(self, query: Any, sort_by: str) -> Any:
+        """Apply sorting to the query based on sort parameter."""
+        sort_map = {
+            "price_asc": Deal.price.asc(),
+            "price_desc": Deal.price.desc(),
+            "rating": Deal.rating.desc(),
+            "expiry": Deal.expires_at.asc(),
+            "relevance": Deal.score.desc()
+        }
+        return query.order_by(sort_map[sort_by])
+        
+    async def _enrich_search_results(self, results: List[Deal]) -> List[Deal]:
+        """Enrich search results with additional data."""
+        enriched_results = []
+        for deal in results:
+            # Add price history
+            deal.price_history = await self._get_price_history(deal.id)
+            # Add market analysis
+            deal.market_analysis = await self._get_market_analysis(deal)
+            enriched_results.append(deal)
+        return enriched_results
+        
+    async def _get_price_history(self, deal_id: UUID) -> List[Dict]:
+        """Get price history for a deal with caching."""
+        cache_key = f"price_history:{deal_id}"
+        cached_history = await self.redis.get(cache_key)
+        
+        if cached_history:
+            return json.loads(cached_history)
+            
+        history = await self.repository.get_price_history(deal_id)
+        await self.redis.setex(
+            cache_key,
+            CACHE_TTL_PRICE_HISTORY,
+            json.dumps(history)
+        )
+        return history
+        
+    async def _get_market_analysis(self, deal: Deal) -> Dict:
+        """Get market analysis for a deal."""
+        return {
+            "average_market_price": await self._get_average_market_price(deal),
+            "price_trend": self._calculate_price_trend(deal.price_history),
+            "deal_score": await self._calculate_deal_score(deal)
+        }
 
     def _cache_search(self, query: str, results: List[Deal]) -> None:
         """Cache search results with extended information"""

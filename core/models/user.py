@@ -19,11 +19,11 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, conint
 from sqlalchemy import (
     Column, String, Boolean, DateTime, Numeric, text, Text, Integer,
     Index, CheckConstraint, UniqueConstraint, Enum as SQLEnum,
-    ForeignKey
+    ForeignKey, select
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.sql import func, expression
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, backref
 try:
     from base58 import b58decode
 except ImportError:
@@ -248,30 +248,15 @@ class User(Base):
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     password: Mapped[str] = mapped_column(String(255), nullable=False)
-    sol_address: Mapped[Optional[str]] = mapped_column(String(44), unique=True, nullable=True, index=True)
-    referral_code: Mapped[Optional[str]] = mapped_column(String(10), unique=True, nullable=True, index=True)
+    sol_address: Mapped[Optional[str]] = mapped_column(String(44), nullable=True, unique=True)
+    referral_code: Mapped[Optional[str]] = mapped_column(String(10), nullable=True, unique=True)
     referred_by: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
-    token_balance: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
-    status: Mapped[str] = mapped_column(SQLEnum(UserStatus), nullable=False, default=UserStatus.ACTIVE, index=True)
-    preferences: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("""
-        '{
-            "theme": "light",
-            "notifications": "all",
-            "email_notifications": true,
-            "push_notifications": false,
-            "telegram_notifications": false,
-            "discord_notifications": false,
-            "deal_alert_threshold": 0.8,
-            "auto_buy_enabled": false,
-            "auto_buy_threshold": 0.95,
-            "max_auto_buy_amount": 100.0,
-            "language": "en",
-            "timezone": "UTC"
-        }'::jsonb
-    """))
-    notification_channels: Mapped[List[str]] = mapped_column(JSONB, nullable=False, server_default='["in_app", "email"]')
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
+    token_balance: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0)
+    preferences: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    status: Mapped[str] = mapped_column(SQLEnum(UserStatus, name='userstatus', create_constraint=True), nullable=False, default=UserStatus.ACTIVE)
+    notification_channels: Mapped[List[str]] = mapped_column(JSONB, nullable=False, server_default=text('["in_app", "email"]'))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
     last_payment_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     active_goals_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -280,14 +265,19 @@ class User(Base):
     total_tokens_spent: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
     total_rewards_earned: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
 
+    # Relationship attributes (defined in relationships.py)
+    goals = None
+    notifications = None
+    chat_messages = None
+    token_transactions = None
+    token_balance_history = None
+    token_wallets = None
+    referrals = None
+    referred_by_user = None
+
     # Relationships
-    goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")
-    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
-    chat_history = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
-    token_transactions = relationship("TokenTransaction", back_populates="user", cascade="all, delete-orphan")
-    token_balance_history = relationship("TokenBalanceHistory", back_populates="user", cascade="all, delete-orphan")
-    token_wallets = relationship("TokenWallet", back_populates="user", cascade="all, delete-orphan")
-    referrals = relationship("User", backref="referrer", remote_side=[id])
+    token_balance_obj = relationship("TokenBalance", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    referrals = relationship("User", backref=backref("referred_by_user", remote_side=[id]))
 
     def __repr__(self) -> str:
         """String representation of the user."""
@@ -317,6 +307,17 @@ class User(Base):
         })
 
     @classmethod
+    async def get_by_email(cls, db, email: str) -> Optional['User']:
+        """Get user by email"""
+        try:
+            stmt = select(cls).where(cls.email == email, cls.status == UserStatus.ACTIVE)
+            result = await db.execute(stmt)
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"Failed to get user by email: {str(e)}")
+            raise
+
+    @classmethod
     async def create(cls, db, **kwargs) -> 'User':
         """Create a new user with proper error handling and validation"""
         try:
@@ -336,25 +337,18 @@ class User(Base):
             raise ValueError(f"Failed to create user: {str(e)}") from e
 
     @classmethod
-    async def get_by_email(cls, db, email: str) -> Optional['User']:
-        """Get user by email"""
-        try:
-            return await db.query(cls).filter(cls.email == email, cls.status == UserStatus.ACTIVE).first()
-        except Exception as e:
-            logger.error(f"Failed to get user by email: {str(e)}")
-            raise
-
-    @classmethod
     async def get_by_wallet(cls, db, wallet_address: str) -> Optional['User']:
         """Get user by wallet address"""
         try:
             if not wallet_address:
                 raise WalletError("Wallet address is required")
                 
-            return await db.query(cls).filter(
+            stmt = select(cls).where(
                 cls.sol_address == wallet_address,
                 cls.status == UserStatus.ACTIVE
-            ).first()
+            )
+            result = await db.execute(stmt)
+            return result.scalar_one_or_none()
         except Exception as e:
             logger.error(f"Failed to get user by wallet: {str(e)}")
             raise
@@ -372,10 +366,12 @@ class User(Base):
             raise ValidationError("Invalid operation type")
         
         try:
-            user = await db.query(cls).filter(
+            stmt = select(cls).where(
                 cls.id == user_id,
                 cls.status == UserStatus.ACTIVE
-            ).with_for_update().first()
+            ).with_for_update()
+            result = await db.execute(stmt)
+            user = result.scalar_one_or_none()
 
             if not user:
                 raise UserError("User not found or inactive")
@@ -520,6 +516,11 @@ class User(Base):
             exists = await db.query(User).filter(User.referral_code == code).first()
             if not exists:
                 return code
+
+    @property
+    def is_active(self) -> bool:
+        """Check if user is active."""
+        return self.status == UserStatus.ACTIVE.value
 
 class UserPreferences(BaseModel):
     """Model for user preferences"""

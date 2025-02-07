@@ -107,17 +107,25 @@ async def authenticate_user(
     try:
         # Get user by email
         result = await db.execute(
-            select(User).where(User.email == email)
+            select(User).where(
+                User.email == email,
+                User.status == 'active'  # Only allow active users to login
+            )
         )
         user = result.scalar_one_or_none()
         
         if not user:
-            logger.warning(f"User not found: {email}")
+            logger.warning(f"User not found or inactive: {email}")
             return None
             
-        if not verify_password(password, user.hashed_password):
+        # Verify password using the verify_password function
+        if not verify_password(password, user.password):
             logger.warning(f"Invalid password for user: {email}")
             return None
+            
+        # Update last login time
+        user.last_login_at = datetime.utcnow()
+        await db.commit()
             
         return user
     except Exception as e:
@@ -186,7 +194,7 @@ async def verify_token(token: str, redis: Redis) -> Dict[str, Any]:
         logger.error(f"Error verifying token: {e}")
         raise TokenRefreshError("Invalid token")
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/users/login")
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),

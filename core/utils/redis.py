@@ -1,159 +1,165 @@
-"""Redis utilities module.
+"""Redis utility module.
 
-This module provides Redis functionality for caching, locking, and queuing operations.
+This module provides Redis client configuration and connection management.
 """
 
-import json
-import asyncio
-from typing import Optional, Any, Dict
 import redis.asyncio as aioredis
+from redis.asyncio import Redis, ConnectionPool
+from typing import Optional, Any, Union
+import json
 import logging
-from ..config.redis import redis_settings
-from core.exceptions.api_exceptions import RedisCacheError
+from datetime import timedelta
+
+from core.config import settings
+
 logger = logging.getLogger(__name__)
 
-# Global Redis connection pool
-_redis_pool: Optional[aioredis.BlockingConnectionPool] = None
+_redis_client: Optional[Redis] = None
+_redis_pool: Optional[ConnectionPool] = None
 
-async def get_redis_pool() -> aioredis.BlockingConnectionPool:
-    """Get or create Redis connection pool."""
+async def get_redis_pool() -> ConnectionPool:
+    """Get Redis connection pool."""
     global _redis_pool
+    
     if _redis_pool is None:
         try:
-            _redis_pool = aioredis.BlockingConnectionPool(
-                **redis_settings.get_connection_kwargs(),
-                timeout=redis_settings.REDIS_POOL_TIMEOUT
+            _redis_pool = aioredis.ConnectionPool.from_url(
+                str(settings.REDIS_URL),
+                max_connections=settings.REDIS_MAX_CONNECTIONS,
+                socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
+                socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT,
+                retry_on_timeout=True
             )
-            logger.info("Redis connection pool initialized successfully")
+            logger.info("Redis connection pool created successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize Redis connection pool: {str(e)}")
-            raise RedisCacheError(f"Redis pool initialization failed: {str(e)}")
+            logger.error(f"Failed to create Redis connection pool: {str(e)}")
+            raise
+    
     return _redis_pool
 
-async def get_redis_client() -> aioredis.Redis:
-    """Get Redis client from pool."""
-    pool = await get_redis_pool()
-    return aioredis.Redis(connection_pool=pool)
-
-async def set_cache(key: str, value: Any, ttl: Optional[int] = None) -> None:
-    """Set cache value with optional TTL."""
-    try:
-        async with await get_redis_client() as client:
-            key = f"{redis_settings.REDIS_KEY_PREFIX}{key}"
-            await client.set(
-                key,
-                json.dumps(value),
-                ex=ttl or redis_settings.CACHE_DEFAULT_TTL
+async def get_redis_client() -> Redis:
+    """Get Redis client instance with connection pooling."""
+    global _redis_client
+    
+    if _redis_client is None:
+        try:
+            pool = await get_redis_pool()
+            _redis_client = Redis(
+                connection_pool=pool,
+                encoding="utf-8",
+                decode_responses=True
             )
-    except (aioredis.RedisError, TypeError, ValueError) as e:
-        logger.error(f"Failed to set cache for key {key}: {str(e)}")
-        raise RedisCacheError(f"Cache set operation failed: {str(e)}")
+            # Test connection
+            await _redis_client.ping()
+            logger.info("Redis connection established successfully")
+        except Exception as e:
+            logger.error(f"Failed to connect to Redis: {str(e)}")
+            raise
+    
+    return _redis_client
+
+async def close_redis_client() -> None:
+    """Close Redis client connection and pool."""
+    global _redis_client, _redis_pool
+    
+    if _redis_client is not None:
+        try:
+            await _redis_client.close()
+            _redis_client = None
+            logger.info("Redis connection closed")
+        except Exception as e:
+            logger.error(f"Error closing Redis connection: {str(e)}")
+            raise
+    
+    if _redis_pool is not None:
+        try:
+            await _redis_pool.disconnect()
+            _redis_pool = None
+            logger.info("Redis connection pool closed")
+        except Exception as e:
+            logger.error(f"Error closing Redis connection pool: {str(e)}")
+            raise
+
+async def set_cache(key: str, value: Any, expire: Optional[Union[int, timedelta]] = None) -> bool:
+    """Set a value in Redis cache.
+    
+    Args:
+        key: Cache key
+        value: Value to cache (will be JSON serialized)
+        expire: Expiration time in seconds or timedelta
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        redis = await get_redis_client()
+        serialized = json.dumps(value)
+        if expire:
+            if isinstance(expire, timedelta):
+                expire = int(expire.total_seconds())
+            await redis.setex(key, expire, serialized)
+        else:
+            await redis.set(key, serialized)
+        return True
+    except Exception as e:
+        logger.error(f"Error setting cache for key {key}: {str(e)}")
+        return False
 
 async def get_cache(key: str) -> Optional[Any]:
-    """Get cached value."""
+    """Get a value from Redis cache.
+    
+    Args:
+        key: Cache key
+        
+    Returns:
+        Optional[Any]: Cached value if exists, None otherwise
+    """
     try:
-        async with await get_redis_client() as client:
-            key = f"{redis_settings.REDIS_KEY_PREFIX}{key}"
-            value = await client.get(key)
-            if value is None:
-                return None
-            try:
-                return json.loads(value)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to decode cache value for key {key}: {str(e)}")
-                await delete_cache(key)  # Clean up invalid JSON
+        redis = await get_redis_client()
+        value = await redis.get(key)
+        if value:
+            return json.loads(value)
         return None
-    except aioredis.RedisError as e:
-        logger.error(f"Failed to get cache for key {key}: {str(e)}")
-        raise RedisCacheError(f"Cache get operation failed: {str(e)}")
-
-async def delete_cache(key: str) -> None:
-    """Delete cached value."""
-    try:
-        async with await get_redis_client() as client:
-            key = f"{redis_settings.REDIS_KEY_PREFIX}{key}"
-            await client.delete(key)
-    except aioredis.RedisError as e:
-        logger.error(f"Failed to delete cache for key {key}: {str(e)}")
-        raise RedisCacheError(f"Cache delete operation failed: {str(e)}")
-
-async def acquire_lock(
-    lock_name: str,
-    timeout: Optional[int] = None,
-    blocking_timeout: Optional[int] = None
-) -> Optional[aioredis.Redis]:
-    """Acquire Redis lock."""
-    try:
-        client = await get_redis_client()
-        lock_key = f"{redis_settings.REDIS_KEY_PREFIX}lock:{lock_name}"
-        lock_timeout = timeout or redis_settings.LOCK_DEFAULT_TIMEOUT
-        
-        # Try to acquire lock using SET NX with expiry
-        acquired = await client.set(
-            lock_key,
-            "1",
-            nx=True,
-            ex=lock_timeout
-        )
-        
-        if acquired:
-            return client
-            
-        if blocking_timeout:
-            # If blocking timeout specified, wait and retry
-            await asyncio.sleep(min(1, blocking_timeout))
-            return await acquire_lock(lock_name, timeout, blocking_timeout - 1)
-            
+    except Exception as e:
+        logger.error(f"Error getting cache for key {key}: {str(e)}")
         return None
+
+async def delete_cache(key: str) -> bool:
+    """Delete a value from Redis cache.
+    
+    Args:
+        key: Cache key
         
-    except aioredis.RedisError as e:
-        logger.error(f"Failed to acquire lock {lock_name}: {str(e)}")
-        raise RedisCacheError(f"Lock acquisition failed: {str(e)}")
-
-async def release_lock(lock_name: str, client: aioredis.Redis) -> None:
-    """Release Redis lock."""
+    Returns:
+        bool: True if successful, False otherwise
+    """
     try:
-        lock_key = f"{redis_settings.REDIS_KEY_PREFIX}lock:{lock_name}"
-        await client.delete(lock_key)
-    except aioredis.RedisError as e:
-        logger.error(f"Failed to release lock: {str(e)}")
+        redis = await get_redis_client()
+        await redis.delete(key)
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting cache for key {key}: {str(e)}")
+        return False
 
-async def enqueue(queue_name: str, data: Dict[str, Any]) -> None:
-    """Add item to Redis queue."""
+async def clear_cache_pattern(pattern: str) -> bool:
+    """Clear all cache keys matching a pattern.
+    
+    Args:
+        pattern: Redis key pattern to match
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
     try:
-        async with await get_redis_client() as client:
-            queue_key = f"{redis_settings.REDIS_KEY_PREFIX}queue:{queue_name}"
-            await client.rpush(
-                queue_key,
-                json.dumps(data)
-            )
-    except (aioredis.RedisError, TypeError, ValueError) as e:
-        logger.error(f"Failed to enqueue data to {queue_name}: {str(e)}")
-        raise RedisCacheError(f"Queue operation failed: {str(e)}")
-
-async def dequeue(queue_name: str) -> Optional[Dict[str, Any]]:
-    """Get item from Redis queue."""
-    try:
-        async with await get_redis_client() as client:
-            queue_key = f"{redis_settings.REDIS_KEY_PREFIX}queue:{queue_name}"
-            data = await client.lpop(queue_key)
-            if data is None:
-                return None
-            try:
-                return json.loads(data)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to decode queue data from {queue_name}: {str(e)}")
-                return None
-    except aioredis.RedisError as e:
-        logger.error(f"Failed to dequeue from {queue_name}: {str(e)}")
-        raise RedisCacheError(f"Queue operation failed: {str(e)}")
-
-async def get_queue_length(queue_name: str) -> int:
-    """Get queue length."""
-    try:
-        async with await get_redis_client() as client:
-            queue_key = f"{redis_settings.REDIS_KEY_PREFIX}queue:{queue_name}"
-            return await client.llen(queue_key)
-    except aioredis.RedisError as e:
-        logger.error(f"Failed to get queue length for {queue_name}: {str(e)}")
-        raise RedisCacheError(f"Queue operation failed: {str(e)}")
+        redis = await get_redis_client()
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(cursor, match=pattern)
+            if keys:
+                await redis.delete(*keys)
+            if cursor == 0:
+                break
+        return True
+    except Exception as e:
+        logger.error(f"Error clearing cache pattern {pattern}: {str(e)}")
+        return False

@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, List
 from uuid import UUID
 import logging
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import Column, String, DateTime, ForeignKey, Text, Index
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
@@ -57,8 +57,9 @@ class ChatMessageCreate(BaseModel):
     context: Optional[Dict[str, Any]] = None
     tokens_used: Optional[int] = Field(None, ge=0)
 
-    @validator('role')
-    def validate_role(self, v: str) -> str:
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v: str) -> str:
         """Validate message role."""
         valid_roles = {'user', 'assistant', 'system'}
         if v not in valid_roles:

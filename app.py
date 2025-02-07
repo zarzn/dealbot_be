@@ -1,16 +1,29 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import logging
 
 from core.config import settings
-from core.database import init_db
+from core.database.init_db import init_database
 from api.v1.router import router as api_v1_router
+
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize database
-    await init_db()
-    yield
+    """Application lifespan manager."""
+    try:
+        # Initialize database
+        logger.info("Initializing database...")
+        await init_database()
+        logger.info("Database initialization completed")
+        yield
+    except Exception as e:
+        logger.error(f"Error during startup: {str(e)}")
+        raise
+    finally:
+        # Cleanup
+        logger.info("Shutting down application...")
 
 app = FastAPI(
     title=settings.APP_NAME,

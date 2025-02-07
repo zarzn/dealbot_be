@@ -7,15 +7,14 @@ user token balances in the AI Agentic Deals System.
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 import logging
 
 from pydantic import BaseModel, Field, validator
-from sqlalchemy import Column, DECIMAL, DateTime, ForeignKey, Boolean, Index
+from sqlalchemy import Column, DECIMAL, DateTime, ForeignKey, Boolean, Index, CheckConstraint, Numeric, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import relationship, Mapped, mapped_column
-from sqlalchemy.sql import expression, text
 
 from core.models.base import Base
 logger = logging.getLogger(__name__)
@@ -79,40 +78,22 @@ class TokenBalanceResponse(TokenBalanceBase):
         from_attributes = True
 
 class TokenBalance(Base):
-    """Token balance database model."""
-    __tablename__ = "tokenbalance"
+    """SQLAlchemy model for token_balances table"""
+    __tablename__ = 'token_balances'
     __table_args__ = (
-        Index('ix_token_balances_user', 'user_id'),
-        Index('ix_token_balances_active', 'is_active'),
+        Index('ix_token_balances_user_id', 'user_id'),
+        CheckConstraint('balance >= 0', name='ch_positive_balance'),
     )
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
-    user_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        unique=True
-    )
-    balance: Mapped[Decimal] = mapped_column(
-        DECIMAL(precision=18, scale=8),
-        nullable=False,
-        default=Decimal("0")
-    )
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    balance: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=text('CURRENT_TIMESTAMP')
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=text('CURRENT_TIMESTAMP'),
-        onupdate=text('CURRENT_TIMESTAMP')
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
 
     # Relationships
-    user = relationship("User", back_populates="token_balance")
+    user = relationship("User", back_populates="token_balance_obj")
     history = relationship("TokenBalanceHistory", back_populates="token_balance", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:

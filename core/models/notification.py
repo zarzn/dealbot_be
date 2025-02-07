@@ -165,17 +165,20 @@ class Notification(Base):
     deal_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="SET NULL"))
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    type: Mapped[NotificationType] = mapped_column(SQLEnum(NotificationType), nullable=False)
-    channels: Mapped[List[NotificationChannel]] = mapped_column(JSONB, nullable=False, default=[NotificationChannel.IN_APP.value])
-    priority: Mapped[NotificationPriority] = mapped_column(
-        SQLEnum(NotificationPriority),
-        nullable=False,
-        default=NotificationPriority.MEDIUM
+    type: Mapped[str] = mapped_column(
+        SQLEnum(NotificationType, name='notificationtype', create_constraint=True, native_enum=True, values_callable=lambda obj: [e.value for e in obj]),
+        nullable=False
     )
-    status: Mapped[NotificationStatus] = mapped_column(
-        SQLEnum(NotificationStatus),
+    channels: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=[NotificationChannel.IN_APP.value])
+    priority: Mapped[str] = mapped_column(
+        SQLEnum(NotificationPriority, name='notificationpriority', create_constraint=True, native_enum=True, values_callable=lambda obj: [e.value for e in obj]),
         nullable=False,
-        default=NotificationStatus.PENDING,
+        default=NotificationPriority.MEDIUM.value
+    )
+    status: Mapped[str] = mapped_column(
+        SQLEnum(NotificationStatus, name='notificationstatus', create_constraint=True, native_enum=True, values_callable=lambda obj: [e.value for e in obj]),
+        nullable=False,
+        default=NotificationStatus.PENDING.value,
         server_default=NotificationStatus.PENDING.value
     )
     data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)

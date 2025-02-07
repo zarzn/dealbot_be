@@ -38,6 +38,7 @@ class DealSource(str, enum.Enum):
     TARGET = "target"
     BESTBUY = "bestbuy"
     MANUAL = "manual"
+    OTHER = "other"
 
 class DealPriority(int, enum.Enum):
     """Deal priority levels."""
@@ -115,6 +116,16 @@ class DealResponse(DealBase):
     availability: Optional[Dict[str, Any]]
     latest_score: Optional[float]
     price_history: Optional[List[Dict[str, Any]]]
+    market_analysis: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Market analysis data including price trends and comparisons"
+    )
+    deal_score: Optional[float] = Field(
+        None,
+        ge=0,
+        le=100,
+        description="Overall deal score based on multiple factors"
+    )
     created_at: datetime
     updated_at: datetime
 
@@ -124,7 +135,7 @@ class DealResponse(DealBase):
         json_encoders = {
             datetime: lambda v: v.isoformat(),
             UUID: lambda v: str(v),
-            Decimal: float
+            Decimal: lambda v: str(v)
         }
 
 class Deal(Base):
@@ -170,6 +181,7 @@ class Deal(Base):
     market = relationship("Market", back_populates="deals")
     scores = relationship("DealScore", back_populates="deal", cascade="all, delete-orphan")
     price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
+    notifications = relationship("Notification", back_populates="deal", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         """String representation of the deal."""
@@ -200,3 +212,30 @@ class PriceHistory(Base):
     def __repr__(self) -> str:
         """String representation of the price history entry."""
         return f"<PriceHistory {self.price} {self.currency} at {self.timestamp}>"
+
+class DealAnalysis(BaseModel):
+    deal_id: UUID
+    score: float = Field(..., ge=0, le=100)
+    metrics: Dict[str, float]
+    analysis_timestamp: str
+    confidence: float = Field(..., ge=0, le=1)
+    anomaly_score: Optional[float] = Field(None, ge=0, le=1)
+    recommendations: List[str]
+    
+    class Config:
+        orm_mode = True
+
+class DealSearchFilters(BaseModel):
+    min_price: Optional[Decimal] = Field(None, ge=0)
+    max_price: Optional[Decimal] = Field(None, ge=0)
+    categories: Optional[List[str]] = None
+    brands: Optional[List[str]] = None
+    condition: Optional[List[str]] = None
+    sort_by: Optional[str] = Field(None, pattern="^(price_asc|price_desc|rating|expiry|relevance)$")
+    
+    @validator("max_price")
+    def validate_price_range(cls, v, values):
+        if v is not None and "min_price" in values and values["min_price"] is not None:
+            if v < values["min_price"]:
+                raise ValueError("max_price must be greater than min_price")
+        return v
