@@ -1,0 +1,47 @@
+{% extends "base_email.html" %}
+
+{% block content %}
+<div style="text-align: center;">
+    <h2>System Notification</h2>
+    <p style="font-size: 18px; color: #333;">{{ message }}</p>
+    
+    {% if data %}
+    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 4px; margin: 20px 0;">
+        {% if data.notification_type %}
+        <p style="color: #666; font-size: 14px;">
+            Type: {{ data.notification_type }}
+        </p>
+        {% endif %}
+        
+        {% if data.details %}
+        <p style="color: #333; margin-top: 15px;">
+            {{ data.details }}
+        </p>
+        {% endif %}
+        
+        {% if data.recommendations %}
+        <div style="margin-top: 20px;">
+            <h4 style="color: #333;">Recommended Actions:</h4>
+            <ul style="list-style: none; padding: 0;">
+                {% for recommendation in data.recommendations %}
+                <li style="margin: 10px 0; color: #333;">
+                    {{ recommendation }}
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+    
+    {% if action_url %}
+    <a href="{{ action_url }}" class="button" style="margin-top: 20px;">
+        Take Action
+    </a>
+    {% endif %}
+    
+    <p style="color: #666; font-size: 14px; margin-top: 20px;">
+        This is an automated system notification. If you need assistance, please contact support.
+    </p>
+</div>
+{% endblock %} 

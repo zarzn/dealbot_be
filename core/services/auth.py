@@ -69,6 +69,16 @@ class Token(BaseModel):
     expires_in: int = ACCESS_TOKEN_EXPIRE_MINUTES * 60
     refresh_token: Optional[str] = None
 
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "token_type": "bearer",
+                "expires_in": 1800,
+                "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+            }
+        }
+
 class TokenRefreshError(Exception):
     """Raised when token refresh fails."""
     def __init__(self, message: str = "Token refresh failed"):
@@ -235,7 +245,7 @@ async def blacklist_token(token: str, redis: Redis) -> None:
         # Get token expiration from payload
         payload = jwt.decode(
             token,
-            settings.SECRET_KEY.get_secret_value(),
+            settings.SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM]
         )
         exp = payload.get("exp", 0)
@@ -330,10 +340,24 @@ async def get_token_balance(
         raise TokenValidationError("Could not get token balance")
 
 async def create_tokens(data: Dict[str, Any]) -> Tuple[str, str]:
-    """Create both access and refresh tokens."""
-    access_token = await create_access_token(data)
-    refresh_token = await create_refresh_token(data)
-    return access_token, refresh_token
+    """Create both access and refresh tokens for a user.
+    
+    Args:
+        data: Dictionary containing token data (must include 'sub' key)
+        
+    Returns:
+        Tuple[str, str]: Access token and refresh token
+        
+    Raises:
+        TokenRefreshError: If token creation fails
+    """
+    try:
+        access_token = await create_access_token(data)
+        refresh_token = await create_refresh_token(data)
+        return access_token, refresh_token
+    except Exception as e:
+        logger.error(f"Error creating tokens: {e}")
+        raise TokenRefreshError("Could not create tokens")
 
 async def refresh_tokens(
     refresh_token: str,
@@ -402,7 +426,7 @@ async def verify_password_reset_token(token: str) -> UUID:
     try:
         payload = jwt.decode(
             token,
-            settings.SECRET_KEY.get_secret_value(),
+            settings.SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM]
         )
         if payload.get("type") != "password_reset":
@@ -425,7 +449,7 @@ async def verify_email_token(token: str) -> UUID:
     try:
         payload = jwt.decode(
             token,
-            settings.SECRET_KEY.get_secret_value(),
+            settings.SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM]
         )
         if payload.get("type") != "email_verification":
@@ -434,6 +458,62 @@ async def verify_email_token(token: str) -> UUID:
     except (JWTError, ValueError) as e:
         logger.error(f"Error verifying email token: {e}")
         raise TokenRefreshError("Invalid email verification token")
+
+async def create_magic_link_token(data: Dict[str, Any]) -> str:
+    """Create a magic link token for passwordless authentication.
+    
+    Args:
+        data: Data to encode in the token
+        
+    Returns:
+        str: Encoded JWT token
+    """
+    try:
+        # Set expiration to 15 minutes for magic links
+        expire = datetime.utcnow() + timedelta(minutes=15)
+        to_encode = data.copy()
+        to_encode.update({
+            "exp": expire,
+            "type": "magic_link"
+        })
+        
+        encoded_jwt = jwt.encode(
+            to_encode,
+            settings.SECRET_KEY,
+            algorithm=settings.JWT_ALGORITHM
+        )
+        return encoded_jwt
+    except JWTError as e:
+        logger.error(f"Error creating magic link token: {e}")
+        raise TokenRefreshError("Could not create magic link token")
+
+async def verify_magic_link_token(token: str) -> Dict[str, Any]:
+    """Verify a magic link token.
+    
+    Args:
+        token: JWT token to verify
+        
+    Returns:
+        Dict[str, Any]: Token payload if valid
+        
+    Raises:
+        TokenRefreshError: If token is invalid or expired
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM]
+        )
+        
+        # Verify token type
+        if payload.get("type") != "magic_link":
+            raise TokenRefreshError("Invalid token type")
+            
+        return payload
+    except JWTError as e:
+        logger.error(f"Error verifying magic link token: {e}")
+        raise TokenRefreshError("Invalid or expired magic link token")
 
 __all__ = [
     'get_current_user',

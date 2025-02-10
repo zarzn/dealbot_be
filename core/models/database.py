@@ -5,7 +5,7 @@ for the AI Agentic Deals System.
 """
 
 from datetime import datetime
-from typing import Optional, TypeVar, Generic, List, Dict, Any
+from typing import Optional, TypeVar, Generic, List, Dict, Any, AsyncGenerator
 from uuid import UUID
 import logging
 
@@ -35,16 +35,15 @@ ModelType = TypeVar("ModelType", bound=Base)
 CreateSchemaType = TypeVar("CreateSchemaType", bound=BaseModel)
 UpdateSchemaType = TypeVar("UpdateSchemaType", bound=BaseModel)
 
-# Database configuration
+# Create async engine
 engine = create_async_engine(
-    settings.DATABASE_URL,
-    echo=settings.DB_ECHO,
+    str(settings.SQLALCHEMY_DATABASE_URI),
+    echo=settings.DEBUG,
     pool_size=settings.DB_POOL_SIZE,
-    max_overflow=settings.DB_MAX_OVERFLOW,
-    pool_timeout=settings.DB_POOL_TIMEOUT,
-    pool_recycle=settings.DB_POOL_RECYCLE
+    max_overflow=settings.DB_POOL_OVERFLOW
 )
 
+# Create async session factory
 async_session = sessionmaker(
     engine,
     class_=AsyncSession,
@@ -287,7 +286,7 @@ class GoalRepository(BaseRepository[Goal, GoalCreate, GoalUpdate]):
         super().__init__(Goal)
 
 # Database session dependency
-async def get_db() -> AsyncSession:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Get database session."""
     async with async_session() as session:
         try:

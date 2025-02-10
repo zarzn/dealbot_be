@@ -5,7 +5,7 @@ from typing import Optional, Any, Dict
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 import logging
-from uuid import uuid4
+from uuid import uuid4, UUID
 
 from core.database import get_db
 from core.services.auth import (
@@ -18,14 +18,14 @@ from core.services.auth import (
     verify_password,
     get_password_hash
 )
-from core.services.email import send_password_reset_email, send_verification_email
-from core.models.user import UserPreferences, User, UserCreate, UserResponse, UserStatus
+from core.services.notifications import notification_service
+from core.models.user import UserPreferences, User, UserCreate, UserStatus
 from core.exceptions import UserNotFoundError, UserError
 
-router = APIRouter(tags=["users"])
+router = APIRouter(tags=["auth"])
 logger = logging.getLogger(__name__)
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 class UserRegistrationRequest(BaseModel):
     """Model for user registration request"""
@@ -44,27 +44,40 @@ class UserRegistrationRequest(BaseModel):
         pattern=r'^[A-Z0-9]{6,10}$',
         description="User referral code"
     )
+    name: Optional[str] = None
 
 class UserResponse(BaseModel):
-    id: str
+    id: UUID
     email: str
+    name: Optional[str] = None
     sol_address: Optional[str] = None
     referral_code: Optional[str] = None
     token_balance: float
     preferences: Optional[dict] = None
     notification_channels: Optional[list] = None
     status: UserStatus
-    created_at: str
-    updated_at: Optional[str] = None
-    last_payment_at: Optional[str] = None
-    active_goals_count: int
-    total_deals_found: int
-    success_rate: float
-    total_tokens_spent: float
-    total_rewards_earned: float
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    last_payment_at: Optional[datetime] = None
+    active_goals_count: int = 0
+    total_deals_found: int = 0
+    success_rate: float = 0.0
+    total_tokens_spent: float = 0.0
+    total_rewards_earned: float = 0.0
+
+    class Config:
+        from_attributes = True
+        json_encoders = {
+            UUID: str,
+            datetime: lambda v: v.isoformat() if v else None
+        }
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register_user(user: UserRegistrationRequest, db: AsyncSession = Depends(get_db)) -> Any:
+async def register_user(
+    user: UserRegistrationRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db)
+) -> Any:
     """Register a new user with proper validation and error handling"""
     try:
         logger.info(f"Starting user registration process for email: {user.email}")
@@ -83,9 +96,10 @@ async def register_user(user: UserRegistrationRequest, db: AsyncSession = Depend
         new_user = await User.create(db, **{
             "email": user.email,
             "password": get_password_hash(user.password),
+            "name": user.name,
             "referral_code": user.referral_code,
             "token_balance": 0.0,
-            "status": UserStatus.ACTIVE,
+            "status": "active",
             "preferences": {
                 "theme": "light",
                 "notifications": "all",
@@ -99,38 +113,15 @@ async def register_user(user: UserRegistrationRequest, db: AsyncSession = Depend
                 "max_auto_buy_amount": 100.0,
                 "language": "en",
                 "timezone": "UTC"
-            },
-            "notification_channels": ["in_app", "email"]
+            }
         })
         
-        logger.info(f"User created successfully with ID: {new_user.id}")
-        
-        return UserResponse(
-            id=str(new_user.id),
-            email=new_user.email,
-            sol_address=new_user.sol_address,
-            referral_code=new_user.referral_code,
-            token_balance=float(new_user.token_balance),
-            preferences=new_user.preferences,
-            notification_channels=new_user.notification_channels,
-            status=new_user.status,
-            created_at=str(new_user.created_at),
-            updated_at=str(new_user.updated_at) if new_user.updated_at else None,
-            last_payment_at=str(new_user.last_payment_at) if new_user.last_payment_at else None,
-            active_goals_count=0,
-            total_deals_found=0,
-            success_rate=0.0,
-            total_tokens_spent=0.0,
-            total_rewards_earned=0.0
-        )
-    except HTTPException as he:
-        logger.error(f"HTTP Exception during registration: {str(he)}")
-        raise
+        return new_user
     except Exception as e:
-        logger.error(f"Unexpected error during registration: {str(e)}", exc_info=True)
+        logger.error(f"Registration failed with error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred during registration: {str(e)}"
+            detail=str(e)
         )
 
 @router.post("/login", response_model=Token)
@@ -256,19 +247,28 @@ async def request_password_reset(
 ) -> Any:
     """Request password reset"""
     try:
-        user = await db.get_user_by_email(request.email)
-        if user:
-            reset_token = await create_password_reset_token(user.id)
-            background_tasks.add_task(
-                send_password_reset_email,
-                email=user.email,
-                token=reset_token
-            )
+        user = await User.get_by_email(db, request.email)
+        if not user:
+            # Return success even if user not found to prevent email enumeration
+            return {"message": "If the email exists, a password reset link will be sent"}
+
+        # Generate reset token
+        token = str(uuid4())
+        # TODO: Store token with expiry in Redis/DB
+
+        # Send password reset email
+        await notification_service.send_password_reset_email(
+            email=request.email,
+            token=token,
+            background_tasks=background_tasks
+        )
+        
         return {"message": "If the email exists, a password reset link will be sent"}
     except Exception as e:
+        logger.error(f"Password reset request error: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error processing password reset request"
         )
 
 @router.post("/password-reset/confirm")
@@ -301,19 +301,28 @@ async def request_email_verification(
 ) -> Any:
     """Request email verification"""
     try:
-        user = await db.get_user_by_email(request.email)
-        if user and not user.email_verified:
-            verification_token = await create_email_verification_token(user.id)
-            background_tasks.add_task(
-                send_verification_email,
-                email=user.email,
-                token=verification_token
-            )
-        return {"message": "If the email exists and is not verified, a verification link will be sent"}
+        user = await User.get_by_email(db, request.email)
+        if not user:
+            # Return success even if user not found to prevent email enumeration
+            return {"message": "If the email exists, a verification link will be sent"}
+
+        # Generate verification token
+        token = str(uuid4())
+        # TODO: Store token with expiry in Redis/DB
+
+        # Send verification email
+        await notification_service.send_verification_email(
+            email=request.email,
+            token=token,
+            background_tasks=background_tasks
+        )
+        
+        return {"message": "If the email exists, a verification link will be sent"}
     except Exception as e:
+        logger.error(f"Email verification request error: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error processing email verification request"
         )
 
 @router.post("/verify-email/confirm/{token}")

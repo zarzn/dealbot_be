@@ -6,6 +6,7 @@ import logging
 from core.config import settings
 from core.database.init_db import init_database
 from api.v1.router import router as api_v1_router
+from core.api.v1.notifications.websocket import handle_websocket
 
 logger = logging.getLogger(__name__)
 
@@ -38,17 +39,16 @@ app.add_middleware(
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
 # Include API router
-app.include_router(api_v1_router, prefix=settings.API_PREFIX)
+app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
+
+# WebSocket endpoint
+app.websocket("/ws/notifications")(handle_websocket)
 
 @app.get("/")
 async def root():
     """Root endpoint for health check"""
-    return {
-        "status": "ok",
-        "version": settings.APP_VERSION,
-        "environment": settings.ENVIRONMENT
-    }
+    return {"status": "ok"}

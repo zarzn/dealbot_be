@@ -1,0 +1,44 @@
+{% extends "base_email.html" %}
+
+{% block content %}
+<div style="text-align: center;">
+    <h2>New Deal Found!</h2>
+    <p style="font-size: 18px; color: #333;">{{ message }}</p>
+    
+    {% if data %}
+    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 4px; margin: 20px 0;">
+        {% if data.original_price %}
+        <p style="color: #666; text-decoration: line-through;">Original Price: ${{ "%.2f"|format(data.original_price) }}</p>
+        {% endif %}
+        
+        {% if data.price %}
+        <p style="color: #28a745; font-size: 24px; font-weight: bold;">
+            Deal Price: ${{ "%.2f"|format(data.price) }}
+        </p>
+        {% endif %}
+        
+        {% if data.savings_percentage %}
+        <p style="color: #dc3545; font-weight: bold;">
+            Save {{ "%.0f"|format(data.savings_percentage) }}%
+        </p>
+        {% endif %}
+        
+        {% if data.description %}
+        <p style="color: #333; margin-top: 15px;">
+            {{ data.description }}
+        </p>
+        {% endif %}
+    </div>
+    {% endif %}
+    
+    {% if action_url %}
+    <a href="{{ action_url }}" class="button" style="margin-top: 20px;">
+        View Deal
+    </a>
+    {% endif %}
+    
+    <p style="color: #666; font-size: 14px; margin-top: 20px;">
+        This deal matches your goal criteria. Act fast as deals may expire quickly!
+    </p>
+</div>
+{% endblock %} 

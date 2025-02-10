@@ -345,7 +345,27 @@ class AuthError(BaseError):
 
 class InvalidCredentialsError(AuthError):
     """Raised when credentials are invalid."""
-    pass
+    def __init__(self, message: str = "Invalid credentials"):
+        self.message = message
+        super().__init__(self.message)
+
+class AccountLockedError(Exception):
+    """Raised when account is locked due to too many failed attempts."""
+    def __init__(self, message: str = "Account is locked. Please try again later"):
+        self.message = message
+        super().__init__(self.message)
+
+class RateLimitExceededError(Exception):
+    """Raised when rate limit is exceeded."""
+    def __init__(self, message: str = "Rate limit exceeded. Please try again later"):
+        self.message = message
+        super().__init__(self.message)
+
+class EmailNotVerifiedError(Exception):
+    """Raised when email is not verified."""
+    def __init__(self, message: str = "Email not verified. Please verify your email first"):
+        self.message = message
+        super().__init__(self.message)
 
 class TokenError(AuthError):
     """Base class for token-related errors."""

@@ -1,0 +1,59 @@
+{% extends "base_email.html" %}
+
+{% block content %}
+<div style="text-align: center;">
+    <h2>Goal Completed! 🎉</h2>
+    <p style="font-size: 18px; color: #333;">{{ message }}</p>
+    
+    {% if data %}
+    <div style="background-color: #f8f9fa; padding: 20px; border-radius: 4px; margin: 20px 0;">
+        {% if data.goal_title %}
+        <h3 style="color: #333; margin-bottom: 15px;">{{ data.goal_title }}</h3>
+        {% endif %}
+        
+        {% if data.completion_details %}
+        <p style="color: #28a745; font-size: 18px;">
+            {{ data.completion_details }}
+        </p>
+        {% endif %}
+        
+        {% if data.savings %}
+        <p style="color: #dc3545; font-weight: bold; font-size: 20px;">
+            Total Savings: ${{ "%.2f"|format(data.savings) }}
+        </p>
+        {% endif %}
+        
+        {% if data.deals_found %}
+        <p style="color: #333; margin-top: 15px;">
+            Total Deals Found: {{ data.deals_found }}
+        </p>
+        {% endif %}
+    </div>
+    {% endif %}
+    
+    {% if action_url %}
+    <a href="{{ action_url }}" class="button" style="margin-top: 20px;">
+        View Goal Details
+    </a>
+    {% endif %}
+    
+    <div style="margin-top: 30px; padding: 20px; background-color: #e9ecef; border-radius: 4px;">
+        <h4 style="color: #333; margin-bottom: 15px;">What's Next?</h4>
+        <p style="color: #666;">
+            Would you like to:
+        </p>
+        <ul style="list-style: none; padding: 0;">
+            <li style="margin: 10px 0;">
+                <a href="{{ create_similar_goal_url }}" style="color: #007bff; text-decoration: none;">
+                    Create a similar goal
+                </a>
+            </li>
+            <li style="margin: 10px 0;">
+                <a href="{{ view_recommendations_url }}" style="color: #007bff; text-decoration: none;">
+                    View personalized recommendations
+                </a>
+            </li>
+        </ul>
+    </div>
+</div>
+{% endblock %} 

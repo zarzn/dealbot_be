@@ -14,6 +14,7 @@ class BaseConfig(BaseSettings):
     APP_NAME: str = "AI Deals System"
     APP_VERSION: str = "1.0.0"
     API_PREFIX: str = "/api/v1"
+    API_V1_PREFIX: str = "/api/v1"
     DEBUG: bool = False
     ENVIRONMENT: str = "development"
     

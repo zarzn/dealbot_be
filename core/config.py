@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "production"
     SECRET_KEY: SecretStr = SecretStr("your-secret-key-here")  # Default for development
     API_PREFIX: str = constants.API_PREFIX
+    API_V1_PREFIX: str = "/api/v1"
     ALLOWED_HOSTS: List[str] = ["*"]
 
     # Database
@@ -235,6 +236,35 @@ class Settings(BaseSettings):
     AWS_ENDPOINT_URL: Optional[HttpUrl] = None
     AWS_USE_SSL: bool = True
 
+    # Email
+    EMAIL_SERVER_HOST: str = os.getenv("EMAIL_SERVER_HOST", "smtp.gmail.com")
+    EMAIL_SERVER_PORT: int = int(os.getenv("EMAIL_SERVER_PORT", "587"))
+    EMAIL_SERVER_USER: str = os.getenv("EMAIL_SERVER_USER", "your-email@gmail.com")
+    EMAIL_SERVER_PASSWORD: str = os.getenv("EMAIL_SERVER_PASSWORD", "your-app-specific-password")
+    EMAIL_FROM: str = os.getenv("EMAIL_FROM", "AI Deals <noreply@aiagenticdeals.com>")
+    
+    # URLs
+    SITE_URL: str = os.getenv("SITE_URL", "http://localhost:3000")
+    API_URL: str = os.getenv("API_URL", "http://localhost:8000")
+    
+    # Token
+    SOL_NETWORK_RPC: HttpUrl = HttpUrl("https://api.mainnet-beta.solana.com")
+    TOKEN_CONTRACT_ADDRESS: str = os.getenv("TOKEN_CONTRACT_ADDRESS", "")
+    TOKEN_REQUIRED_BALANCE: confloat(ge=0) = float(os.getenv("TOKEN_REQUIRED_BALANCE", "0"))
+    TOKEN_SEARCH_COST: confloat(ge=0) = float(os.getenv("TOKEN_SEARCH_COST", "1"))
+    
+    # AI
+    OPENAI_API_KEY: Optional[SecretStr] = None
+    DEEPSEEK_API_KEY: Optional[SecretStr] = None
+    
+    # AWS
+    AWS_ACCESS_KEY: Optional[SecretStr] = None
+    AWS_SECRET_KEY: Optional[SecretStr] = None
+    AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
+    
+    # External APIs
+    WALMART_API_KEY: Optional[SecretStr] = None
+    
     class Config:
         """Pydantic config"""
         env_file = BACKEND_DIR / ".env"

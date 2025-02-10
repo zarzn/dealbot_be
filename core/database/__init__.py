@@ -12,6 +12,7 @@ from typing import AsyncGenerator, Optional
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from sqlalchemy.orm import sessionmaker, declarative_base
 
 from core.config import settings
 
@@ -19,21 +20,23 @@ logger = logging.getLogger(__name__)
 
 # Configure connection pooling with optimized settings
 engine = create_async_engine(
-    str(settings.DATABASE_URL),
+    str(settings.SQLALCHEMY_DATABASE_URI),
+    echo=settings.DEBUG,
     pool_size=settings.DB_POOL_SIZE,
-    max_overflow=settings.DB_MAX_OVERFLOW,
-    pool_timeout=settings.DB_POOL_TIMEOUT,
-    pool_recycle=settings.DB_POOL_RECYCLE,
-    pool_pre_ping=True,
-    echo=settings.DEBUG
+    max_overflow=settings.DB_POOL_OVERFLOW
 )
 
 # Configure session factory with transaction management
-async_session = async_sessionmaker(
+async_session = sessionmaker(
     engine,
+    class_=AsyncSession,
     expire_on_commit=False,
-    class_=AsyncSession
+    autocommit=False,
+    autoflush=False
 )
+
+# Create declarative base
+Base = declarative_base()
 
 @asynccontextmanager
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
@@ -54,19 +57,8 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency that provides a database session with retry logic."""
-    max_retries = settings.DB_MAX_RETRIES
-    retry_delay = settings.DB_RETRY_DELAY
-    
-    for attempt in range(max_retries):
-        try:
-            async with get_db_session() as session:
-                yield session
-                break
-        except OperationalError as e:
-            if attempt == max_retries - 1:
-                logger.error(f"Database connection failed after {max_retries} attempts: {str(e)}")
-                raise
-            logger.warning(f"Database connection failed (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay} seconds...")
-            await asyncio.sleep(retry_delay)
-            retry_delay *= 2 
+    """FastAPI dependency for database sessions."""
+    async with get_db_session() as session:
+        yield session
+
+__all__ = ['engine', 'async_session', 'get_db', 'get_db_session', 'Base'] 

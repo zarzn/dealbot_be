@@ -19,7 +19,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, conint
 from sqlalchemy import (
     Column, String, Boolean, DateTime, Numeric, text, Text, Integer,
     Index, CheckConstraint, UniqueConstraint, Enum as SQLEnum,
-    ForeignKey, select
+    ForeignKey, select, Float, and_
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.sql import func, expression
@@ -31,6 +31,7 @@ except ImportError:
 import json
 import logging
 from enum import Enum
+import sqlalchemy as sa
 
 from core.models.base import Base
 from core.exceptions import (
@@ -93,11 +94,15 @@ class UserBase(BaseModel):
             "timezone": "UTC"
         }
     )
-    status: str = Field(default=UserStatus.ACTIVE.value)
+    status: UserStatus = Field(default=UserStatus.ACTIVE)
     notification_channels: List[str] = Field(
         default=["in_app", "email"],
         description="Enabled notification channels"
     )
+    name: Optional[str] = Field(None, description="User's name")
+    email_verified: bool = Field(False, description="Whether the user's email is verified")
+    social_provider: Optional[str] = Field(None, description="User's social provider")
+    social_id: Optional[str] = Field(None, description="User's social ID")
 
     @field_validator('sol_address')
     @classmethod
@@ -185,7 +190,11 @@ class UserUpdate(BaseModel):
     sol_address: Optional[str] = None
     preferences: Optional[Dict[str, Any]] = None
     notification_channels: Optional[List[str]] = None
-    status: Optional[str] = None
+    status: Optional[UserStatus] = None
+    name: Optional[str] = None
+    email_verified: Optional[bool] = None
+    social_provider: Optional[str] = None
+    social_id: Optional[str] = None
 
     class Config:
         json_schema_extra = {
@@ -247,14 +256,23 @@ class User(Base):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    password: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=False)
+    password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     sol_address: Mapped[Optional[str]] = mapped_column(String(44), nullable=True, unique=True)
     referral_code: Mapped[Optional[str]] = mapped_column(String(10), nullable=True, unique=True)
     referred_by: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
     token_balance: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0)
     preferences: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
-    status: Mapped[str] = mapped_column(SQLEnum(UserStatus, name='userstatus', create_constraint=True), nullable=False, default=UserStatus.ACTIVE)
+    status: Mapped[str] = mapped_column(
+        sa.Enum('active', 'inactive', 'suspended', 'deleted', name='userstatus'),
+        nullable=False,
+        default='active',
+        server_default='active'
+    )
     notification_channels: Mapped[List[str]] = mapped_column(JSONB, nullable=False, server_default=text('["in_app", "email"]'))
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    social_provider: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    social_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
     last_payment_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -278,6 +296,7 @@ class User(Base):
     # Relationships
     token_balance_obj = relationship("TokenBalance", back_populates="user", uselist=False, cascade="all, delete-orphan")
     referrals = relationship("User", backref=backref("referred_by_user", remote_side=[id]))
+    notification_preferences = relationship("NotificationPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         """String representation of the user."""
@@ -288,6 +307,7 @@ class User(Base):
         return json.dumps({
             'id': str(self.id),
             'email': self.email,
+            'name': self.name,
             'sol_address': self.sol_address,
             'referral_code': self.referral_code,
             'referred_by': str(self.referred_by) if self.referred_by else None,
@@ -295,6 +315,9 @@ class User(Base):
             'status': self.status,
             'preferences': self.preferences,
             'notification_channels': self.notification_channels,
+            'email_verified': self.email_verified,
+            'social_provider': self.social_provider,
+            'social_id': self.social_id,
             'last_payment_at': self.last_payment_at.isoformat() if self.last_payment_at else None,
             'last_login_at': self.last_login_at.isoformat() if self.last_login_at else None,
             'created_at': self.created_at.isoformat(),
@@ -310,11 +333,29 @@ class User(Base):
     async def get_by_email(cls, db, email: str) -> Optional['User']:
         """Get user by email"""
         try:
-            stmt = select(cls).where(cls.email == email, cls.status == UserStatus.ACTIVE)
+            stmt = select(cls).where(
+                and_(
+                    cls.email == email,
+                    cls.status == 'active'
+                )
+            )
             result = await db.execute(stmt)
             return result.scalar_one_or_none()
         except Exception as e:
             logger.error(f"Failed to get user by email: {str(e)}")
+            raise
+
+    @classmethod
+    async def get_by_social_id(cls, db, provider: str, social_id: str) -> Optional['User']:
+        """Get user by social ID"""
+        try:
+            stmt = select(cls).where(
+                and_(cls.social_provider == provider, cls.social_id == social_id)
+            )
+            result = await db.execute(stmt)
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"Failed to get user by social ID: {str(e)}")
             raise
 
     @classmethod
@@ -345,7 +386,7 @@ class User(Base):
                 
             stmt = select(cls).where(
                 cls.sol_address == wallet_address,
-                cls.status == UserStatus.ACTIVE
+                cls.status == 'active'
             )
             result = await db.execute(stmt)
             return result.scalar_one_or_none()
@@ -368,7 +409,7 @@ class User(Base):
         try:
             stmt = select(cls).where(
                 cls.id == user_id,
-                cls.status == UserStatus.ACTIVE
+                cls.status == 'active'
             ).with_for_update()
             result = await db.execute(stmt)
             user = result.scalar_one_or_none()
@@ -450,7 +491,7 @@ class User(Base):
                 
             user = await db.query(cls).filter(
                 cls.id == user_id,
-                cls.status == UserStatus.ACTIVE
+                cls.status == 'active'
             ).with_for_update().first()
             
             if not user:
@@ -460,7 +501,7 @@ class User(Base):
             existing_wallet = await db.query(cls).filter(
                 cls.sol_address == wallet_address,
                 cls.id != user_id,
-                cls.status == UserStatus.ACTIVE
+                cls.status == 'active'
             ).first()
             
             if existing_wallet:
@@ -520,7 +561,7 @@ class User(Base):
     @property
     def is_active(self) -> bool:
         """Check if user is active."""
-        return self.status == UserStatus.ACTIVE.value
+        return self.status == 'active'
 
 class UserPreferences(BaseModel):
     """Model for user preferences"""

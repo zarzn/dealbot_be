@@ -12,11 +12,21 @@ from ..constants import (
 )
 from datetime import timedelta
 from pydantic import SecretStr
+import os
+from typing import Any, Dict, Optional
+from pydantic import PostgresDsn, RedisDsn
+from pydantic_settings import BaseSettings
 
-class DevelopmentConfig(BaseConfig):
+class DevelopmentConfig(BaseSettings):
+    """Development configuration."""
+
     # Application
+    APP_NAME: str = "AI Agentic Deals API"
+    APP_VERSION: str = "0.1.0"
+    API_V1_PREFIX: str = "/api/v1"
     DEBUG: bool = True
     ENVIRONMENT: str = "development"
+    ALLOWED_HOSTS: list[str] = ["*"]
     
     # Security
     SECRET_KEY: SecretStr = SecretStr("your-development-secret-key")
@@ -26,20 +36,20 @@ class DevelopmentConfig(BaseConfig):
     JWT_ALGORITHM: str = JWT_ALGORITHM
     
     # Database
-    POSTGRES_USER: str = "postgres"
-    POSTGRES_PASSWORD: str = "12345678"
-    POSTGRES_DB: str = "deals"
-    POSTGRES_HOST: str = "postgres"
-    POSTGRES_PORT: int = 5432
+    POSTGRES_USER: str = os.getenv("POSTGRES_USER", "postgres")
+    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "12345678")
+    POSTGRES_DB: str = os.getenv("POSTGRES_DB", "deals")
+    POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "deals_postgres")
+    POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", "5432"))
     DB_ECHO: bool = True
     DB_POOL_SIZE: int = 5
     DB_POOL_OVERFLOW: int = 10
     
     # Redis
-    REDIS_HOST: str = "localhost"
-    REDIS_PORT: int = 6379
+    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
     REDIS_DB: int = 0
-    REDIS_PASSWORD: str = "your_redis_password"
+    REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "your_redis_password")
     REDIS_POOL_SIZE: int = 5
     REDIS_TIMEOUT: int = 10
     REDIS_SSL: bool = False
@@ -108,5 +118,38 @@ class DevelopmentConfig(BaseConfig):
     DEAL_SCORE_MIN_HISTORY: int = 2  # Minimum price history points for scoring
     DEAL_SCORE_MAX_HISTORY: int = 30  # Maximum price history points for scoring
     
+    # Email
+    EMAIL_SERVER_HOST: str = os.getenv("EMAIL_SERVER_HOST", "localhost")
+    EMAIL_SERVER_PORT: int = int(os.getenv("EMAIL_SERVER_PORT", "1025"))
+    EMAIL_SERVER_USER: str = os.getenv("EMAIL_SERVER_USER", "")
+    EMAIL_SERVER_PASSWORD: str = os.getenv("EMAIL_SERVER_PASSWORD", "")
+    EMAIL_FROM: str = os.getenv("EMAIL_FROM", "noreply@example.com")
+    EMAIL_TEMPLATES_DIR: str = os.path.join("core", "templates", "email")
+
+    @property
+    def SQLALCHEMY_DATABASE_URI(self) -> PostgresDsn:
+        """Get database URI."""
+        return PostgresDsn.build(
+            scheme="postgresql+asyncpg",
+            username=self.POSTGRES_USER,
+            password=self.POSTGRES_PASSWORD,
+            host=self.POSTGRES_HOST,
+            port=int(self.POSTGRES_PORT),
+            path=self.POSTGRES_DB
+        )
+
+    @property
+    def REDIS_URL(self) -> RedisDsn:
+        """Get Redis URL."""
+        return RedisDsn.build(
+            scheme="redis",
+            host=self.REDIS_HOST,
+            port=self.REDIS_PORT,
+            password=self.REDIS_PASSWORD or None
+        )
+
     class Config:
+        """Pydantic config."""
         case_sensitive = True
+
+settings = DevelopmentConfig()
