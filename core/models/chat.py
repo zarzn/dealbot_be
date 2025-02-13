@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, List
 from uuid import UUID
 import logging
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from sqlalchemy import Column, String, DateTime, ForeignKey, Text, Index
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
@@ -57,6 +57,8 @@ class ChatMessageCreate(BaseModel):
     context: Optional[Dict[str, Any]] = None
     tokens_used: Optional[int] = Field(None, ge=0)
 
+    model_config = ConfigDict(from_attributes=True)
+
     @field_validator('role')
     @classmethod
     def validate_role(cls, v: str) -> str:
@@ -76,6 +78,77 @@ class ChatMessageResponse(BaseModel):
     tokens_used: Optional[int] = None
     created_at: datetime
 
-    class Config:
-        """Pydantic model configuration."""
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
+class ChatResponse(BaseModel):
+    """Chat response model."""
+    id: UUID
+    user_id: UUID
+    message: str
+    role: str = Field(default="assistant")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    context: Optional[dict] = None
+    tokens_used: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True, arbitrary_types_allowed=True)
+
+class ChatHistory(BaseModel):
+    """Chat history model."""
+    messages: List[ChatMessageResponse]
+    total_tokens: int = 0
+    
+    model_config = ConfigDict(from_attributes=True)
+
+class ChatRequest(BaseModel):
+    """Chat request model."""
+    message: str
+    context: Optional[dict] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class ChatAnalytics(BaseModel):
+    """Chat analytics model."""
+    total_messages: int
+    messages_by_role: Dict[str, int]
+    average_tokens_per_message: float
+    total_tokens_used: int
+    most_active_periods: List[Dict[str, Any]]
+    common_topics: List[Dict[str, float]]
+    response_times: Dict[str, float]
+    user_engagement_metrics: Dict[str, Any]
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    model_config = ConfigDict(from_attributes=True)
+
+class ChatFilter(BaseModel):
+    """Filter parameters for chat queries."""
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    role: Optional[str] = None
+    search_query: Optional[str] = None
+    min_tokens: Optional[int] = Field(None, ge=0)
+    max_tokens: Optional[int] = Field(None, ge=0)
+    context_type: Optional[str] = None
+    sort_by: str = Field(default="created_at")
+    sort_order: str = Field(default="desc", pattern="^(asc|desc)$")
+    
+    model_config = ConfigDict(from_attributes=True)
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v: Optional[str]) -> Optional[str]:
+        """Validate message role if provided."""
+        if v is not None:
+            valid_roles = {'user', 'assistant', 'system'}
+            if v not in valid_roles:
+                raise ValueError(f"Invalid role. Must be one of: {', '.join(valid_roles)}")
+        return v
+    
+    @field_validator('sort_by')
+    @classmethod
+    def validate_sort_by(cls, v: str) -> str:
+        """Validate sort field."""
+        valid_fields = {'created_at', 'tokens_used', 'role'}
+        if v not in valid_fields:
+            raise ValueError(f"Invalid sort field. Must be one of: {', '.join(valid_fields)}")
+        return v

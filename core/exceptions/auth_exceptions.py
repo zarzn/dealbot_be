@@ -153,6 +153,23 @@ class InvalidTwoFactorCodeError(AuthError):
             }
         )
 
+class TokenRefreshError(AuthError):
+    """Raised when token refresh fails."""
+    
+    def __init__(
+        self,
+        message: str = "Token refresh failed",
+        reason: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if reason:
+            error_details["reason"] = reason
+        super().__init__(
+            message=message,
+            details=error_details
+        )
+
 __all__ = [
     'AuthError',
     'AuthenticationError',
@@ -162,5 +179,6 @@ __all__ = [
     'SessionExpiredError',
     'PermissionDeniedError',
     'TwoFactorRequiredError',
-    'InvalidTwoFactorCodeError'
+    'InvalidTwoFactorCodeError',
+    'TokenRefreshError'
 ] 

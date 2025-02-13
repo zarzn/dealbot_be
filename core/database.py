@@ -5,15 +5,16 @@ for the AI Agentic Deals System. It includes retry logic and monitoring capabili
 """
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy import create_engine
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy import event, text
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Generator, Optional
 import asyncio
 import logging
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 from core.config import settings
 from core.metrics.database import DatabaseMetrics
@@ -21,9 +22,28 @@ from core.metrics.database import DatabaseMetrics
 logger = logging.getLogger(__name__)
 metrics = DatabaseMetrics()
 
-# Configure connection pooling with optimized settings
-engine = create_async_engine(
+# Disable SQLAlchemy logging
+logging.getLogger('sqlalchemy').setLevel(logging.ERROR)
+logging.getLogger('sqlalchemy').propagate = False
+
+# Configure async connection pooling with optimized settings
+async_engine = create_async_engine(
     str(settings.DATABASE_URL),
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+    pool_timeout=settings.DB_POOL_TIMEOUT,
+    pool_recycle=settings.DB_POOL_RECYCLE,
+    pool_pre_ping=True,
+    echo=False,  # Disable SQL logging
+    echo_pool=False,  # Disable connection pool logging
+    logging_name=None,  # Disable logging name
+    pool_logging_name=None  # Disable pool logging name
+)
+
+# Configure sync engine
+sync_engine = create_engine(
+    str(settings.sync_database_url),
+    poolclass=QueuePool,
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
     pool_timeout=settings.DB_POOL_TIMEOUT,
@@ -32,18 +52,24 @@ engine = create_async_engine(
     echo=settings.DEBUG
 )
 
-# Configure session factory with transaction management
-async_session = async_sessionmaker(
-    engine,
+# Configure session factories with transaction management
+AsyncSessionLocal = async_sessionmaker(
+    async_engine,
     expire_on_commit=False,
     class_=AsyncSession
+)
+
+SessionLocal = sessionmaker(
+    sync_engine,
+    expire_on_commit=False,
+    class_=Session
 )
 
 # Create base class for models
 Base = declarative_base()
 
 # Add connection event listeners
-@event.listens_for(engine.sync_engine, "connect")
+@event.listens_for(sync_engine, "connect")
 def set_search_path(dbapi_connection, connection_record):
     """Set the search path and connection settings."""
     try:
@@ -56,24 +82,24 @@ def set_search_path(dbapi_connection, connection_record):
         logger.error(f"Failed to set database connection parameters: {str(e)}")
         raise
 
-@event.listens_for(engine.sync_engine, "checkout")
+@event.listens_for(sync_engine, "checkout")
 def receive_checkout(dbapi_connection, connection_record, connection_proxy):
     """Monitor connection checkouts for metrics."""
     metrics.connection_checkouts.inc()
 
-@event.listens_for(engine.sync_engine, "checkin")
+@event.listens_for(sync_engine, "checkin")
 def receive_checkin(dbapi_connection, connection_record):
     """Monitor connection checkins for metrics."""
     metrics.connection_checkins.inc()
 
 @asynccontextmanager
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Context manager for database sessions with monitoring."""
+async def get_async_db_session() -> AsyncGenerator[AsyncSession, None]:
+    """Context manager for async database sessions with monitoring."""
     session: Optional[AsyncSession] = None
     start_time = time.time()
     
     try:
-        session = async_session()
+        session = AsyncSessionLocal()
         yield session
         await session.commit()
     except SQLAlchemyError as e:
@@ -86,14 +112,34 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         if session:
             await session.close()
 
+@contextmanager
+def get_sync_db_session() -> Generator[Session, None, None]:
+    """Context manager for sync database sessions with monitoring."""
+    session: Optional[Session] = None
+    start_time = time.time()
+    
+    try:
+        session = SessionLocal()
+        yield session
+        session.commit()
+    except SQLAlchemyError as e:
+        if session:
+            session.rollback()
+        metrics.connection_failures.inc()
+        logger.error(f"Database transaction failed: {str(e)}")
+        raise
+    finally:
+        if session:
+            session.close()
+
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency that provides a database session with retry logic."""
+    """Dependency that provides an async database session with retry logic."""
     max_retries = settings.DB_MAX_RETRIES
     retry_delay = settings.DB_RETRY_DELAY
     
     for attempt in range(max_retries):
         try:
-            async with get_db_session() as session:
+            async with get_async_db_session() as session:
                 yield session
                 break
         except OperationalError as e:
@@ -105,10 +151,29 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await asyncio.sleep(retry_delay)
             retry_delay *= 2
 
+def get_sync_db() -> Generator[Session, None, None]:
+    """Dependency that provides a sync database session with retry logic."""
+    max_retries = settings.DB_MAX_RETRIES
+    retry_delay = settings.DB_RETRY_DELAY
+    
+    for attempt in range(max_retries):
+        try:
+            with get_sync_db_session() as session:
+                yield session
+                break
+        except OperationalError as e:
+            if attempt == max_retries - 1:
+                metrics.connection_failures.inc()
+                logger.error(f"Database connection failed after {max_retries} attempts: {str(e)}")
+                raise
+            logger.warning(f"Database connection failed (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay} seconds...")
+            time.sleep(retry_delay)
+            retry_delay *= 2
+
 async def init_db() -> None:
     """Initialize database tables and verify connection."""
     try:
-        async with engine.begin() as conn:
+        async with async_engine.begin() as conn:
             # Verify connection
             await conn.execute(text("SELECT 1"))
             # Create tables
@@ -121,7 +186,7 @@ async def init_db() -> None:
 async def check_db_connection() -> bool:
     """Check database connection health."""
     try:
-        async with engine.connect() as conn:
+        async with async_engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
             return True
     except SQLAlchemyError as e:

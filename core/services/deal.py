@@ -31,7 +31,9 @@ from core.models.deal import (
     DealStatus,
     DealPriority,
     DealSource,
-    DealSearchFilters
+    DealSearchFilters,
+    DealResponse,
+    DealFilter
 )
 from core.models.goal import Goal
 from core.repositories.deal import DealRepository
@@ -98,6 +100,30 @@ class DealService:
         self._initialize_scheduler()
         self._setup_rate_limiting()
         self._setup_error_handlers()
+        self._background_tasks = None
+
+    def set_background_tasks(self, background_tasks: Optional[BackgroundTasks]) -> None:
+        """Set the background tasks instance.
+        
+        Args:
+            background_tasks: FastAPI BackgroundTasks instance
+        """
+        self._background_tasks = background_tasks
+
+    def add_background_task(self, func: Any, *args: Any, **kwargs: Any) -> None:
+        """Add a task to be executed in the background.
+        
+        Args:
+            func: The function to execute
+            *args: Positional arguments for the function
+            **kwargs: Keyword arguments for the function
+            
+        Raises:
+            ValueError: If background_tasks is not initialized
+        """
+        if self._background_tasks is None:
+            raise ValueError("Background tasks not initialized")
+        self._background_tasks.add_task(func, *args, **kwargs)
 
     def _initialize_scheduler(self) -> None:
         """Initialize scheduled background tasks for deal monitoring"""
@@ -231,12 +257,11 @@ class DealService:
             logger.error(f"Failed to get deal: {str(e)}")
             raise
 
-    async def process_deals_batch(self, deals: List[DealCreate], bg_tasks: BackgroundTasks) -> List[Deal]:
+    async def process_deals_batch(self, deals: List[DealCreate]) -> List[Deal]:
         """Process multiple deals in batch with background tasks and rate limiting
         
         Args:
             deals: List of DealCreate objects to process
-            bg_tasks: BackgroundTasks instance for async processing
             
         Returns:
             List[Deal]: List of successfully processed deals
@@ -252,7 +277,7 @@ class DealService:
             for i, deal_data in enumerate(deals[:batch_size]):
                 try:
                     # Process each deal in background with rate limiting
-                    bg_tasks.add_task(
+                    self.add_background_task(
                         self._process_single_deal_with_retry, 
                         deal_data
                     )
@@ -739,3 +764,52 @@ class DealService:
         except Exception as e:
             logger.error(f"Failed to get cached search results: {str(e)}")
             return None
+
+    async def get_deals(
+        self,
+        user_id: UUID,
+        filters: DealFilter
+    ) -> List[Deal]:
+        """Get deals matching the specified criteria.
+        
+        Args:
+            user_id: ID of the user requesting deals
+            filters: Deal filter criteria
+            
+        Returns:
+            List[Deal]: List of matching deals
+        """
+        try:
+            # Get deals from repository
+            deals = await self.repository.get_deals(user_id, filters)
+            
+            # Return deals immediately - background processing will be handled by the router
+            return deals
+            
+        except Exception as e:
+            logger.error(f"Failed to get deals: {str(e)}")
+            raise DealError(f"Failed to get deals: {str(e)}")
+            
+    async def process_deal_background(self, deal_id: UUID) -> None:
+        """Process a deal in the background.
+        
+        Args:
+            deal_id: ID of the deal to process
+        """
+        try:
+            deal = await self.repository.get_by_id(deal_id)
+            if not deal:
+                logger.error(f"Deal {deal_id} not found for background processing")
+                return
+                
+            # Calculate score and update deal
+            score = await self._calculate_deal_score(deal)
+            await self.repository.update(deal_id, {"score": score})
+            
+        except Exception as e:
+            logger.error(f"Failed to process deal {deal_id} in background: {str(e)}")
+            # Don't raise the error since this is a background task
+
+    class Config:
+        """Pydantic config."""
+        arbitrary_types_allowed = True

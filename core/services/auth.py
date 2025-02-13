@@ -26,10 +26,10 @@ from core.models.auth import (
     TokenStatus,
     TokenScope
 )
-""" from core.exceptions import (
+from core.exceptions import (
     AuthError,
     InvalidCredentialsError,
-    TokenError as AuthTokenError,
+    TokenError,
     SessionExpiredError,
     PermissionDeniedError,
     TwoFactorRequiredError,
@@ -40,11 +40,10 @@ from core.models.auth import (
     APIError,
     APIAuthenticationError,
     APIServiceUnavailableError,
-    DatabaseError
-) 
-DO NOT DELETE THIS COMMENT
-"""
-from core.database import get_db_session as get_db
+    DatabaseError,
+    TokenRefreshError
+)
+from core.database import get_db
 from core.utils.redis import get_redis_client
 
 from fastapi import Depends, HTTPException, status
@@ -55,35 +54,6 @@ logger = logging.getLogger(__name__)
 # Token expiration times (in minutes)
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
-
-class TokenData(BaseModel):
-    """Token data model."""
-    sub: str
-    exp: Optional[datetime] = None
-    refresh: bool = False
-
-class Token(BaseModel):
-    """Token response model."""
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int = ACCESS_TOKEN_EXPIRE_MINUTES * 60
-    refresh_token: Optional[str] = None
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-                "token_type": "bearer",
-                "expires_in": 1800,
-                "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
-            }
-        }
-
-class TokenRefreshError(Exception):
-    """Raised when token refresh fails."""
-    def __init__(self, message: str = "Token refresh failed"):
-        self.message = message
-        super().__init__(self.message)
 
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -115,13 +85,13 @@ async def authenticate_user(
         InvalidCredentialsError: If credentials are invalid
     """
     try:
-        # Get user by email
-        result = await db.execute(
-            select(User).where(
-                User.email == email,
-                User.status == 'active'  # Only allow active users to login
-            )
-        )
+        # Get user by email with relationships
+        stmt = select(User).where(
+            User.email == email,
+            User.status == 'active'  # Only allow active users to login
+        ).execution_options(populate_existing=True)
+        
+        result = await db.execute(stmt)
         user = result.scalar_one_or_none()
         
         if not user:
@@ -204,11 +174,11 @@ async def verify_token(token: str, redis: Redis) -> Dict[str, Any]:
         logger.error(f"Error verifying token: {e}")
         raise TokenRefreshError("Invalid token")
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/users/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: AsyncSession = Depends(lambda: next(get_db())),
+    db: AsyncSession = Depends(get_db)
 ) -> User:
     """Get current authenticated user."""
     try:
@@ -245,7 +215,7 @@ async def blacklist_token(token: str, redis: Redis) -> None:
         # Get token expiration from payload
         payload = jwt.decode(
             token,
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
             algorithms=[settings.JWT_ALGORITHM]
         )
         exp = payload.get("exp", 0)
@@ -515,6 +485,94 @@ async def verify_magic_link_token(token: str) -> Dict[str, Any]:
         logger.error(f"Error verifying magic link token: {e}")
         raise TokenRefreshError("Invalid or expired magic link token")
 
+class AuthService:
+    """Authentication service class."""
+    
+    def __init__(self, db: AsyncSession):
+        """Initialize auth service with database session."""
+        self.db = db
+        
+    async def get_user_by_id(self, user_id: str) -> Optional[User]:
+        """Get user by ID."""
+        try:
+            result = await self.db.execute(
+                select(User).where(User.id == UUID(user_id))
+            )
+            return result.scalar_one_or_none()
+        except Exception as e:
+            logger.error(f"Error getting user by ID: {e}")
+            raise UserNotFoundError(f"User not found: {user_id}")
+
+    async def is_token_blacklisted(self, token: str) -> bool:
+        """Check if a token is blacklisted.
+        
+        Args:
+            token: JWT token to check
+            
+        Returns:
+            bool: True if token is blacklisted, False otherwise
+        """
+        try:
+            redis_client = await get_redis_client()
+            is_blacklisted = await redis_client.get(f"blacklist:{token}")
+            return bool(is_blacklisted)
+        except Exception as e:
+            logger.error(f"Error checking token blacklist: {e}")
+            return False  # Default to not blacklisted on error
+            
+    async def authenticate(self, email: str, password: str) -> Optional[User]:
+        """Authenticate a user with email and password."""
+        return await authenticate_user(email, password, self.db)
+        
+    async def create_tokens(self, user: User) -> Token:
+        """Create access and refresh tokens for a user."""
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        refresh_token_expires = timedelta(minutes=REFRESH_TOKEN_EXPIRE_MINUTES)
+        
+        access_token = await create_access_token(
+            data={"sub": str(user.id)},
+            expires_delta=access_token_expires
+        )
+        
+        refresh_token = await create_refresh_token(
+            data={"sub": str(user.id)},
+            expires_delta=refresh_token_expires
+        )
+        
+        return Token(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_in=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        )
+        
+    async def refresh_token(self, refresh_token: str) -> Token:
+        """Refresh access token using refresh token."""
+        try:
+            redis_client = await get_redis_client()
+            payload = await verify_token(refresh_token, redis_client)
+            
+            if not payload.get("refresh"):
+                raise TokenRefreshError("Invalid refresh token")
+                
+            user = await self.get_user_by_id(payload["sub"])
+            if not user:
+                raise TokenRefreshError("User not found")
+                
+            return await self.create_tokens(user)
+            
+        except Exception as e:
+            logger.error(f"Error refreshing token: {e}")
+            raise TokenRefreshError(str(e))
+            
+    async def logout(self, token: str) -> None:
+        """Logout user by blacklisting their token."""
+        try:
+            redis_client = await get_redis_client()
+            await blacklist_token(token, redis_client)
+        except Exception as e:
+            logger.error(f"Error logging out user: {e}")
+            raise ValueError(f"Could not logout user: {e}")
+
 __all__ = [
     'get_current_user',
     'get_current_active_user',
@@ -531,5 +589,6 @@ __all__ = [
     'verify_password_reset_token',
     'create_email_verification_token',
     'verify_email_token',
-    'TokenRefreshError'
+    'TokenRefreshError',
+    'AuthService'
 ]

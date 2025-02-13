@@ -1,13 +1,20 @@
-from typing import Generator, Optional
-from fastapi import Depends, HTTPException, status
+from typing import AsyncGenerator, Optional
+from fastapi import Depends, HTTPException, status, BackgroundTasks
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 
-from core.database import SessionLocal
+from core.database import AsyncSessionLocal
 from core.models.user import User
 from core.services.auth import AuthService
+from core.services.token import TokenService
+from core.services.analytics import AnalyticsService
+from core.services.market import MarketService
+from core.services.deal import DealService
+from core.services.goal import GoalService
+from core.services.market_search import MarketSearchService
+from core.services.deal_analysis import DealAnalysisService
 from core.config import settings
 from core.exceptions import (
     AuthenticationError,
@@ -15,19 +22,74 @@ from core.exceptions import (
     DatabaseError
 )
 
+from core.repositories.market import MarketRepository
+from core.repositories.deal import DealRepository
+from core.repositories.goal import GoalRepository
+from core.repositories.token import TokenRepository
+from core.repositories.analytics import AnalyticsRepository
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_PREFIX}/auth/login")
 
-def get_db() -> Generator[Session, None, None]:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Get database session."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+
+async def get_token_service(db: AsyncSession = Depends(get_db)) -> TokenService:
+    """Get token service instance."""
+    return TokenService(TokenRepository(db))
+
+async def get_analytics_service(
+    db: AsyncSession = Depends(get_db),
+    market_repository: MarketRepository = Depends(lambda db=Depends(get_db): MarketRepository(db)),
+    deal_repository: DealRepository = Depends(lambda db=Depends(get_db): DealRepository(db))
+) -> AnalyticsService:
+    """Get analytics service instance."""
+    return AnalyticsService(
+        AnalyticsRepository(db),
+        market_repository,
+        deal_repository
+    )
+
+async def get_market_service(db: AsyncSession = Depends(get_db)) -> MarketService:
+    """Get market service instance."""
+    return MarketService(MarketRepository(db))
+
+async def get_deal_service(db: AsyncSession = Depends(get_db)) -> DealService:
+    """Get deal service instance."""
+    return DealService(DealRepository(db))
+
+async def get_goal_service(
+    db: AsyncSession = Depends(get_db),
+    token_service: TokenService = Depends(get_token_service)
+) -> GoalService:
+    """Get goal service instance."""
+    return GoalService(db=db, token_service=token_service)
+
+async def get_market_search_service(
+    db: AsyncSession = Depends(get_db)
+) -> MarketSearchService:
+    """Get market search service instance."""
+    return MarketSearchService(db)
+
+async def get_deal_analysis_service(
+    db: AsyncSession = Depends(get_db),
+    market_service: MarketService = Depends(get_market_service),
+    deal_service: DealService = Depends(get_deal_service)
+) -> DealAnalysisService:
+    """Get deal analysis service instance."""
+    return DealAnalysisService(
+        db,
+        market_service,
+        deal_service
+    )
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ) -> User:
     """Get current authenticated user."""
     credentials_exception = HTTPException(
@@ -72,7 +134,7 @@ async def get_current_user(
 
 async def get_optional_user(
     token: Optional[str] = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
+    db: AsyncSession = Depends(get_db)
 ) -> Optional[User]:
     """Get current user if authenticated, otherwise return None."""
     if not token:

@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional, List
 from uuid import UUID, uuid4
 import json
 import logging
-from pydantic import BaseModel, Field, validator, HttpUrl
+from pydantic import BaseModel, Field, validator, HttpUrl, ConfigDict
 from sqlalchemy import (
     Column, String, DateTime, Boolean, ForeignKey, Text,
     Index, CheckConstraint, Enum as SQLEnum
@@ -32,14 +32,14 @@ from core.exceptions import (
 logger = logging.getLogger(__name__)
 
 class NotificationType(str, Enum):
-    """Notification types"""
-    DEAL_MATCH = "deal_match"
-    GOAL_COMPLETED = "goal_completed"
-    GOAL_EXPIRED = "goal_expired"
-    PRICE_DROP = "price_drop"
-    TOKEN_LOW = "token_low"
+    """Notification type enumeration."""
     SYSTEM = "system"
-    CUSTOM = "custom"
+    DEAL = "deal"
+    GOAL = "goal"
+    PRICE_ALERT = "price_alert"
+    TOKEN = "token"
+    SECURITY = "security"
+    MARKET = "market"
 
 class NotificationChannel(str, Enum):
     """Notification delivery channels"""
@@ -51,7 +51,7 @@ class NotificationChannel(str, Enum):
     DISCORD = "discord"
 
 class NotificationPriority(str, Enum):
-    """Notification priority levels"""
+    """Notification priority enumeration."""
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -65,6 +65,33 @@ class NotificationStatus(str, Enum):
     READ = "read"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+class NotificationFilter(BaseModel):
+    """Filter parameters for notification queries."""
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    type: Optional[NotificationType] = None
+    priority: Optional[NotificationPriority] = None
+    read: Optional[bool] = None
+    search_query: Optional[str] = None
+    sort_by: str = Field(default="created_at")
+    sort_order: str = Field(default="desc", pattern="^(asc|desc)$")
+
+    model_config = ConfigDict(from_attributes=True)
+
+class NotificationAnalytics(BaseModel):
+    """Analytics data for notifications."""
+    total_notifications: int
+    notifications_by_type: Dict[str, int]
+    notifications_by_priority: Dict[str, int]
+    read_vs_unread: Dict[str, int]
+    average_response_time: float
+    peak_notification_times: List[Dict[str, Any]]
+    notification_trends: List[Dict[str, Any]]
+    user_interaction_metrics: Dict[str, Any]
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    model_config = ConfigDict(from_attributes=True)
 
 class NotificationBase(BaseModel):
     """Base notification model"""
@@ -92,50 +119,50 @@ class NotificationBase(BaseModel):
             raise ValueError("Expiry date must be in the future")
         return v
 
-class NotificationCreate(NotificationBase):
-    """Schema for creating a notification"""
+class NotificationCreate(BaseModel):
+    """Schema for creating a notification."""
+    title: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1)
+    type: NotificationType
+    priority: NotificationPriority = Field(default=NotificationPriority.MEDIUM)
+    metadata: Optional[Dict[str, Any]] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class NotificationUpdate(BaseModel):
+    """Schema for updating a notification."""
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    message: Optional[str] = Field(None, min_length=1)
+    type: Optional[NotificationType] = None
+    priority: Optional[NotificationPriority] = None
+    metadata: Optional[Dict[str, Any]] = None
+    read: Optional[bool] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class NotificationResponse(BaseModel):
+    """Schema for notification response."""
+    id: UUID
     user_id: UUID
     goal_id: Optional[UUID] = None
     deal_id: Optional[UUID] = None
-    schedule_for: Optional[datetime] = None
-
-class NotificationUpdate(BaseModel):
-    """Schema for updating a notification"""
-    title: Optional[str] = Field(None, min_length=1, max_length=255)
-    message: Optional[str] = Field(None, min_length=1, max_length=5000)
-    channels: Optional[List[NotificationChannel]] = None
-    priority: Optional[NotificationPriority] = None
+    title: str
+    message: str
+    type: NotificationType
+    channels: List[NotificationChannel]
+    priority: NotificationPriority
     data: Optional[Dict[str, Any]] = None
     notification_metadata: Optional[Dict[str, Any]] = None
-    action_url: Optional[HttpUrl] = None
-    status: Optional[NotificationStatus] = None
-    error: Optional[str] = None
-
-class NotificationResponse(NotificationBase):
-    """Schema for notification response"""
-    id: UUID
-    user_id: UUID
-    goal_id: Optional[UUID]
-    deal_id: Optional[UUID]
+    action_url: Optional[str] = None
     status: NotificationStatus
     created_at: datetime
-    schedule_for: Optional[datetime]
-    sent_at: Optional[datetime]
-    delivered_at: Optional[datetime]
-    read_at: Optional[datetime]
-    error: Optional[str]
+    schedule_for: Optional[datetime] = None
+    sent_at: Optional[datetime] = None
+    delivered_at: Optional[datetime] = None
+    read_at: Optional[datetime] = None
+    error: Optional[str] = None
 
-    class Config:
-        """Pydantic model configuration."""
-        from_attributes = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat(),
-            UUID: lambda v: str(v),
-            NotificationType: lambda v: v.value,
-            NotificationChannel: lambda v: v.value,
-            NotificationPriority: lambda v: v.value,
-            NotificationStatus: lambda v: v.value
-        }
+    model_config = ConfigDict(from_attributes=True)
 
 class Notification(Base):
     """Notification database model"""

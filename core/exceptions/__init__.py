@@ -97,10 +97,17 @@ from .goal_exceptions import (
 from .agent_exceptions import (
     AgentError,
     AgentNotFoundError,
+    AgentValidationError,
+    AgentCreationError,
+    AgentUpdateError,
+    AgentDeletionError,
+    AgentStatusError,
+    AgentProcessingError,
     AgentCommunicationError,
     AgentTimeoutError,
     AgentMemoryError,
-    AgentDecisionError
+    AgentDecisionError,
+    AgentCoordinationError
 )
 
 # Re-export notification exceptions
@@ -129,12 +136,11 @@ from .auth_exceptions import (
     AuthorizationError,
     InvalidCredentialsError,
     TokenError,
+    TokenRefreshError,
     SessionExpiredError,
     PermissionDeniedError,
     TwoFactorRequiredError,
-    InvalidTwoFactorCodeError,
-    AuthenticationError,
-    AuthorizationError
+    InvalidTwoFactorCodeError
 )
 
 # Re-export API exceptions
@@ -268,10 +274,17 @@ __all__ = [
     # Agent exceptions
     'AgentError',
     'AgentNotFoundError',
+    'AgentValidationError',
+    'AgentCreationError',
+    'AgentUpdateError',
+    'AgentDeletionError',
+    'AgentStatusError',
+    'AgentProcessingError',
     'AgentCommunicationError',
     'AgentTimeoutError',
     'AgentMemoryError',
     'AgentDecisionError',
+    'AgentCoordinationError',
     
     # Notification exceptions
     'NotificationError',
@@ -297,6 +310,7 @@ __all__ = [
     'InvalidTwoFactorCodeError',
     'AuthenticationError',
     'AuthorizationError',
+    'TokenRefreshError',
     
     # API exceptions
     'APIError',
@@ -513,4 +527,60 @@ class ServiceError(BaseError):
 
 class InvalidGoalConstraintsError(ValidationError):
     """Raised when goal constraints are invalid."""
+    pass
+
+class CoreException(Exception):
+    """Base exception for all core exceptions."""
+    pass
+
+class RecommendationError(CoreException):
+    """Raised when recommendation generation fails."""
+    pass
+
+class GoalError(CoreException):
+    """Raised when goal operations fail."""
+    pass
+
+class DealError(CoreException):
+    """Raised when deal operations fail."""
+    pass
+
+class TokenError(CoreException):
+    """Raised when token operations fail."""
+    pass
+
+class ValidationError(CoreException):
+    """Raised when validation fails."""
+    pass
+
+class DatabaseError(CoreException):
+    """Raised when database operations fail."""
+    pass
+
+class CacheOperationError(CoreException):
+    """Raised when cache operations fail."""
+    pass
+
+class NetworkError(CoreException):
+    """Raised when network operations fail."""
+    pass
+
+class APIServiceUnavailableError(CoreException):
+    """Raised when an API service is unavailable."""
+    pass
+
+class GoalNotFoundError(GoalError):
+    """Raised when a goal is not found."""
+    pass
+
+class InvalidGoalDataError(GoalError):
+    """Raised when goal data is invalid."""
+    pass
+
+class GoalConstraintError(GoalError):
+    """Raised when goal constraints are invalid."""
+    pass
+
+class GoalLimitExceededError(GoalError):
+    """Raised when goal limits are exceeded."""
     pass

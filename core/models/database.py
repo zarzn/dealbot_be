@@ -10,14 +10,15 @@ from uuid import UUID
 import logging
 
 from pydantic import BaseModel, Field, ConfigDict
-from sqlalchemy import Column, String, JSON, DateTime, Enum, Integer, text, select
+from sqlalchemy import Column, String, JSON, DateTime, Enum, Integer, text, select, func
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import declarative_base, sessionmaker, Mapped, mapped_column
 from sqlalchemy.sql import Select
 
 from core.config import settings
+from core.database import async_engine, AsyncSessionLocal, Base
 from core.exceptions.base import (
     DatabaseError,
     ValidationError,
@@ -34,23 +35,6 @@ Base = declarative_base()
 ModelType = TypeVar("ModelType", bound=Base)
 CreateSchemaType = TypeVar("CreateSchemaType", bound=BaseModel)
 UpdateSchemaType = TypeVar("UpdateSchemaType", bound=BaseModel)
-
-# Create async engine
-engine = create_async_engine(
-    str(settings.SQLALCHEMY_DATABASE_URI),
-    echo=settings.DEBUG,
-    pool_size=settings.DB_POOL_SIZE,
-    max_overflow=settings.DB_POOL_OVERFLOW
-)
-
-# Create async session factory
-async_session = sessionmaker(
-    engine,
-    class_=AsyncSession,
-    expire_on_commit=False,
-    autocommit=False,
-    autoflush=False
-)
 
 # Pydantic models for data validation
 class GoalBase(BaseModel):
@@ -263,7 +247,7 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
     ) -> int:
         """Count total records with optional filtering."""
         try:
-            query = select(func.count()).select_from(self.model)
+            query = select(func.count(1)).select_from(self.model)
             
             if filters:
                 for field, value in filters.items():
@@ -288,7 +272,7 @@ class GoalRepository(BaseRepository[Goal, GoalCreate, GoalUpdate]):
 # Database session dependency
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """Get database session."""
-    async with async_session() as session:
+    async with AsyncSessionLocal() as session:
         try:
             yield session
         except Exception as e:

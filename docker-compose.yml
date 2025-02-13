@@ -1,49 +1,65 @@
 version: '3.8'
 
 services:
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  redis:
+    image: redis:7.2-alpine
+    container_name: deals_redis
     ports:
-      - "8000:8000"
+      - "6379:6379"
     volumes:
-      - .:/app
-    env_file:
-      - .env.development
-    depends_on:
-      - postgres
-      - redis
+      - redis_data:/data
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-your_redis_password}
     networks:
       - deals_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   postgres:
     image: postgres:15-alpine
-    ports:
-      - "5432:5432"
+    container_name: deals_postgres
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=12345678
       - POSTGRES_DB=deals
+    ports:
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - deals_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
-  redis:
-    image: redis:7-alpine
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: deals_api
+    env_file:
+      - .env.development
     ports:
-      - "6379:6379"
-    command: redis-server --requirepass your_redis_password
-    volumes:
-      - redis_data:/data
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     networks:
       - deals_network
-
-volumes:
-  postgres_data:
-  redis_data:
+    volumes:
+      - .:/app
+    command: uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 
 networks:
   deals_network:
-    driver: bridge 
+    driver: bridge
+
+volumes:
+  redis_data:
+  postgres_data: 

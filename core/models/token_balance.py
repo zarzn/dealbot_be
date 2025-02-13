@@ -38,7 +38,6 @@ class TokenBalanceBase(BaseModel):
     """Base token balance model."""
     user_id: UUID
     balance: Decimal = Field(default=Decimal("0"), ge=0)
-    is_active: bool = Field(default=True)
 
     @validator('balance')
     @classmethod
@@ -65,7 +64,6 @@ class TokenBalanceCreate(TokenBalanceBase):
 class TokenBalanceUpdate(BaseModel):
     """Schema for updating a token balance."""
     balance: Optional[Decimal] = Field(None, ge=0)
-    is_active: Optional[bool] = None
 
 class TokenBalanceResponse(TokenBalanceBase):
     """Schema for token balance response."""
@@ -88,13 +86,21 @@ class TokenBalance(Base):
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
     balance: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
 
     # Relationships
-    user = relationship("User", back_populates="token_balance_obj")
-    history = relationship("TokenBalanceHistory", back_populates="token_balance", cascade="all, delete-orphan")
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="token_balance_obj",
+        lazy="selectin"
+    )
+    history: Mapped[list["TokenBalanceHistory"]] = relationship(
+        "TokenBalanceHistory",
+        back_populates="token_balance",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
 
     def __repr__(self) -> str:
         """String representation of the token balance."""

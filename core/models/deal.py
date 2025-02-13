@@ -239,3 +239,57 @@ class DealSearchFilters(BaseModel):
             if v < values["min_price"]:
                 raise ValueError("max_price must be greater than min_price")
         return v
+
+class DealFilter(BaseModel):
+    """Model for filtering deals"""
+    category: Optional[str] = None
+    price_min: Optional[float] = None
+    price_max: Optional[float] = None
+    source: Optional[str] = None
+    status: Optional[DealStatus] = None
+    priority: Optional[DealPriority] = None
+
+class DealAnalytics(BaseModel):
+    """Model for deal analytics"""
+    deal_id: UUID
+    price_history: List[Dict[str, Any]]
+    price_trend: str
+    market_analysis: Dict[str, Any]
+    source_reliability: float
+    score_history: List[Dict[str, Any]]
+    created_at: datetime
+
+class DealRecommendation(BaseModel):
+    """Model for deal recommendations"""
+    deal_id: UUID
+    title: str
+    price: Decimal
+    original_price: Optional[Decimal]
+    currency: str
+    source: str
+    url: str
+    image_url: Optional[str]
+    score: float
+    reason: str
+    expires_at: Optional[datetime]
+
+class DealHistory(BaseModel):
+    """Model for deal history"""
+    deal_id: UUID
+    price: Decimal
+    original_price: Optional[Decimal]
+    currency: str
+    status: DealStatus
+    metadata: Optional[Dict[str, Any]]
+    timestamp: datetime
+
+class DealPriceHistory(BaseModel):
+    """Model for deal price history"""
+    deal_id: UUID
+    prices: List[Dict[str, Any]]
+    trend: str
+    average_price: Decimal
+    lowest_price: Decimal
+    highest_price: Decimal
+    start_date: datetime
+    end_date: datetime

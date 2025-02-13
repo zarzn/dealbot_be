@@ -5,7 +5,7 @@ import logging
 
 from core.config import settings
 from core.database.init_db import init_database
-from api.v1.router import router as api_v1_router
+from core.api.v1.router import router as api_v1_router
 from core.api.v1.notifications.websocket import handle_websocket
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ app.add_middleware(
 app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
 
 # WebSocket endpoint
-app.websocket("/ws/notifications")(handle_websocket)
+app.websocket("/notifications/ws")(handle_websocket)
 
 @app.get("/")
 async def root():

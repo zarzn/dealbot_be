@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Background
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 
-from core.database import get_db_session as get_db
+from core.database import get_async_db_session as get_db
 from core.models.market import (
     MarketCreate,
     MarketUpdate,

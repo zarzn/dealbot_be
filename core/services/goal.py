@@ -43,12 +43,10 @@ class GoalService:
     def __init__(
         self, 
         db: AsyncSession, 
-        token_service: TokenService,
-        background_tasks: Optional[BackgroundTasks] = None
+        token_service: TokenService
     ):
         self.db = db
         self.token_service = token_service
-        self.background_tasks = background_tasks
         self.redis_client = None
         
     async def init_redis(self) -> None:
@@ -85,50 +83,53 @@ class GoalService:
     async def create_goal(
         self, 
         user_id: UUID, 
-        goal: GoalCreate,
-        background_tasks: Optional[BackgroundTasks] = None
+        goal: GoalCreate
     ) -> GoalResponse:
-        """Create a new goal with token validation and caching"""
+        """Create a new goal.
+        
+        Args:
+            user_id: User ID
+            goal: Goal data
+            
+        Returns:
+            GoalResponse: Created goal details
+            
+        Raises:
+            GoalError: If goal creation fails
+        """
         try:
-            # Validate token balance
-            await self.token_service.validate_goal_creation(user_id)
-            
-            # Create goal
-            db_goal = GoalModel(
+            # Create goal model
+            goal_model = GoalModel(
                 user_id=user_id,
-                **goal.dict(exclude_unset=True),
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
+                title=goal.title,
+                constraints=goal.constraints.dict(),
+                status=GoalStatus.ACTIVE,
+                created_at=datetime.utcnow()
             )
-            self.db.add(db_goal)
+            
+            # Add to database
+            self.db.add(goal_model)
             await self.db.commit()
-            await self.db.refresh(db_goal)
+            await self.db.refresh(goal_model)
             
-            # Cache the new goal
-            await self._cache_goal(db_goal)
+            # Schedule background tasks using Celery
+            update_goal_status_task.delay(goal_model.id, user_id)
             
-            # Schedule background status update check if needed
-            if background_tasks and self.background_tasks:
-                self.background_tasks.add_task(
-                    "update_goal_status",
-                    goal_id=db_goal.id,
-                    user_id=user_id
-                )
-                
-            logger.info(
-                f"Created new goal {db_goal.id} for user {user_id}",
-                extra={"goal_id": db_goal.id, "user_id": user_id}
+            # Create response
+            response = GoalResponse(
+                id=goal_model.id,
+                user_id=goal_model.user_id,
+                title=goal_model.title,
+                constraints=goal_model.constraints,
+                status=goal_model.status,
+                created_at=goal_model.created_at
             )
-            return GoalResponse.from_orm(db_goal)
+            
+            return response
             
         except Exception as e:
-            await self.db.rollback()
-            logger.error(
-                f"Failed to create goal for user {user_id}: {str(e)}",
-                exc_info=True,
-                extra={"user_id": user_id}
-            )
-            raise InvalidGoalDataError(f"Failed to create goal: {str(e)}") from e
+            logger.error(f"Goal creation failed: {str(e)}")
+            raise GoalError(f"Failed to create goal: {str(e)}")
 
     async def get_goals(self, user_id: UUID) -> List[GoalResponse]:
         """Get all goals for a user with caching"""
@@ -208,8 +209,7 @@ class GoalService:
         self, 
         user_id: UUID,
         goal_id: UUID, 
-        status: str,
-        background_tasks: Optional[BackgroundTasks] = None
+        status: str
     ) -> GoalResponse:
         """Update goal status with validation and cache invalidation"""
         if status not in GoalStatus.list():
@@ -232,14 +232,9 @@ class GoalService:
             # Invalidate cache
             await self._invalidate_goal_cache(user_id, goal_id)
             
-            # Schedule background status update check if needed
-            if background_tasks and self.background_tasks:
-                self.background_tasks.add_task(
-                    "update_goal_status",
-                    goal_id=goal_id,
-                    user_id=user_id
-                )
-                
+            # Schedule background task using Celery
+            update_goal_status_task.delay(goal_id, user_id)
+            
             logger.info(
                 f"Updated goal {goal_id} status to {status}",
                 extra={"goal_id": goal_id, "status": status}

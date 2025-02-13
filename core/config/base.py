@@ -33,7 +33,6 @@ class BaseConfig(BaseSettings):
     POSTGRES_PORT: int = 5432
     DATABASE_URL: Optional[str] = None
     DB_POOL_SIZE: int = 5
-    DB_POOL_OVERFLOW: int = 10
     DB_POOL_TIMEOUT: int = 30
     DB_POOL_RECYCLE: int = 1800
     DB_ECHO: bool = False

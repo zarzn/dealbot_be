@@ -38,18 +38,18 @@ class Settings(BaseSettings):
     POSTGRES_DB: str = "deals"
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: conint(ge=1, le=65535) = 5432
-    DATABASE_URL: Optional[PostgresDsn] = None
-    DB_POOL_SIZE: conint(ge=1) = constants.DB_POOL_SIZE
-    DB_MAX_OVERFLOW: conint(ge=1) = constants.DB_MAX_OVERFLOW
-    DB_POOL_TIMEOUT: conint(ge=1) = constants.DB_POOL_TIMEOUT
-    DB_POOL_RECYCLE: conint(ge=1) = constants.DB_POOL_RECYCLE
+    DATABASE_URL: str
+    DB_POOL_SIZE: int = constants.DB_POOL_SIZE
+    DB_MAX_OVERFLOW: int = constants.DB_MAX_OVERFLOW
+    DB_POOL_TIMEOUT: int = constants.DB_POOL_TIMEOUT
+    DB_POOL_RECYCLE: int = constants.DB_POOL_RECYCLE
     DB_MAX_RETRIES: conint(ge=1) = 3
     DB_RETRY_DELAY: confloat(ge=0.1) = 1.0
     DB_STATEMENT_TIMEOUT: conint(ge=1) = 30  # seconds
     DB_IDLE_TIMEOUT: conint(ge=1) = 300  # 5 minutes
 
     @property
-    def database_url(self) -> str:
+    def SQLALCHEMY_DATABASE_URI(self) -> str:
         """Get database URL with proper credentials escaping"""
         if self.DATABASE_URL:
             return str(self.DATABASE_URL)
@@ -68,20 +68,46 @@ class Settings(BaseSettings):
         except Exception as e:
             raise ValueError(f"Invalid database configuration: {str(e)}")
 
-    # Redis
+    @property
+    def sync_database_url(self) -> str:
+        """Get synchronous database URL with proper credentials escaping"""
+        if self.DATABASE_URL:
+            # Replace asyncpg with psycopg2 for sync operations
+            return str(self.DATABASE_URL).replace("postgresql+asyncpg", "postgresql")
+        
+        try:
+            return str(
+                PostgresDsn.build(
+                    scheme="postgresql",
+                    username=self.POSTGRES_USER,
+                    password=self.POSTGRES_PASSWORD.get_secret_value(),
+                    host=self.POSTGRES_HOST,
+                    port=self.POSTGRES_PORT,
+                    path=self.POSTGRES_DB
+                )
+            )
+        except Exception as e:
+            raise ValueError(f"Invalid database configuration: {str(e)}")
+
+    # Redis Configuration
     REDIS_HOST: str = "localhost"
     REDIS_PORT: conint(ge=1, le=65535) = 6379
     REDIS_DB: conint(ge=0) = 0
     REDIS_PASSWORD: Optional[SecretStr] = None
     REDIS_SSL: bool = False
-    REDIS_POOL_SIZE: conint(ge=1) = 20
-    REDIS_TIMEOUT: conint(ge=1) = 3
-    REDIS_URL: Optional[RedisDsn] = None
+    REDIS_POOL_SIZE: int = 10
+    REDIS_TIMEOUT: int = 10
+    REDIS_MAX_CONNECTIONS: int = 10
+    REDIS_URL: Optional[str] = None
     REDIS_MAX_RETRIES: conint(ge=1) = 3
     REDIS_RETRY_DELAY: confloat(ge=0.1) = 1.0
     REDIS_SOCKET_KEEPALIVE: bool = True
-    REDIS_KEY_PREFIX: str = constants.REDIS_KEY_PREFIX
-    REDIS_MAX_CONNECTIONS: conint(ge=1) = constants.REDIS_MAX_CONNECTIONS
+    REDIS_KEY_PREFIX: str = "deals:"
+    REDIS_SOCKET_CONNECT_TIMEOUT: int = 10
+    REDIS_SOCKET_READ_TIMEOUT: int = 10
+    REDIS_SOCKET_WRITE_TIMEOUT: int = 10
+    REDIS_HEALTH_CHECK_INTERVAL: int = 30
+    REDIS_MAX_CONNECTION_CALLS: int = 0  # Unlimited
 
     @property
     def redis_url(self) -> str:
@@ -94,7 +120,8 @@ class Settings(BaseSettings):
             scheme = "rediss" if self.REDIS_SSL else "redis"
             return f"{scheme}://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
         except Exception as e:
-            raise ValueError(f"Invalid Redis configuration: {str(e)}")
+            logger.error(f"Failed to build Redis URL: {str(e)}")
+            return "redis://localhost:6379/0"
 
     # Token System
     SOL_NETWORK_RPC: HttpUrl = HttpUrl("https://api.mainnet-beta.solana.com")  # Default mainnet
@@ -302,14 +329,19 @@ class Settings(BaseSettings):
         }
 
     def get_redis_pool_settings(self) -> Dict[str, Any]:
-        """Get Redis pool settings"""
+        """Get Redis pool settings."""
         return {
-            "pool_size": self.REDIS_POOL_SIZE,
+            "max_connections": self.REDIS_MAX_CONNECTIONS,
             "socket_timeout": self.REDIS_TIMEOUT,
-            "socket_connect_timeout": self.REDIS_TIMEOUT,
             "socket_keepalive": self.REDIS_SOCKET_KEEPALIVE,
             "retry_on_timeout": True,
-            "max_connections": self.REDIS_POOL_SIZE + 10
+            "retry": self.REDIS_MAX_RETRIES,
+            "retry_delay": self.REDIS_RETRY_DELAY,
+            "health_check_interval": 30,
+            "max_connection_calls": 0,  # Unlimited
+            "socket_connect_timeout": self.REDIS_TIMEOUT,
+            "socket_read_size": 65536,  # 64KB
+            "socket_write_timeout": self.REDIS_TIMEOUT
         }
 
     def get_cors_settings(self) -> Dict[str, Any]:

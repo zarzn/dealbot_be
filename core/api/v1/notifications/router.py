@@ -2,64 +2,41 @@
 
 from typing import List, Dict, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, WebSocket, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime, timedelta
 
 from core.models.notification import (
     NotificationResponse,
     NotificationCreate,
     NotificationUpdate,
     NotificationType,
-    NotificationPriority
+    NotificationPriority,
+    NotificationFilter,
+    NotificationAnalytics
 )
 from core.models.notification_preferences import (
     NotificationPreferencesResponse,
     NotificationPreferencesUpdate
 )
 from core.services.notifications import NotificationService
-from core.database import get_session
+from core.database import get_async_db_session as get_db
 from core.dependencies import get_current_user
-from core.models.user import User
-from .websocket import handle_websocket
+from core.models.user import User, UserInDB
+from core.api.v1.notifications.websocket import handle_websocket
+from core.services.token import TokenService
+from core.services.analytics import AnalyticsService
+from core.api.v1.dependencies import (
+    get_token_service,
+    get_analytics_service
+)
 
-router = APIRouter(prefix="/notifications", tags=["notifications"])
+router = APIRouter(tags=["notifications"])
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time notifications."""
     await handle_websocket(websocket)
-
-@router.post(
-    "",
-    response_model=NotificationResponse,
-    summary="Create a new notification"
-)
-async def create_notification(
-    notification: NotificationCreate,
-    current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-    background_tasks: BackgroundTasks = None
-):
-    """Create a new notification."""
-    try:
-        notification_service = NotificationService(session, background_tasks)
-        result = await notification_service.create_notification(
-            user_id=current_user.id,
-            title=notification.title,
-            message=notification.message,
-            type=notification.type,
-            channels=notification.channels,
-            priority=notification.priority or NotificationPriority.MEDIUM,
-            data=notification.data,
-            notification_metadata=notification.metadata,
-            action_url=notification.action_url,
-            schedule_for=notification.schedule_for,
-            deal_id=notification.deal_id,
-            goal_id=notification.goal_id
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 @router.get(
     "",
@@ -70,20 +47,25 @@ async def get_notifications(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     unread_only: bool = Query(False),
-    notification_type: Optional[NotificationType] = None,
+    notification_type: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-    background_tasks: BackgroundTasks = None
-):
-    """Get notifications for the current user."""
-    notification_service = NotificationService(session, background_tasks)
-    return await notification_service.get_user_notifications(
-        user_id=current_user.id,
-        limit=limit,
-        offset=offset,
-        unread_only=unread_only,
-        notification_type=notification_type
-    )
+    db: AsyncSession = Depends(get_db)
+) -> List[NotificationResponse]:
+    """Get user notifications with filtering."""
+    try:
+        notification_service = NotificationService(db)
+        return await notification_service.get_user_notifications(
+            user_id=current_user.id,
+            limit=limit,
+            offset=offset,
+            unread_only=unread_only,
+            notification_type=notification_type
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get notifications: {str(e)}"
+        )
 
 @router.get(
     "/unread/count",
@@ -92,11 +74,44 @@ async def get_notifications(
 )
 async def get_unread_count(
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session)
-):
+    db: AsyncSession = Depends(get_db)
+) -> int:
     """Get count of unread notifications."""
-    notification_service = NotificationService(session)
+    notification_service = NotificationService(db)
     return await notification_service.get_unread_count(current_user.id)
+
+@router.post(
+    "",
+    response_model=NotificationResponse,
+    summary="Create a new notification"
+)
+async def create_notification(
+    notification: NotificationCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks = None
+) -> NotificationResponse:
+    """Create a new notification."""
+    try:
+        notification_service = NotificationService(db)
+        if background_tasks:
+            notification_service.set_background_tasks(background_tasks)
+        
+        result = await notification_service.create_notification(
+            user_id=current_user.id,
+            title=notification.title,
+            message=notification.message,
+            type=notification.type,
+            priority=notification.priority,
+            metadata=notification.metadata
+        )
+        
+        return result
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create notification: {str(e)}"
+        )
 
 @router.put(
     "/{notification_id}/read",
@@ -106,16 +121,19 @@ async def get_unread_count(
 async def mark_notification_read(
     notification_id: UUID,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session)
-):
+    db: AsyncSession = Depends(get_db)
+) -> NotificationResponse:
     """Mark a notification as read."""
-    notification_service = NotificationService(session)
+    notification_service = NotificationService(db)
     notifications = await notification_service.mark_as_read(
         [str(notification_id)],
         str(current_user.id)
     )
     if not notifications:
-        raise HTTPException(status_code=404, detail="Notification not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Notification not found"
+        )
     return notifications[0]
 
 @router.put(
@@ -126,10 +144,10 @@ async def mark_notification_read(
 async def mark_notifications_read(
     notification_ids: List[UUID],
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session)
-):
+    db: AsyncSession = Depends(get_db)
+) -> List[NotificationResponse]:
     """Mark multiple notifications as read."""
-    notification_service = NotificationService(session)
+    notification_service = NotificationService(db)
     return await notification_service.mark_as_read(
         [str(nid) for nid in notification_ids],
         str(current_user.id)
@@ -137,39 +155,45 @@ async def mark_notifications_read(
 
 @router.delete(
     "",
+    status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete notifications"
 )
 async def delete_notifications(
     notification_ids: List[UUID],
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session)
+    db: AsyncSession = Depends(get_db)
 ):
     """Delete notifications."""
     try:
-        notification_service = NotificationService(session)
+        notification_service = NotificationService(db)
         await notification_service.delete_notifications(
             [str(nid) for nid in notification_ids],
-            str(current_user.id)
+            current_user.id
         )
-        return {"status": "success", "message": "Notifications deleted successfully"}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
 
 @router.delete(
     "/all",
+    status_code=status.HTTP_204_NO_CONTENT,
     summary="Clear all notifications"
 )
 async def clear_all_notifications(
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session)
+    db: AsyncSession = Depends(get_db)
 ):
     """Clear all notifications."""
     try:
-        notification_service = NotificationService(session)
+        notification_service = NotificationService(db)
         await notification_service.clear_all_notifications(current_user.id)
-        return {"status": "success", "message": "All notifications cleared successfully"}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
 
 @router.get(
     "/preferences",
@@ -178,10 +202,10 @@ async def clear_all_notifications(
 )
 async def get_notification_preferences(
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session)
-):
+    db: AsyncSession = Depends(get_db)
+) -> NotificationPreferencesResponse:
     """Get notification preferences for the current user."""
-    notification_service = NotificationService(session)
+    notification_service = NotificationService(db)
     return await notification_service.get_user_preferences(current_user.id)
 
 @router.put(
@@ -192,10 +216,10 @@ async def get_notification_preferences(
 async def update_notification_preferences(
     preferences: NotificationPreferencesUpdate,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session)
-):
+    db: AsyncSession = Depends(get_db)
+) -> NotificationPreferencesResponse:
     """Update notification preferences for the current user."""
-    notification_service = NotificationService(session)
+    notification_service = NotificationService(db)
     return await notification_service.update_preferences(
         current_user.id,
         preferences.dict(exclude_unset=True)

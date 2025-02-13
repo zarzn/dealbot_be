@@ -8,7 +8,11 @@ from ..constants import (
     RATE_LIMIT_AUTHENTICATED,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_EXPIRE_DAYS,
-    JWT_ALGORITHM
+    JWT_ALGORITHM,
+    REDIS_MAX_CONNECTIONS,
+    REDIS_POOL_SIZE,
+    REDIS_TIMEOUT,
+    REDIS_KEY_PREFIX
 )
 from datetime import timedelta
 from pydantic import SecretStr
@@ -23,6 +27,7 @@ class DevelopmentConfig(BaseSettings):
     # Application
     APP_NAME: str = "AI Agentic Deals API"
     APP_VERSION: str = "0.1.0"
+    API_PREFIX: str = "/api/v1"
     API_V1_PREFIX: str = "/api/v1"
     DEBUG: bool = True
     ENVIRONMENT: str = "development"
@@ -43,16 +48,28 @@ class DevelopmentConfig(BaseSettings):
     POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", "5432"))
     DB_ECHO: bool = True
     DB_POOL_SIZE: int = 5
-    DB_POOL_OVERFLOW: int = 10
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 1800
+    DB_MAX_RETRIES: int = 3
+    DB_RETRY_DELAY: float = 1.0
+    DB_IDLE_TIMEOUT: int = 300
     
     # Redis
     REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
     REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
     REDIS_DB: int = 0
     REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "your_redis_password")
-    REDIS_POOL_SIZE: int = 5
-    REDIS_TIMEOUT: int = 10
+    REDIS_POOL_SIZE: int = REDIS_POOL_SIZE
+    REDIS_TIMEOUT: int = REDIS_TIMEOUT
     REDIS_SSL: bool = False
+    REDIS_MAX_CONNECTIONS: int = REDIS_MAX_CONNECTIONS
+    REDIS_SOCKET_KEEPALIVE: bool = True
+    REDIS_SOCKET_CONNECT_TIMEOUT: int = 10
+    REDIS_SOCKET_READ_SIZE: int = 65536  # 64KB
+    REDIS_SOCKET_WRITE_TIMEOUT: int = 10
+    REDIS_HEALTH_CHECK_INTERVAL: int = 30
+    REDIS_MAX_CONNECTION_CALLS: int = 0  # Unlimited
     
     # Market Integration
     MARKET_DEFAULT_RATE_LIMIT: int = 50
@@ -71,6 +88,22 @@ class DevelopmentConfig(BaseSettings):
     # AI Services
     DEEPSEEK_API_KEY: str = "your-deepseek-api-key"
     OPENAI_API_KEY: str = "your-openai-api-key"
+    
+    # Firebase Cloud Messaging
+    FCM_API_KEY: str = os.getenv("FCM_API_KEY", "your-fcm-api-key")
+    FCM_ENDPOINT: str = os.getenv("FCM_ENDPOINT", "https://fcm.googleapis.com/fcm/send")
+    FCM_PROJECT_ID: str = os.getenv("FCM_PROJECT_ID", "your-project-id")
+    FCM_CREDENTIALS_PATH: str = os.getenv("FCM_CREDENTIALS_PATH", "path/to/firebase-credentials.json")
+    FCM_APP_PACKAGE_NAME: str = os.getenv("FCM_APP_PACKAGE_NAME", "com.yourdomain.app")
+    FCM_NOTIFICATION_ICON: str = os.getenv("FCM_NOTIFICATION_ICON", "notification_icon")
+    FCM_NOTIFICATION_COLOR: str = os.getenv("FCM_NOTIFICATION_COLOR", "#4A90E2")
+    FCM_NOTIFICATION_CLICK_ACTION: str = os.getenv("FCM_NOTIFICATION_CLICK_ACTION", "OPEN_APP")
+    FCM_NOTIFICATION_CHANNEL_ID: str = os.getenv("FCM_NOTIFICATION_CHANNEL_ID", "deals_notifications")
+    FCM_NOTIFICATION_PRIORITY: str = os.getenv("FCM_NOTIFICATION_PRIORITY", "high")
+    FCM_NOTIFICATION_TTL: int = int(os.getenv("FCM_NOTIFICATION_TTL", "86400"))  # 24 hours
+    FCM_BATCH_SIZE: int = int(os.getenv("FCM_BATCH_SIZE", "500"))
+    FCM_RETRY_COUNT: int = int(os.getenv("FCM_RETRY_COUNT", "3"))
+    FCM_RETRY_DELAY: int = int(os.getenv("FCM_RETRY_DELAY", "1000"))  # milliseconds
     
     # Token System
     ETH_NETWORK_RPC: str = "https://api.devnet.solana.com"
@@ -94,10 +127,23 @@ class DevelopmentConfig(BaseSettings):
     LOG_FORMAT: str = "json"
     
     # CORS
-    CORS_ORIGINS: list[str] = ["*"]
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001"
+    ]
     CORS_CREDENTIALS: bool = True
-    CORS_METHODS: list[str] = ["*"]
-    CORS_HEADERS: list[str] = ["*"]
+    CORS_METHODS: list[str] = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    CORS_HEADERS: list[str] = [
+        "Content-Type",
+        "Authorization",
+        "X-Requested-With",
+        "Accept",
+        "Origin",
+        "Access-Control-Request-Method",
+        "Access-Control-Request-Headers"
+    ]
     
     # Rate Limiting
     RATE_LIMIT_PER_SECOND: int = RATE_LIMIT_DEFAULT // 60
@@ -131,6 +177,18 @@ class DevelopmentConfig(BaseSettings):
         """Get database URI."""
         return PostgresDsn.build(
             scheme="postgresql+asyncpg",
+            username=self.POSTGRES_USER,
+            password=self.POSTGRES_PASSWORD,
+            host=self.POSTGRES_HOST,
+            port=int(self.POSTGRES_PORT),
+            path=self.POSTGRES_DB
+        )
+
+    @property
+    def sync_database_url(self) -> PostgresDsn:
+        """Get synchronous database URI."""
+        return PostgresDsn.build(
+            scheme="postgresql",
             username=self.POSTGRES_USER,
             password=self.POSTGRES_PASSWORD,
             host=self.POSTGRES_HOST,

@@ -18,9 +18,9 @@ GOAL_CREATION_COST: Final[float] = 0.5
 NOTIFICATION_COST: Final[float] = 0.05
 
 # Cache TTLs (in seconds)
-CACHE_TTL_SHORT: Final[int] = 60  # 1 minute
-CACHE_TTL_MEDIUM: Final[int] = 300  # 5 minutes
-CACHE_TTL_LONG: Final[int] = 3600  # 1 hour
+CACHE_TTL_SHORT: Final[int] = 300  # 5 minutes
+CACHE_TTL_MEDIUM: Final[int] = 1800  # 30 minutes
+CACHE_TTL_LONG: Final[int] = 86400  # 24 hours
 CACHE_TTL_VERY_LONG: Final[int] = 86400  # 24 hours
 
 # Token Cache TTLs
@@ -45,8 +45,8 @@ CACHE_KEY_PREFIXES: Final[dict] = {
 }
 
 # Rate Limiting
-RATE_LIMIT_DEFAULT: Final[int] = 100  # requests per minute
-RATE_LIMIT_AUTHENTICATED: Final[int] = 1000  # requests per minute
+RATE_LIMIT_DEFAULT: Final[int] = 60  # requests per minute
+RATE_LIMIT_AUTHENTICATED: Final[int] = 120  # requests per minute
 RATE_LIMIT_BURST: Final[int] = 50
 
 # Pagination
@@ -55,7 +55,7 @@ MAX_PAGE_SIZE: Final[int] = 100
 DEFAULT_PAGE: Final[int] = 1
 
 # File Size Limits (in bytes)
-MAX_UPLOAD_SIZE: Final[int] = 10 * 1024 * 1024  # 10MB
+MAX_UPLOAD_SIZE: Final[int] = 5 * 1024 * 1024  # 5MB
 MAX_AVATAR_SIZE: Final[int] = 2 * 1024 * 1024  # 2MB
 
 # Job Queue Names
@@ -88,7 +88,7 @@ PASSWORD_REGEX: Final[str] = r"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d@$!%*#?&]{8,}$"
 URL_REGEX: Final[str] = r"^https?:\/\/(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&\/=]*)$"
 
 # Deal Processing Constants
-PRICE_CHANGE_THRESHOLD: Final[float] = 0.05  # 5% price change threshold
+PRICE_CHANGE_THRESHOLD: Final[float] = 0.1  # 10% change
 DEAL_SCORE_THRESHOLD: Final[float] = 0.7  # Minimum score for a good deal
 MAX_DEALS_PER_GOAL: Final[int] = 50
 DEAL_EXPIRY_HOURS: Final[int] = 24
@@ -115,9 +115,78 @@ NOTIFICATION_CLEANUP_DAYS: Final[int] = 30
 DB_POOL_SIZE: Final[int] = 20
 DB_MAX_OVERFLOW: Final[int] = 10
 DB_POOL_TIMEOUT: Final[int] = 30
-DB_POOL_RECYCLE: Final[int] = 3600
+DB_POOL_RECYCLE: Final[int] = 1800
 
 # Redis Constants
-REDIS_KEY_PREFIX: Final[str] = "aads:"
-REDIS_LOCK_TIMEOUT: Final[int] = 10
-REDIS_MAX_CONNECTIONS: Final[int] = 100 
+REDIS_MAX_CONNECTIONS: Final[int] = 10
+REDIS_POOL_SIZE: Final[int] = 10
+REDIS_TIMEOUT: Final[int] = 10
+REDIS_KEY_PREFIX: Final[str] = "deals:"
+
+# Token System
+MIN_TOKEN_BALANCE = 1.0
+SEARCH_COST = 0.1
+
+# Rate Limiting
+RATE_LIMIT_DEFAULT = 60  # requests per minute
+RATE_LIMIT_AUTHENTICATED = 120  # requests per minute
+
+# JWT Configuration
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+JWT_ALGORITHM = "HS256"
+
+# Cache TTLs (in seconds)
+CACHE_TTL_SHORT = 300  # 5 minutes
+CACHE_TTL_MEDIUM = 1800  # 30 minutes
+CACHE_TTL_LONG = 86400  # 24 hours
+
+# Deal Analysis
+DEAL_SCORE_THRESHOLD = 0.7
+PRICE_CHANGE_THRESHOLD = 0.1  # 10% change
+MIN_PRICE_HISTORY_POINTS = 3
+
+# Notification Settings
+MAX_NOTIFICATIONS_PER_REQUEST = 100
+NOTIFICATION_BATCH_SIZE = 50
+NOTIFICATION_RETRY_ATTEMPTS = 3
+
+# WebSocket Settings
+WS_HEARTBEAT_INTERVAL = 30  # seconds
+WS_CONNECTION_TIMEOUT = 60  # seconds
+MAX_CONNECTIONS_PER_USER = 5
+
+# API Limits
+MAX_PAGE_SIZE = 100
+DEFAULT_PAGE_SIZE = 20
+MAX_SEARCH_RESULTS = 50
+MAX_CONCURRENT_SEARCHES = 3
+
+# Market Integration
+MAX_MARKET_RETRIES = 3
+MARKET_TIMEOUT = 30  # seconds
+MAX_PRODUCTS_PER_REQUEST = 50
+
+# Background Tasks
+TASK_RETRY_DELAY = 60  # seconds
+MAX_TASK_RETRIES = 3
+TASK_BATCH_SIZE = 100
+
+# File Upload
+MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5MB
+ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif"}
+MAX_FILES_PER_REQUEST = 10
+
+# Security
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 128
+MAX_LOGIN_ATTEMPTS = 5
+LOGIN_COOLDOWN = 300  # 5 minutes
+
+# Error Messages
+ERROR_INVALID_CREDENTIALS = "Invalid credentials"
+ERROR_USER_NOT_FOUND = "User not found"
+ERROR_INSUFFICIENT_PERMISSIONS = "Insufficient permissions"
+ERROR_INVALID_TOKEN = "Invalid token"
+ERROR_TOKEN_EXPIRED = "Token expired"
+ERROR_RATE_LIMIT_EXCEEDED = "Rate limit exceeded" 

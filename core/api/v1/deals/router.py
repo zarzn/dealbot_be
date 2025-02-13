@@ -1,151 +1,309 @@
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
-from sqlalchemy.orm import Session
-from datetime import datetime
+"""Deals API module."""
 
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import List, Optional, Dict, Any
+from uuid import UUID
+from datetime import datetime, timedelta
+
+from core.database import get_async_db_session as get_db
 from core.models.deal import (
-    Deal,
-    DealCreate,
     DealResponse,
-    DealSearchFilters,
-    DealStatus
+    DealAnalytics,
+    DealFilter,
+    DealRecommendation,
+    DealHistory,
+    DealPriceHistory
 )
 from core.services.deal import DealService
+from core.services.analytics import AnalyticsService
+from core.services.recommendation import RecommendationService
+from core.services.auth import get_current_user
+from core.models.user import UserInDB
 from core.services.token import TokenService
-from core.dependencies import get_db, get_current_user
-from core.exceptions import (
-    DealError,
-    TokenError,
-    RateLimitExceededError,
-    ValidationError
+from core.api.v1.dependencies import (
+    get_token_service,
+    get_deal_service,
+    get_analytics_service,
+    get_recommendation_service
 )
-from core.config import settings
 
-router = APIRouter()
+router = APIRouter(tags=["deals"])
 
-@router.get("/search", response_model=List[DealResponse])
-async def search_deals(
-    query: str = Query(..., min_length=3),
-    limit: int = Query(10, ge=1, le=100),
-    min_price: Optional[float] = Query(None, ge=0),
-    max_price: Optional[float] = Query(None, ge=0),
-    categories: Optional[List[str]] = Query(None),
-    brands: Optional[List[str]] = Query(None),
-    condition: Optional[List[str]] = Query(None),
-    sort_by: Optional[str] = Query(None, pattern="^(price_asc|price_desc|rating|expiry|relevance)$"),
-    current_user = Depends(get_current_user),
-    db: Session = Depends(get_db)
+async def validate_tokens(
+    token_service: TokenService,
+    user_id: UUID,
+    operation: str
 ):
-    """
-    Search for deals with advanced filtering and sorting.
-    Requires token balance for search operation.
-    
-    - **query**: Search query string (min 3 characters)
-    - **limit**: Maximum number of results (1-100)
-    - **min_price**: Minimum price filter
-    - **max_price**: Maximum price filter
-    - **categories**: List of categories to filter by
-    - **brands**: List of brands to filter by
-    - **condition**: List of conditions to filter by
-    - **sort_by**: Sort order (price_asc, price_desc, rating, expiry, relevance)
-    """
+    """Validate user has sufficient tokens for the operation"""
     try:
-        # Initialize services
-        deal_service = DealService(db)
-        token_service = TokenService(db)
-        
-        # Check token balance and deduct search cost
-        await token_service.check_and_deduct_tokens(
-            user_id=current_user.id,
-            amount=settings.TOKEN_SEARCH_COST,
-            reason="deal_search"
+        await token_service.validate_operation(user_id, operation)
+    except Exception as e:
+        raise HTTPException(
+            status_code=402,
+            detail=f"Token validation failed: {str(e)}"
         )
+
+async def process_deals_background(background_tasks: BackgroundTasks, deals: List[Any], deal_service: DealService):
+    """Process deals in background."""
+    for deal in deals:
+        background_tasks.add_task(deal_service.process_deal_background, deal.id)
+
+@router.get("/", response_model=List[DealResponse], response_model_exclude_none=True)
+async def get_deals(
+    background_tasks: BackgroundTasks,
+    category: Optional[str] = None,
+    price_min: Optional[float] = None,
+    price_max: Optional[float] = None,
+    sort_by: Optional[str] = "relevance",
+    deal_service: DealService = Depends(get_deal_service),
+    token_service: TokenService = Depends(get_token_service),
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """Get deals matching the specified criteria."""
+    try:
+        await validate_tokens(token_service, current_user.id, "get_deals")
         
-        # Build search filters
-        filters = DealSearchFilters(
-            min_price=min_price,
-            max_price=max_price,
-            categories=categories,
-            brands=brands,
-            condition=condition,
+        filters = DealFilter(
+            category=category,
+            price_min=price_min,
+            price_max=price_max,
             sort_by=sort_by
         )
         
-        # Perform search with caching and rate limiting
-        deals = await deal_service.search_deals(
-            query=query,
-            limit=limit,
-            filters=filters
-        )
+        # Get deals first
+        deals = await deal_service.get_deals(current_user.id, filters)
         
-        return deals
+        # Schedule background processing
+        for deal in deals:
+            background_tasks.add_task(deal_service.process_deal_background, deal.id)
         
-    except TokenError as e:
-        raise HTTPException(
-            status_code=402,
-            detail={"error": "Insufficient tokens", "message": str(e)}
-        )
-    except RateLimitExceededError as e:
-        raise HTTPException(
-            status_code=429,
-            detail={"error": "Rate limit exceeded", "message": str(e)}
-        )
-    except ValidationError as e:
+        # Convert to response model and return
+        response_deals = [DealResponse.model_validate(deal) for deal in deals]
+        return response_deals
+        
+    except Exception as e:
         raise HTTPException(
             status_code=400,
-            detail={"error": "Invalid request", "message": str(e)}
-        )
-    except DealError as e:
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "Deal search failed", "message": str(e)}
-        )
-    except Exception as e:
-        logger.error(f"Unexpected error in search_deals: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "Internal server error", "message": "An unexpected error occurred"}
+            detail=f"Failed to retrieve deals: {str(e)}"
         )
 
 @router.get("/{deal_id}", response_model=DealResponse)
 async def get_deal(
-    deal_id: str,
-    current_user = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    deal_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: UserInDB = Depends(get_current_user)
 ):
-    """
-    Get detailed information about a specific deal.
-    """
-    try:
-        deal_service = DealService(db)
-        deal = await deal_service.get_deal(deal_id)
-        
-        if not deal:
-            raise HTTPException(status_code=404, detail="Deal not found")
-            
-        return deal
-        
-    except DealError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Get a specific deal"""
+    deal_service = DealService(db)
+    return await deal_service.get_deal(current_user.id, deal_id)
 
-@router.post("/batch", response_model=List[DealResponse])
-async def process_deals_batch(
-    deals: List[DealCreate],
-    background_tasks: BackgroundTasks,
-    current_user = Depends(get_current_user),
-    db: Session = Depends(get_db)
+@router.get("/{deal_id}/analytics", response_model=DealAnalytics)
+async def get_deal_analytics(
+    deal_id: UUID,
+    time_range: Optional[str] = Query(
+        "7d",
+        description="Time range for analytics (1d, 7d, 30d, all)"
+    ),
+    analytics_service: AnalyticsService = Depends(get_analytics_service),
+    token_service: TokenService = Depends(get_token_service),
+    current_user: UserInDB = Depends(get_current_user)
 ):
-    """
-    Process multiple deals in batch with background tasks.
-    """
+    """Get analytics for a specific deal"""
     try:
-        deal_service = DealService(db)
-        processed_deals = await deal_service.process_deals_batch(deals, background_tasks)
-        return processed_deals
+        # Validate tokens before getting analytics
+        await validate_tokens(token_service, current_user.id, "deal_analytics")
         
-    except ValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # Convert time range to datetime
+        now = datetime.utcnow()
+        ranges = {
+            "1d": now - timedelta(days=1),
+            "7d": now - timedelta(days=7),
+            "30d": now - timedelta(days=30),
+            "all": None
+        }
+        start_date = ranges.get(time_range)
+        
+        analytics = await analytics_service.get_deal_analytics(
+            deal_id=deal_id,
+            user_id=current_user.id,
+            start_date=start_date
+        )
+        
+        # Deduct tokens for analytics request
+        await token_service.deduct_tokens(
+            current_user.id,
+            "deal_analytics",
+            deal_id=deal_id
+        )
+        
+        return analytics
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/recommendations", response_model=List[DealRecommendation])
+async def get_deal_recommendations(
+    category: Optional[str] = None,
+    limit: int = Query(10, ge=1, le=50),
+    recommendation_service: RecommendationService = Depends(get_recommendation_service),
+    token_service: TokenService = Depends(get_token_service),
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """Get personalized deal recommendations"""
+    try:
+        # Validate tokens before getting recommendations
+        await validate_tokens(token_service, current_user.id, "deal_recommendations")
+        
+        recommendations = await recommendation_service.get_recommendations(
+            user_id=current_user.id,
+            category=category,
+            limit=limit
+        )
+        
+        # Deduct tokens for recommendations request
+        await token_service.deduct_tokens(
+            current_user.id,
+            "deal_recommendations"
+        )
+        
+        return recommendations
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/history", response_model=List[DealHistory])
+async def get_deal_history(
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    category: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    deal_service: DealService = Depends(get_deal_service),
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """Get user's deal history"""
+    try:
+        history = await deal_service.get_deal_history(
+            user_id=current_user.id,
+            start_date=start_date,
+            end_date=end_date,
+            category=category,
+            page=page,
+            page_size=page_size
+        )
+        return history
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/{deal_id}/price-history", response_model=DealPriceHistory)
+async def get_deal_price_history(
+    deal_id: UUID,
+    time_range: Optional[str] = Query(
+        "30d",
+        description="Time range for price history (7d, 30d, 90d, all)"
+    ),
+    deal_service: DealService = Depends(get_deal_service),
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """Get price history for a specific deal"""
+    try:
+        # Convert time range to datetime
+        now = datetime.utcnow()
+        ranges = {
+            "7d": now - timedelta(days=7),
+            "30d": now - timedelta(days=30),
+            "90d": now - timedelta(days=90),
+            "all": None
+        }
+        start_date = ranges.get(time_range)
+        
+        price_history = await deal_service.get_price_history(
+            deal_id=deal_id,
+            user_id=current_user.id,
+            start_date=start_date
+        )
+        return price_history
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/stats", response_model=Dict[str, Any])
+async def get_deal_stats(
+    time_range: Optional[str] = Query(
+        "30d",
+        description="Time range for stats (7d, 30d, 90d, all)"
+    ),
+    analytics_service: AnalyticsService = Depends(get_analytics_service),
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """Get aggregated deal statistics"""
+    try:
+        # Convert time range to datetime
+        now = datetime.utcnow()
+        ranges = {
+            "7d": now - timedelta(days=7),
+            "30d": now - timedelta(days=30),
+            "90d": now - timedelta(days=90),
+            "all": None
+        }
+        start_date = ranges.get(time_range)
+        
+        stats = await analytics_service.get_deal_stats(
+            user_id=current_user.id,
+            start_date=start_date
+        )
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/{deal_id}/bookmark")
+async def bookmark_deal(
+    deal_id: UUID,
+    deal_service: DealService = Depends(get_deal_service),
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """Bookmark a deal for later reference"""
+    try:
+        await deal_service.bookmark_deal(
+            user_id=current_user.id,
+            deal_id=deal_id
+        )
+        return {"message": "Deal bookmarked successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/{deal_id}/bookmark")
+async def remove_bookmark(
+    deal_id: UUID,
+    deal_service: DealService = Depends(get_deal_service),
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """Remove a deal bookmark"""
+    try:
+        await deal_service.remove_bookmark(
+            user_id=current_user.id,
+            deal_id=deal_id
+        )
+        return {"message": "Bookmark removed successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/bookmarks", response_model=List[DealResponse])
+async def get_bookmarked_deals(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    deal_service: DealService = Depends(get_deal_service),
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """Get user's bookmarked deals"""
+    try:
+        bookmarks = await deal_service.get_bookmarked_deals(
+            user_id=current_user.id,
+            page=page,
+            page_size=page_size
+        )
+        return bookmarks
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) 

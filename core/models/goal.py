@@ -8,6 +8,7 @@ Classes:
     GoalCreate: Model for goal creation
     GoalUpdate: Model for goal updates
     GoalResponse: Model for API responses
+    GoalAnalytics: Model for goal analytics data
     Goal: SQLAlchemy model for database table
 """
 
@@ -199,6 +200,135 @@ class GoalResponse(GoalBase):
             MarketCategory: lambda v: v.value
         }
 
+class GoalAnalytics(BaseModel):
+    """Model for goal analytics data"""
+    goal_id: UUID
+    user_id: UUID
+    matches_found: int = Field(default=0)
+    deals_processed: int = Field(default=0)
+    tokens_spent: float = Field(default=0.0)
+    rewards_earned: float = Field(default=0.0)
+    success_rate: float = Field(default=0.0)
+    best_match_score: Optional[float] = None
+    average_match_score: Optional[float] = None
+    active_deals_count: int = Field(default=0)
+    price_trends: Dict[str, Any] = Field(default_factory=dict)
+    market_analysis: Dict[str, Any] = Field(default_factory=dict)
+    deal_history: List[Dict[str, Any]] = Field(default_factory=list)
+    performance_metrics: Dict[str, Any] = Field(default_factory=dict)
+    start_date: datetime
+    end_date: datetime
+    period: str
+    
+    class Config:
+        """Pydantic model configuration."""
+        from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+            UUID: lambda v: str(v)
+        }
+
+class GoalTemplateCreate(BaseModel):
+    """Model for creating a goal template"""
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=1000)
+    category: MarketCategory
+    constraints: Dict[str, Any] = Field(...)
+    is_public: bool = Field(default=False)
+    tags: List[str] = Field(default_factory=list)
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    
+    @model_validator(mode='after')
+    def validate_constraints(self) -> 'GoalTemplateCreate':
+        """Validate template constraints structure"""
+        constraints = self.constraints
+        required_fields = ['max_price', 'min_price', 'brands', 'conditions', 'keywords']
+        
+        # Check for missing fields
+        missing_fields = [field for field in required_fields if field not in constraints]
+        if missing_fields:
+            raise GoalConstraintError(
+                f"Missing required constraint fields: {', '.join(missing_fields)}"
+            )
+        
+        # Validate price constraints
+        try:
+            max_price = float(constraints['max_price'])
+            min_price = float(constraints['min_price'])
+            
+            if max_price <= min_price:
+                raise GoalConstraintError("max_price must be greater than min_price")
+            if min_price < 0:
+                raise GoalConstraintError("min_price cannot be negative")
+            if max_price > settings.MAX_GOAL_PRICE:
+                raise GoalConstraintError(f"max_price cannot exceed {settings.MAX_GOAL_PRICE}")
+        except (ValueError, TypeError) as e:
+            raise GoalConstraintError("Price constraints must be valid numbers") from e
+            
+        return self
+
+class GoalTemplate(GoalTemplateCreate):
+    """Model for goal template"""
+    id: UUID
+    user_id: UUID
+    created_at: datetime
+    updated_at: datetime
+    usage_count: int = Field(default=0)
+    success_rate: float = Field(default=0.0)
+    average_savings: float = Field(default=0.0)
+    is_featured: bool = Field(default=False)
+    is_verified: bool = Field(default=False)
+    
+    class Config:
+        """Pydantic model configuration."""
+        from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+            UUID: lambda v: str(v),
+            MarketCategory: lambda v: v.value
+        }
+
+class GoalSharePermission(str, enum.Enum):
+    """Goal sharing permission levels."""
+    READ = "read"
+    WRITE = "write"
+    ADMIN = "admin"
+
+class GoalShare(BaseModel):
+    """Model for sharing a goal with other users"""
+    share_with: List[UUID] = Field(..., min_items=1)
+    permissions: GoalSharePermission = Field(default=GoalSharePermission.READ)
+    message: Optional[str] = Field(None, max_length=500)
+    expires_at: Optional[datetime] = None
+    notify_users: bool = Field(default=True)
+
+    @field_validator('expires_at')
+    def validate_expiry(cls, v: Optional[datetime]) -> Optional[datetime]:
+        """Validate expiry date is in the future."""
+        if v is not None and v <= datetime.utcnow():
+            raise ValueError("Expiry date must be in the future")
+        return v
+
+class GoalShareResponse(BaseModel):
+    """Response model for goal sharing"""
+    goal_id: UUID
+    shared_by: UUID
+    shared_with: List[UUID]
+    permissions: GoalSharePermission
+    shared_at: datetime
+    expires_at: Optional[datetime]
+    status: str = Field(default="active")
+    message: Optional[str] = None
+    
+    class Config:
+        """Pydantic model configuration."""
+        from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+            UUID: lambda v: str(v),
+            GoalSharePermission: lambda v: v.value
+        }
+
 class Goal(Base):
     """SQLAlchemy model for Goal"""
     __tablename__ = 'goals'
@@ -259,6 +389,7 @@ class Goal(Base):
     user = relationship("User", back_populates="goals")
     deals = relationship("Deal", back_populates="goal", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="goal", cascade="all, delete-orphan")
+    agents = relationship("Agent", back_populates="goal", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         """String representation of the goal."""

@@ -4,7 +4,7 @@ from typing import AsyncGenerator, Optional
 from fastapi import Depends, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db_session as get_db
+from core.database import get_async_db_session as get_db
 from core.services.token_service import TokenService
 from core.services.analytics import AnalyticsService
 from core.services.market import MarketService

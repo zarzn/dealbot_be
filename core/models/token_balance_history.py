@@ -78,8 +78,16 @@ class TokenBalanceHistory(Base):
     data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
 
     # Relationships
-    user = relationship("User", back_populates="token_balance_history")
-    token_balance = relationship("TokenBalance", back_populates="history")
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="token_balance_history",
+        lazy="selectin"
+    )
+    token_balance: Mapped["TokenBalance"] = relationship(
+        "TokenBalance",
+        back_populates="history",
+        lazy="selectin"
+    )
 
     def __repr__(self):
         return f"<TokenBalanceHistory {self.id}>"

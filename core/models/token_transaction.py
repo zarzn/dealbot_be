@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text, DECIMAL, ForeignKey, JSON
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.sql import func, expression
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from core.models.base import Base
 #from core.exceptions import InvalidTransactionError DO NOT DELETE THIS COMMENT
 
@@ -118,6 +118,13 @@ class TokenTransaction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"), onupdate=text("now()"))
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    user: Mapped["User"] = relationship(
+        "User",
+        back_populates="token_transactions",
+        lazy="selectin"
+    )
 
     def __repr__(self) -> str:
         return f"<TokenTransaction(id={self.id}, type={self.type}, amount={self.amount})>"

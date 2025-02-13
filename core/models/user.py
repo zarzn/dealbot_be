@@ -254,15 +254,33 @@ class User(Base):
         UniqueConstraint('referral_code', name='uq_user_referral'),
     )
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=False)
-    password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    sol_address: Mapped[Optional[str]] = mapped_column(String(44), nullable=True, unique=True)
-    referral_code: Mapped[Optional[str]] = mapped_column(String(10), nullable=True, unique=True)
-    referred_by: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
-    token_balance: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0)
-    preferences: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+        server_default=text('gen_random_uuid()')
+    )
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    password: Mapped[str] = mapped_column(Text, nullable=False)
+    sol_address: Mapped[Optional[str]] = mapped_column(String(44), unique=True, nullable=True)
+    referral_code: Mapped[Optional[str]] = mapped_column(String(10), unique=True, nullable=True)
+    referred_by: Mapped[Optional[UUID]] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey('users.id', ondelete='SET NULL'),
+        nullable=True
+    )
+    token_balance: Mapped[float] = mapped_column(
+        Numeric(18, 8),
+        default=0,
+        nullable=False,
+        server_default=text('0')
+    )
+    preferences: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB,
+        default=UserBase.__fields__['preferences'].default_factory(),
+        nullable=False
+    )
     status: Mapped[str] = mapped_column(
         sa.Enum('active', 'inactive', 'suspended', 'deleted', name='userstatus'),
         nullable=False,
@@ -283,20 +301,57 @@ class User(Base):
     total_tokens_spent: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
     total_rewards_earned: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
 
-    # Relationship attributes (defined in relationships.py)
-    goals = None
-    notifications = None
-    chat_messages = None
-    token_transactions = None
-    token_balance_history = None
-    token_wallets = None
-    referrals = None
-    referred_by_user = None
-
     # Relationships
-    token_balance_obj = relationship("TokenBalance", back_populates="user", uselist=False, cascade="all, delete-orphan")
-    referrals = relationship("User", backref=backref("referred_by_user", remote_side=[id]))
+    goals: Mapped[List["Goal"]] = relationship(
+        "Goal",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+    notifications: Mapped[List["Notification"]] = relationship(
+        "Notification",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+    chat_messages: Mapped[List["ChatMessage"]] = relationship(
+        "ChatMessage",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+    token_transactions: Mapped[List["TokenTransaction"]] = relationship(
+        "TokenTransaction",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+    token_balance_history: Mapped[List["TokenBalanceHistory"]] = relationship(
+        "TokenBalanceHistory",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+    token_wallets: Mapped[List["TokenWallet"]] = relationship(
+        "TokenWallet",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+    token_balance_obj: Mapped["TokenBalance"] = relationship(
+        "TokenBalance",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+    referrals: Mapped[List["User"]] = relationship(
+        "User",
+        backref=backref("referred_by_user", remote_side=[id]),
+        lazy="selectin"
+    )
     notification_preferences = relationship("NotificationPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         """String representation of the user."""
