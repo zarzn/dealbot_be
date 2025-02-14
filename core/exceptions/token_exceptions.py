@@ -1,16 +1,16 @@
 """Token-related exceptions module."""
 
 from typing import Optional, Dict, Any
-from .base import BaseError
+from .base_exceptions import BaseError
 
 class TokenError(BaseError):
     """Base class for token-related exceptions"""
     def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
-        super().__init__(
-            message=message,
-            error_code="token_error",
-            details=details or {}
-        )
+        super().__init__(message)
+        self.details = details or {}
+        
+    def _get_details(self) -> Dict[str, Any]:
+        return self.details
 
 class TokenNotFoundError(TokenError):
     """Raised when a token transaction or record is not found"""
@@ -87,6 +87,9 @@ class InsufficientBalanceError(TokenError):
         message = f"Insufficient balance: required {required}, available {available}"
         details = {"required": required, "available": available}
         super().__init__(message, details)
+
+# Alias for backward compatibility
+InsufficientTokensError = InsufficientBalanceError
 
 class InvalidTransactionError(TokenError):
     """Raised when transaction is invalid"""
@@ -250,24 +253,38 @@ class InvalidPricingError(TokenError):
         token_cost: Optional[float] = None,
         details: Optional[Dict[str, Any]] = None
     ):
-        error_details = {}
+        error_details = {
+            "message": message
+        }
         if service_type:
             error_details["service_type"] = service_type
-        if token_cost is not None:
+        if token_cost:
             error_details["token_cost"] = token_cost
         if details:
             error_details.update(details)
         super().__init__(message, error_details)
 
-class InsufficientTokensError(InsufficientBalanceError):
-    """Alias for InsufficientBalanceError for backward compatibility."""
-    pass
-
 __all__ = [
     "TokenError",
     "TokenNotFoundError",
     "TokenServiceError",
+    "TokenBalanceError",
+    "InvalidBalanceChangeError",
+    "InsufficientBalanceError",
+    "InsufficientTokensError",
+    "InvalidTransactionError",
+    "WalletConnectionError",
+    "WalletNotFoundError",
+    "TransactionNotFoundError",
+    "TokenPriceError",
+    "TokenNetworkError",
+    "InvalidTokenAmountError",
+    "TokenOperationError",
+    "TokenAuthorizationError",
+    "TokenValidationError",
+    "TokenTransactionError",
     "TokenRateLimitError",
     "TokenPricingError",
-    "InvalidPricingError"
+    "InvalidPricingError",
+    "SmartContractError"
 ]

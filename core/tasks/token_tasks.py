@@ -12,7 +12,7 @@ from core.utils.logger import get_logger
 from core.utils.metrics import track_token_transaction
 from core.utils.redis import RedisClient
 from core.exceptions.token_exceptions import TokenError
-from core.exceptions.base import BaseException
+from core.exceptions.base_exceptions import BaseException
 from core.config import settings
 
 logger = get_logger(__name__)

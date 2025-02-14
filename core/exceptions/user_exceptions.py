@@ -1,7 +1,7 @@
-"""User-specific exceptions module."""
+"""User-related exceptions."""
 
 from typing import Optional, Dict, Any, List
-from .base import BaseError, ValidationError
+from .base_exceptions import BaseError, ValidationError
 
 class UserError(BaseError):
     """Base class for user-related errors."""
@@ -9,14 +9,13 @@ class UserError(BaseError):
     def __init__(
         self,
         message: str,
-        error_code: str = "user_error",
         details: Optional[Dict[str, Any]] = None
     ):
-        super().__init__(
-            message=message,
-            error_code=error_code,
-            details=details
-        )
+        super().__init__(message)
+        self.details = details or {}
+        
+    def _get_details(self) -> Dict[str, Any]:
+        return self.details
 
 class UserNotFoundError(UserError):
     """Raised when a user is not found."""
@@ -35,7 +34,6 @@ class UserNotFoundError(UserError):
             
         super().__init__(
             message=message,
-            error_code="user_not_found",
             details=details
         )
 
@@ -53,7 +51,6 @@ class DuplicateUserError(UserError):
             
         super().__init__(
             message=message,
-            error_code="duplicate_user",
             details=details
         )
 
@@ -67,7 +64,6 @@ class InvalidUserDataError(UserError):
     ):
         super().__init__(
             message=message,
-            error_code="invalid_user_data",
             details={"errors": errors or {}}
         )
 
@@ -77,7 +73,7 @@ class UserValidationError(ValidationError):
     def __init__(
         self,
         message: str = "User validation failed",
-        errors: Optional[List[Dict[str, Any]]] = None,
+        errors: Optional[Dict[str, Any]] = None,
         field_prefix: str = "user"
     ):
         super().__init__(

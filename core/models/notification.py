@@ -13,11 +13,12 @@ import logging
 from pydantic import BaseModel, Field, validator, HttpUrl, ConfigDict
 from sqlalchemy import (
     Column, String, DateTime, Boolean, ForeignKey, Text,
-    Index, CheckConstraint, Enum as SQLEnum
+    Index, CheckConstraint, Enum as SQLEnum, Integer
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.sql import expression
+import sqlalchemy
 
 from core.models.base import Base
 from core.exceptions import (
@@ -100,7 +101,6 @@ class NotificationBase(BaseModel):
     type: NotificationType
     channels: List[NotificationChannel] = Field(default=[NotificationChannel.IN_APP])
     priority: NotificationPriority = Field(default=NotificationPriority.MEDIUM)
-    data: Optional[Dict[str, Any]] = Field(default=None)
     notification_metadata: Optional[Dict[str, Any]] = Field(default=None)
     action_url: Optional[HttpUrl] = None
     expires_at: Optional[datetime] = None
@@ -125,7 +125,7 @@ class NotificationCreate(BaseModel):
     message: str = Field(..., min_length=1)
     type: NotificationType
     priority: NotificationPriority = Field(default=NotificationPriority.MEDIUM)
-    metadata: Optional[Dict[str, Any]] = None
+    notification_metadata: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -135,7 +135,7 @@ class NotificationUpdate(BaseModel):
     message: Optional[str] = Field(None, min_length=1)
     type: Optional[NotificationType] = None
     priority: Optional[NotificationPriority] = None
-    metadata: Optional[Dict[str, Any]] = None
+    notification_metadata: Optional[Dict[str, Any]] = None
     read: Optional[bool] = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -151,7 +151,6 @@ class NotificationResponse(BaseModel):
     type: NotificationType
     channels: List[NotificationChannel]
     priority: NotificationPriority
-    data: Optional[Dict[str, Any]] = None
     notification_metadata: Optional[Dict[str, Any]] = None
     action_url: Optional[str] = None
     status: NotificationStatus
@@ -192,36 +191,22 @@ class Notification(Base):
     deal_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="SET NULL"))
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    type: Mapped[str] = mapped_column(
-        SQLEnum(NotificationType, name='notificationtype', create_constraint=True, native_enum=True, values_callable=lambda obj: [e.value for e in obj]),
-        nullable=False
-    )
+    type: Mapped[NotificationType] = mapped_column(SQLEnum(NotificationType), nullable=False)
+    priority: Mapped[NotificationPriority] = mapped_column(SQLEnum(NotificationPriority), default=NotificationPriority.MEDIUM)
+    status: Mapped[NotificationStatus] = mapped_column(SQLEnum(NotificationStatus), default=NotificationStatus.PENDING)
     channels: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=[NotificationChannel.IN_APP.value])
-    priority: Mapped[str] = mapped_column(
-        SQLEnum(NotificationPriority, name='notificationpriority', create_constraint=True, native_enum=True, values_callable=lambda obj: [e.value for e in obj]),
-        nullable=False,
-        default=NotificationPriority.MEDIUM.value
-    )
-    status: Mapped[str] = mapped_column(
-        SQLEnum(NotificationStatus, name='notificationstatus', create_constraint=True, native_enum=True, values_callable=lambda obj: [e.value for e in obj]),
-        nullable=False,
-        default=NotificationStatus.PENDING.value,
-        server_default=NotificationStatus.PENDING.value
-    )
-    data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     notification_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
-    action_url: Mapped[Optional[str]] = mapped_column(Text)
-    schedule_for: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=expression.func.now()
-    )
+    action_url: Mapped[Optional[str]] = mapped_column(String(2048))
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    schedule_for: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     read_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     error: Mapped[Optional[str]] = mapped_column(Text)
+    retry_count: Mapped[int] = mapped_column(sqlalchemy.Integer, default=0)
+    max_retries: Mapped[int] = mapped_column(sqlalchemy.Integer, default=3)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=expression.text('CURRENT_TIMESTAMP'))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=expression.text('CURRENT_TIMESTAMP'), onupdate=expression.text('CURRENT_TIMESTAMP'))
 
     # Relationships
     user = relationship("User", back_populates="notifications")
@@ -242,7 +227,6 @@ class Notification(Base):
             'type': self.type,
             'channels': self.channels,
             'priority': self.priority,
-            'data': self.data,
             'notification_metadata': self.notification_metadata,
             'action_url': self.action_url,
             'status': self.status,
@@ -316,9 +300,9 @@ class Notification(Base):
 
             # Update delivery data
             if delivery_data:
-                if not self.data:
-                    self.data = {}
-                self.data[f"{channel.value}_delivery"] = delivery_data
+                metadata = self.notification_metadata or {}
+                metadata[f"{channel.value}_delivery"] = delivery_data
+                self.notification_metadata = metadata
 
             # Update status
             await self.mark_sent()
@@ -390,7 +374,6 @@ class Notification(Base):
         channels: Optional[List[NotificationChannel]] = None,
         goal_id: Optional[UUID] = None,
         deal_id: Optional[UUID] = None,
-        data: Optional[Dict[str, Any]] = None,
         notification_metadata: Optional[Dict[str, Any]] = None,
         action_url: Optional[str] = None,
         schedule_for: Optional[datetime] = None,
@@ -418,7 +401,6 @@ class Notification(Base):
                 channels=channels,
                 goal_id=goal_id,
                 deal_id=deal_id,
-                data=data,
                 notification_metadata=notification_metadata,
                 action_url=action_url,
                 schedule_for=schedule_for,
@@ -524,8 +506,6 @@ class Notification(Base):
             combined_metadata = {}
             notification_ids = []
             for n in recent_notifications:
-                if n.data:
-                    combined_data.update(n.data)
                 if n.notification_metadata:
                     combined_metadata.update(n.notification_metadata)
                 notification_ids.append(str(n.id))
@@ -539,12 +519,6 @@ class Notification(Base):
                 type=type,
                 priority=max(n.priority for n in recent_notifications),
                 channels=list(set().union(*[n.channels for n in recent_notifications])),
-                data={
-                    "aggregated": True,
-                    "count": count,
-                    "notification_ids": notification_ids,
-                    **combined_data
-                },
                 notification_metadata={
                     "aggregated": True,
                     "original_notifications": notification_ids,

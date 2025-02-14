@@ -1,6 +1,7 @@
-from typing import Optional, Dict, Any
+"""Wallet-related exceptions."""
 
-from .base import BaseError
+from typing import Optional, Dict, Any
+from .base_exceptions import BaseError
 
 class WalletError(BaseError):
     """Base class for wallet-related exceptions"""
@@ -9,11 +10,11 @@ class WalletError(BaseError):
         message: str,
         details: Optional[Dict[str, Any]] = None
     ):
-        super().__init__(
-            message=message,
-            error_code="wallet_error",
-            details=details
-        )
+        super().__init__(message)
+        self.details = details or {}
+        
+    def _get_details(self) -> Dict[str, Any]:
+        return self.details
 
 class WalletNotFoundError(WalletError):
     """Raised when wallet is not found"""

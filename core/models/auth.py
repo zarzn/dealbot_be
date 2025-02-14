@@ -5,55 +5,69 @@ This module defines the authentication-related models and schemas for the AI Age
 
 from datetime import datetime
 from enum import Enum
-from typing import Optional
-from uuid import UUID
+from typing import Optional, Dict, Any
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, EmailStr, Field, validator
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, Enum as SQLEnum, Index
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.sql import text
 
 from core.models.base import Base
 
 class TokenType(str, Enum):
-    """Token type enum."""
+    """Token type enumeration."""
     BEARER = "bearer"
     REFRESH = "refresh"
 
 class TokenStatus(str, Enum):
-    """Token status enum."""
+    """Token status enumeration."""
     ACTIVE = "active"
     REVOKED = "revoked"
     EXPIRED = "expired"
 
 class TokenScope(str, Enum):
-    """Token scope enum."""
+    """Token scope enumeration."""
     FULL = "full"
     READ = "read"
     WRITE = "write"
-    ADMIN = "admin"
 
 class AuthToken(Base):
     """Authentication token database model."""
     __tablename__ = "auth_tokens"
+    __table_args__ = (
+        Index('ix_auth_tokens_user', 'user_id'),
+        Index('ix_auth_tokens_token', 'token'),
+        Index('ix_auth_tokens_status', 'status'),
+    )
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
-    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("auth_users.id", ondelete="CASCADE"))
-    token: Mapped[str] = mapped_column(String, unique=True, index=True)
-    token_type: Mapped[TokenType] = mapped_column(SQLEnum(TokenType))
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    token_type: Mapped[TokenType] = mapped_column(SQLEnum(TokenType), nullable=False)
     status: Mapped[TokenStatus] = mapped_column(SQLEnum(TokenStatus), default=TokenStatus.ACTIVE)
     scope: Mapped[TokenScope] = mapped_column(SQLEnum(TokenScope), default=TokenScope.FULL)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
 
     # Relationships
-    user = relationship("AuthUser", back_populates="tokens")
+    user = relationship("User", back_populates="auth_tokens")
 
     def __repr__(self) -> str:
         """String representation of the token."""
-        return f"<AuthToken(user_id={self.user_id}, type={self.token_type}, status={self.status})>"
+        return f"<AuthToken {self.token_type} ({self.status})>"
+
+    async def revoke(self) -> None:
+        """Revoke the token."""
+        self.status = TokenStatus.REVOKED
+
+    async def is_valid(self) -> bool:
+        """Check if token is valid."""
+        return (
+            self.status == TokenStatus.ACTIVE and
+            datetime.utcnow() < self.expires_at
+        )
 
 class Token(BaseModel):
     """Token schema."""

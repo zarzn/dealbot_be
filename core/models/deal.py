@@ -13,7 +13,7 @@ import enum
 
 from sqlalchemy import (
     ForeignKey, String, Text, DECIMAL, JSON, Enum as SQLAlchemyEnum,
-    UniqueConstraint, CheckConstraint, Index, Column, DateTime
+    UniqueConstraint, CheckConstraint, Index, Column, DateTime, Boolean
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
@@ -32,13 +32,11 @@ class DealStatus(str, enum.Enum):
 
 class DealSource(str, enum.Enum):
     """Deal source types."""
-    AMAZON = "amazon"
-    WALMART = "walmart"
-    EBAY = "ebay"
-    TARGET = "target"
-    BESTBUY = "bestbuy"
     MANUAL = "manual"
-    OTHER = "other"
+    API = "api"
+    SCRAPER = "scraper"
+    USER = "user"
+    AGENT = "agent"
 
 class DealPriority(int, enum.Enum):
     """Deal priority levels."""
@@ -175,12 +173,16 @@ class Deal(Base):
     price_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Relationships
+    user = relationship("User", back_populates="deals")
     goal = relationship("Goal", back_populates="deals")
     market = relationship("Market", back_populates="deals")
+    price_points = relationship("PricePoint", back_populates="deal", cascade="all, delete-orphan")
+    price_trackers = relationship("PriceTracker", back_populates="deal", cascade="all, delete-orphan")
+    price_predictions = relationship("PricePrediction", back_populates="deal", cascade="all, delete-orphan")
     scores = relationship("DealScore", back_populates="deal", cascade="all, delete-orphan")
-    price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="deal", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:

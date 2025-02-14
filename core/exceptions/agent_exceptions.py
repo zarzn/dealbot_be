@@ -1,6 +1,6 @@
 """Agent exceptions module."""
 
-from .base import BaseError, NotFoundError, ValidationError
+from .base_exceptions import BaseError, NotFoundError, ValidationError
 
 class AgentError(BaseError):
     """Base exception for agent-related errors."""

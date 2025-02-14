@@ -2,15 +2,17 @@
 
 from fastapi import APIRouter
 
-from core.api.v1.auth.router import router as auth_router
-from core.api.v1.users.router import router as users_router
-from core.api.v1.goals.router import router as goals_router
-from core.api.v1.deals.router import router as deals_router
-from core.api.v1.markets.router import router as markets_router
-from core.api.v1.chat.router import router as chat_router
-from core.api.v1.token.router import router as token_router
-from core.api.v1.notifications.router import router as notifications_router
-from core.api.v1.health.router import router as health_router
+from .auth.router import router as auth_router
+from .users.router import router as users_router
+from .goals.router import router as goals_router
+from .deals.router import router as deals_router
+from .markets.router import router as markets_router
+from .chat.router import router as chat_router
+from .token.router import router as token_router
+from .notifications.router import router as notifications_router
+from .health.router import router as health_router
+from .price_tracking.router import router as price_tracking_router
+from .price_prediction.router import router as price_prediction_router
 
 router = APIRouter()
 
@@ -23,6 +25,8 @@ router.include_router(markets_router, prefix="/markets", tags=["Markets"])
 router.include_router(chat_router, prefix="/chat", tags=["Chat"])
 router.include_router(token_router, prefix="/token", tags=["Token"])
 router.include_router(notifications_router, prefix="/notifications", tags=["Notifications"])
+router.include_router(price_tracking_router, prefix="/price-tracking", tags=["Price Tracking"])
+router.include_router(price_prediction_router, prefix="/price-prediction", tags=["Price Prediction"])
 
 # System routes
 router.include_router(health_router, prefix="/health", tags=["System"])

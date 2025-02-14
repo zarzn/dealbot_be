@@ -1,7 +1,7 @@
 """Cache-related exceptions module."""
 
 from typing import Dict, Any, Optional
-from .base import BaseError
+from .base_exceptions import BaseError
 
 class CacheError(BaseError):
     """Base class for cache-related errors."""

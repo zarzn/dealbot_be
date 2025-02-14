@@ -10,7 +10,7 @@ from uuid import UUID
 import json
 import logging
 
-from sqlalchemy import Column, DateTime, text, MetaData
+from sqlalchemy import Column, DateTime, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.ext.declarative import declared_attr
@@ -25,13 +25,9 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar('T', bound='Base')
 
-# Create a single metadata instance
-metadata = MetaData()
-
 class Base(DeclarativeBase):
     """Base model class with common functionality."""
     
-    metadata = metadata
     id: Any
     __table__: ClassVar['Table']
     
@@ -81,7 +77,10 @@ class Base(DeclarativeBase):
                 f"Error getting {cls.__name__} by id",
                 extra={'id': str(id), 'error': str(e)}
             )
-            raise DatabaseError(f"Failed to get {cls.__name__}: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to get {cls.__name__}: {str(e)}",
+                operation="get_by_id"
+            )
 
     @classmethod
     async def create(cls: Type[T], db: AsyncSession, **kwargs) -> T:
@@ -99,7 +98,10 @@ class Base(DeclarativeBase):
                 f"Error creating {cls.__name__}",
                 extra={'kwargs': kwargs, 'error': str(e)}
             )
-            raise DatabaseError(f"Failed to create {cls.__name__}: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to create {cls.__name__}: {str(e)}",
+                operation="create"
+            )
 
     async def update(self: T, db: AsyncSession, **kwargs) -> T:
         """Update model instance."""
@@ -120,7 +122,10 @@ class Base(DeclarativeBase):
                 f"Error updating {self.__class__.__name__}",
                 extra={'id': str(self.id), 'updates': kwargs, 'error': str(e)}
             )
-            raise DatabaseError(f"Failed to update {self.__class__.__name__}: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to update {self.__class__.__name__}: {str(e)}",
+                operation="update"
+            )
 
     async def delete(self: T, db: AsyncSession) -> None:
         """Delete model instance."""
@@ -137,4 +142,7 @@ class Base(DeclarativeBase):
                 f"Error deleting {self.__class__.__name__}",
                 extra={'id': str(self.id), 'error': str(e)}
             )
-            raise DatabaseError(f"Failed to delete {self.__class__.__name__}: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to delete {self.__class__.__name__}: {str(e)}",
+                operation="delete"
+            )

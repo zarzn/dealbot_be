@@ -13,17 +13,22 @@ Classes:
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import Enum as PyEnum
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
+from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import Column, String, DateTime, Numeric, Boolean, text
+from sqlalchemy import (
+    Column, String, DateTime, Numeric, Boolean, text, DECIMAL, 
+    Index, CheckConstraint, Enum as SQLEnum
+)
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql import func, expression
 from core.models.base import Base
 from core.exceptions import ValidationError, TokenError
 
-class ServiceType(str, Enum):
+class ServiceType(str, PyEnum):
     SEARCH = "search"
     NOTIFICATION = "notification"
     ANALYSIS = "analysis"
@@ -60,14 +65,20 @@ class TokenPricingInDB(TokenPricingBase):
 
 class TokenPricing(Base):
     __tablename__ = 'token_pricing'
-    __table_args__ = {'extend_existing': True}
+    __table_args__ = (
+        Index('ix_token_pricing_service', 'service_type'),
+        Index('ix_token_pricing_active', 'is_active'),
+        CheckConstraint('token_cost > 0', name='ch_positive_cost'),
+        CheckConstraint('valid_to > valid_from', name='ch_valid_dates'),
+    )
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, index=True)
-    service_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    token_cost: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    service_type: Mapped[ServiceType] = mapped_column(SQLEnum(ServiceType), nullable=False)
+    token_cost: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    valid_to: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    valid_to: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    description: Mapped[Optional[str]] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
 
     def __repr__(self):

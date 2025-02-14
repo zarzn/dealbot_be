@@ -5,14 +5,17 @@ This module provides Redis client configuration and connection management.
 
 import redis.asyncio as aioredis
 from redis.asyncio import Redis, ConnectionPool
-from typing import Optional, Any, Union
+from typing import Optional, Any, Union, Dict, List
 import json
 import logging
-from datetime import timedelta
+from datetime import timedelta, datetime
+import time
 
 from core.config import settings
+from core.utils.logger import get_logger
+from core.exceptions.base_exceptions import RateLimitError
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _redis_client: Optional[Redis] = None
 _redis_pool: Optional[ConnectionPool] = None
@@ -163,3 +166,152 @@ async def clear_cache_pattern(pattern: str) -> bool:
     except Exception as e:
         logger.error(f"Error clearing cache pattern {pattern}: {str(e)}")
         return False
+
+class RateLimit:
+    """Rate limiting implementation using Redis."""
+
+    def __init__(
+        self,
+        redis: Redis,
+        key: str,
+        limit: int,
+        window: int = 60,
+        precision: int = 60
+    ):
+        """Initialize rate limiter.
+        
+        Args:
+            redis: Redis client instance
+            key: Rate limit key
+            limit: Maximum number of requests
+            window: Time window in seconds
+            precision: Time precision in seconds
+        """
+        self.redis = redis
+        self.key = key
+        self.limit = limit
+        self.window = window
+        self.precision = precision
+        self.redis_key = f"rate_limit:{key}"
+
+    async def is_allowed(self) -> bool:
+        """Check if request is allowed under rate limit.
+        
+        Returns:
+            True if request is allowed
+        """
+        try:
+            current = await self._get_counter()
+            return current < self.limit
+        except Exception as e:
+            logger.error(f"Error checking rate limit: {str(e)}")
+            # Default to allowing request on error
+            return True
+
+    async def increment(self) -> int:
+        """Increment request counter.
+        
+        Returns:
+            Current request count
+        """
+        try:
+            current_time = int(time.time())
+            pipeline = self.redis.pipeline()
+            
+            # Cleanup old counts
+            pipeline.zremrangebyscore(
+                self.redis_key,
+                0,
+                current_time - self.window
+            )
+            
+            # Add new count
+            pipeline.zadd(
+                self.redis_key,
+                {str(current_time): 1}
+            )
+            
+            # Set expiration
+            pipeline.expire(
+                self.redis_key,
+                self.window
+            )
+            
+            await pipeline.execute()
+            
+            return await self._get_counter()
+        except Exception as e:
+            logger.error(f"Error incrementing rate limit: {str(e)}")
+            return 0
+
+    async def get_reset_time(self) -> datetime:
+        """Get time when rate limit will reset.
+        
+        Returns:
+            Datetime when rate limit will reset
+        """
+        try:
+            oldest = await self.redis.zrange(
+                self.redis_key,
+                0,
+                0,
+                withscores=True
+            )
+            if oldest:
+                reset_time = int(oldest[0][1]) + self.window
+                return datetime.fromtimestamp(reset_time)
+            return datetime.now()
+        except Exception as e:
+            logger.error(f"Error getting rate limit reset time: {str(e)}")
+            return datetime.now()
+
+    async def _get_counter(self) -> int:
+        """Get current request count.
+        
+        Returns:
+            Current number of requests in window
+        """
+        current_time = int(time.time())
+        
+        # Get counts in current window
+        counts = await self.redis.zcount(
+            self.redis_key,
+            current_time - self.window,
+            current_time
+        )
+        
+        return counts
+
+    async def reset(self) -> None:
+        """Reset rate limit counter."""
+        try:
+            await self.redis.delete(self.redis_key)
+        except Exception as e:
+            logger.error(f"Error resetting rate limit: {str(e)}")
+
+    async def get_remaining(self) -> int:
+        """Get remaining requests allowed.
+        
+        Returns:
+            Number of requests remaining in current window
+        """
+        try:
+            current = await self._get_counter()
+            return max(0, self.limit - current)
+        except Exception as e:
+            logger.error(f"Error getting remaining rate limit: {str(e)}")
+            return 0
+
+    async def check_limit(self) -> None:
+        """Check and enforce rate limit.
+        
+        Raises:
+            RateLimitError: If rate limit is exceeded
+        """
+        if not await self.is_allowed():
+            reset_time = await self.get_reset_time()
+            raise RateLimitError(
+                message="Rate limit exceeded",
+                limit=self.limit,
+                reset_at=reset_time
+            )

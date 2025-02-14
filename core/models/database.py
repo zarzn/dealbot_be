@@ -10,16 +10,16 @@ from uuid import UUID
 import logging
 
 from pydantic import BaseModel, Field, ConfigDict
-from sqlalchemy import Column, String, JSON, DateTime, Enum, Integer, text, select, func
+from sqlalchemy import Column, String, JSON, DateTime, Enum, Integer, text, select, func, Float, ForeignKey, Boolean, Numeric
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import declarative_base, sessionmaker, Mapped, mapped_column
+from sqlalchemy.orm import declarative_base, sessionmaker, Mapped, mapped_column, relationship
 from sqlalchemy.sql import Select
 
 from core.config import settings
 from core.database import async_engine, AsyncSessionLocal, Base
-from core.exceptions.base import (
+from core.exceptions.base_exceptions import (
     DatabaseError,
     ValidationError,
     NotFoundError,
@@ -35,6 +35,11 @@ Base = declarative_base()
 ModelType = TypeVar("ModelType", bound=Base)
 CreateSchemaType = TypeVar("CreateSchemaType", bound=BaseModel)
 UpdateSchemaType = TypeVar("UpdateSchemaType", bound=BaseModel)
+
+# Move User import inside functions where needed
+def get_user_model():
+    from core.models.user import User
+    return User
 
 # Pydantic models for data validation
 class GoalBase(BaseModel):
@@ -120,10 +125,13 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         except Exception as e:
             await db.rollback()
             logger.error(
-                f"Error creating {self.model.__name__}",
+                "Error creating record",
                 extra={'data': obj_in.model_dump(), 'error': str(e)}
             )
-            raise DatabaseError(f"Error creating record: {str(e)}")
+            raise DatabaseError(
+                message=f"Error creating record: {str(e)}",
+                operation="create"
+            )
 
     async def get(self, db: AsyncSession, id: UUID) -> Optional[ModelType]:
         """Get a record by ID."""
@@ -134,7 +142,11 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
                     f"{self.model.__name__} not found",
                     extra={'id': str(id)}
                 )
-                raise NotFoundError(f"{self.model.__name__} not found")
+                raise NotFoundError(
+                    message=f"{self.model.__name__} not found",
+                    resource_type=self.model.__name__.lower(),
+                    resource_id=str(id)
+                )
             return db_obj
             
         except Exception as e:
@@ -144,7 +156,10 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
             )
             if isinstance(e, NotFoundError):
                 raise
-            raise DatabaseError(f"Error retrieving record: {str(e)}")
+            raise DatabaseError(
+                message=f"Error retrieving record: {str(e)}",
+                operation="get"
+            )
 
     async def get_multi(
         self,
@@ -177,7 +192,10 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
                     'error': str(e)
                 }
             )
-            raise DatabaseError(f"Error retrieving records: {str(e)}")
+            raise DatabaseError(
+                message=f"Error retrieving records: {str(e)}",
+                operation="get_multi"
+            )
 
     async def update(
         self,
@@ -216,7 +234,10 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
                     'error': str(e)
                 }
             )
-            raise DatabaseError(f"Error updating record: {str(e)}")
+            raise DatabaseError(
+                message=f"Error updating record: {str(e)}",
+                operation="update"
+            )
 
     async def delete(self, db: AsyncSession, *, id: UUID) -> None:
         """Delete a record."""
@@ -238,7 +259,10 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
             )
             if isinstance(e, NotFoundError):
                 raise
-            raise DatabaseError(f"Error deleting record: {str(e)}")
+            raise DatabaseError(
+                message=f"Error deleting record: {str(e)}",
+                operation="delete"
+            )
 
     async def count(
         self,
@@ -247,12 +271,11 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
     ) -> int:
         """Count total records with optional filtering."""
         try:
-            query = select(func.count(1)).select_from(self.model)
+            query = select(func.count()).select_from(self.model)
             
             if filters:
                 for field, value in filters.items():
-                    if hasattr(self.model, field):
-                        query = query.filter(getattr(self.model, field) == value)
+                    query = query.where(getattr(self.model, field) == value)
                         
             result = await db.execute(query)
             return result.scalar() or 0
@@ -262,7 +285,10 @@ class BaseRepository(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
                 f"Error counting {self.model.__name__}",
                 extra={'filters': filters, 'error': str(e)}
             )
-            raise DatabaseError(f"Error counting records: {str(e)}")
+            raise DatabaseError(
+                message=f"Error counting records: {str(e)}",
+                operation="count"
+            )
 
 # Goal-specific repository
 class GoalRepository(BaseRepository[Goal, GoalCreate, GoalUpdate]):
@@ -278,6 +304,99 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         except Exception as e:
             await session.rollback()
             logger.error("Database session error", extra={'error': str(e)})
-            raise DatabaseError(f"Database session error: {str(e)}")
+            raise DatabaseError(
+                message=f"Database session error: {str(e)}",
+                operation="session_management"
+            )
         finally:
             await session.close()
+
+"""Database models for price tracking and prediction."""
+
+class PricePoint(Base):
+    """Price point record in database."""
+    __tablename__ = "price_points"
+
+    id = Column(Integer, primary_key=True, index=True)
+    deal_id = Column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False)
+    price = Column(Numeric(10, 2), nullable=False)
+    currency = Column(String, default="USD")
+    source = Column(String, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+    meta_data = Column(JSON)
+
+    # Relationships
+    deal = relationship("Deal", back_populates="price_points")
+
+class PriceTracker(Base):
+    """Price tracker configuration in database."""
+    __tablename__ = "price_trackers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    deal_id = Column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    initial_price = Column(Numeric(10, 2), nullable=False)
+    threshold_price = Column(Numeric(10, 2))
+    check_interval = Column(Integer, default=300)  # seconds
+    last_check = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+    notification_settings = Column(JSON)
+    meta_data = Column(JSON)
+
+    # Relationships
+    deal = relationship("Deal", back_populates="price_tracker")
+    user = relationship("User", back_populates="price_trackers", lazy="selectin")
+
+class PricePrediction(Base):
+    """Price prediction record in database."""
+    __tablename__ = "price_predictions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    deal_id = Column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    model_name = Column(String, nullable=False)
+    prediction_days = Column(Integer, default=7)
+    confidence_threshold = Column(Float, default=0.8)
+    predictions = Column(JSON, nullable=False)  # List of prediction points
+    overall_confidence = Column(Float, nullable=False)
+    trend_direction = Column(String)
+    trend_strength = Column(Float)
+    seasonality_score = Column(Float)
+    features_used = Column(JSON)  # List of features
+    model_params = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    meta_data = Column(JSON)
+
+    # Relationships
+    deal = relationship("Deal", back_populates="price_predictions")
+    user = relationship("User", back_populates="price_predictions", lazy="selectin")
+
+class ModelMetrics(Base):
+    """Model performance metrics in database."""
+    __tablename__ = "model_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_name = Column(String, nullable=False)
+    accuracy = Column(Float, nullable=False)
+    mae = Column(Float, nullable=False)
+    mse = Column(Float, nullable=False)
+    rmse = Column(Float, nullable=False)
+    mape = Column(Float, nullable=False)
+    r2_score = Column(Float, nullable=False)
+    training_time = Column(Float)
+    prediction_time = Column(Float)
+    last_retrain = Column(DateTime, nullable=False)
+    feature_importance = Column(JSON)
+    meta_data = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+# Update Deal model relationships
+from core.models.deal import Deal
+Deal.price_points = relationship("PricePoint", back_populates="deal", cascade="all, delete-orphan")
+Deal.price_tracker = relationship("PriceTracker", back_populates="deal", uselist=False, cascade="all, delete-orphan")
+Deal.price_predictions = relationship("PricePrediction", back_populates="deal", cascade="all, delete-orphan")
+
+# Update User model relationships
+from core.models.user import User
+User.price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
+User.price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")

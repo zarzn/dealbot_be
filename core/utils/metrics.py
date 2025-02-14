@@ -310,3 +310,38 @@ def track_time(
 
         return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
     return decorator 
+
+class MetricsManager:
+    """Manages application metrics collection and reporting."""
+
+    def __init__(self):
+        self.request_latency = REQUEST_LATENCY
+        self.request_count = REQUEST_COUNT
+        self.db_query_latency = DB_QUERY_LATENCY
+        self.db_connection_pool = DB_CONNECTION_POOL
+        self.cache_hit_count = CACHE_HIT_COUNT
+        self.cache_miss_count = CACHE_MISS_COUNT
+
+    def record_request_latency(self, method: str, endpoint: str, duration: float) -> None:
+        """Record request latency."""
+        self.request_latency.labels(method=method, endpoint=endpoint).observe(duration)
+
+    def record_request(self, method: str, endpoint: str, status: int) -> None:
+        """Record request count."""
+        self.request_count.labels(method=method, endpoint=endpoint, status=status).inc()
+
+    def record_db_query(self, operation: str, table: str, duration: float) -> None:
+        """Record database query latency."""
+        self.db_query_latency.labels(operation=operation, table=table).observe(duration)
+
+    def update_db_pool_size(self, pool_type: str, size: int) -> None:
+        """Update database connection pool size."""
+        self.db_connection_pool.labels(pool_type=pool_type).set(size)
+
+    def record_cache_hit(self, cache_type: str) -> None:
+        """Record cache hit."""
+        self.cache_hit_count.labels(cache_type=cache_type).inc()
+
+    def record_cache_miss(self, cache_type: str) -> None:
+        """Record cache miss."""
+        self.cache_miss_count.labels(cache_type=cache_type).inc() 

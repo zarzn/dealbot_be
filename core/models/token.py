@@ -15,11 +15,11 @@ from sqlalchemy import (
     ForeignKey, JSON, BigInteger, Boolean, Numeric, text
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
-from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import expression
 from pydantic import field_validator, Field
 
-from core.models.base import Base, metadata
+from core.models.base import Base
 from .token_transaction import TokenTransaction, TransactionType, TransactionStatus
 from .token_balance_history import TokenBalanceHistory
 from .token_balance import TokenBalance
@@ -29,11 +29,11 @@ class TokenPrice(Base):
     __tablename__ = "token_prices"
     __table_args__ = {'extend_existing': True}
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    price: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
-    source: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    price = Column(Numeric(18, 8), nullable=False)
+    timestamp = Column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    source = Column(String(50), nullable=True)
+    data = Column(JSONB, nullable=True)
 
     def __repr__(self):
         return f"<TokenPrice {self.price} at {self.timestamp}>"
@@ -43,14 +43,14 @@ class TokenWallet(Base):
     __tablename__ = "token_wallets"
     __table_args__ = {'extend_existing': True}
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    address: Mapped[str] = mapped_column(String(44), nullable=False, unique=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=expression.true())
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
-    last_used: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    network: Mapped[str] = mapped_column(String(20), nullable=False, default="mainnet-beta", server_default=expression.text("'mainnet-beta'"))
-    data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    address = Column(String(44), nullable=False, unique=True)
+    is_active = Column(Boolean, nullable=False, default=True, server_default=expression.true())
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    last_used = Column(DateTime(timezone=True), nullable=True)
+    network = Column(String(20), nullable=False, default="mainnet-beta", server_default=expression.text("'mainnet-beta'"))
+    data = Column(JSONB, nullable=True)
 
     # Relationships
     user = relationship("User", back_populates="token_wallets")
@@ -172,7 +172,7 @@ class TokenPricingResponse(BaseModel):
     valid_to: Optional[datetime] = None
     is_active: bool = True
     description: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    pricing_metadata: Optional[Dict[str, Any]] = None
     
     model_config = ConfigDict(from_attributes=True)
     
@@ -246,7 +246,7 @@ class TokenReward(BaseModel):
     reward_type: str
     reason: str
     status: str = Field(default="pending")
-    metadata: Optional[Dict[str, Any]] = None
+    reward_metadata: Optional[Dict[str, Any]] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
     processed_at: Optional[datetime] = None
     tx_hash: Optional[str] = None

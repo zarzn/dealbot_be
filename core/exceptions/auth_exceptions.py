@@ -1,7 +1,7 @@
 """Authentication-related exceptions module."""
 
 from typing import Dict, Any, Optional, List
-from .base import BaseError, ValidationError
+from .base_exceptions import BaseError, ValidationError
 
 class AuthError(BaseError):
     """Base class for authentication-related errors."""
@@ -153,6 +153,27 @@ class InvalidTwoFactorCodeError(AuthError):
             }
         )
 
+class AccountLockedError(AuthError):
+    """Raised when an account is locked due to too many failed login attempts."""
+    
+    def __init__(
+        self,
+        user_id: str,
+        locked_until: str,
+        attempts_made: int,
+        max_attempts: int,
+        message: str = "Account locked due to too many failed login attempts"
+    ):
+        super().__init__(
+            message=message,
+            details={
+                "user_id": user_id,
+                "locked_until": locked_until,
+                "attempts_made": attempts_made,
+                "max_attempts": max_attempts
+            }
+        )
+
 class TokenRefreshError(AuthError):
     """Raised when token refresh fails."""
     
@@ -170,6 +191,24 @@ class TokenRefreshError(AuthError):
             details=error_details
         )
 
+class EmailNotVerifiedError(AuthError):
+    """Raised when a user attempts to perform an action that requires email verification."""
+    
+    def __init__(
+        self,
+        user_id: str,
+        email: str,
+        message: str = "Email verification required"
+    ):
+        super().__init__(
+            message=message,
+            details={
+                "user_id": user_id,
+                "email": email,
+                "verification_required": True
+            }
+        )
+
 __all__ = [
     'AuthError',
     'AuthenticationError',
@@ -180,5 +219,7 @@ __all__ = [
     'PermissionDeniedError',
     'TwoFactorRequiredError',
     'InvalidTwoFactorCodeError',
-    'TokenRefreshError'
+    'TokenRefreshError',
+    'AccountLockedError',
+    'EmailNotVerifiedError'
 ] 

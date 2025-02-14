@@ -33,12 +33,82 @@ class DevelopmentConfig(BaseSettings):
     ENVIRONMENT: str = "development"
     ALLOWED_HOSTS: list[str] = ["*"]
     
+    # Logging
+    LOG_LEVEL: str = "DEBUG"
+    LOG_FORMAT: str = "json"
+    LOG_REQUEST_BODY: bool = True
+    LOG_RESPONSE_BODY: bool = True
+    LOG_HEADERS: bool = True
+    LOG_QUERY_PARAMS: bool = True
+    LOG_PERFORMANCE: bool = True
+    LOG_ERRORS: bool = True
+    LOG_SLOW_REQUESTS: bool = True
+    LOG_SQL_QUERIES: bool = True
+    LOG_FILE_PATH: str = "logs/app.log"
+    LOG_ROTATION: str = "1 day"
+    LOG_RETENTION: str = "30 days"
+    LOG_COMPRESSION: bool = True
+    LOG_JSON_INDENT: int = 2
+    LOG_EXCLUDE_PATHS: set[str] = {
+        "/api/v1/health",
+        "/api/v1/metrics",
+        "/docs",
+        "/redoc",
+        "/openapi.json"
+    }
+    
     # Security
     SECRET_KEY: SecretStr = SecretStr("your-development-secret-key")
     JWT_SECRET: SecretStr = SecretStr("your-jwt-secret-for-development")
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = ACCESS_TOKEN_EXPIRE_MINUTES
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = REFRESH_TOKEN_EXPIRE_DAYS
     JWT_ALGORITHM: str = JWT_ALGORITHM
+    SENSITIVE_HEADERS: set[str] = {
+        "authorization",
+        "cookie",
+        "x-api-key",
+        "x-token",
+        "x-refresh-token",
+        "x-client-secret",
+        "x-access-token",
+        "x-jwt-token",
+        "jwt-token",
+        "api-key",
+        "client-secret",
+        "private-key"
+    }
+    AUTH_EXCLUDE_PATHS: set[str] = {
+        "/api/v1/auth/login",
+        "/api/v1/auth/register",
+        "/api/v1/auth/refresh",
+        "/api/v1/auth/forgot-password",
+        "/api/v1/auth/reset-password",
+        "/api/v1/auth/verify-email",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/metrics",
+        "/health",
+        "/"
+    }
+    
+    SENSITIVE_FIELDS: set[str] = {
+        "password",
+        "password_confirmation",
+        "current_password",
+        "new_password",
+        "token",
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "secret",
+        "private_key",
+        "credit_card",
+        "card_number",
+        "cvv",
+        "ssn",
+        "social_security"
+    }
     
     # Database
     POSTGRES_USER: str = os.getenv("POSTGRES_USER", "postgres")
@@ -122,10 +192,6 @@ class DevelopmentConfig(BaseSettings):
     WALMART_CLIENT_ID: str = "your-walmart-client-id"
     WALMART_CLIENT_SECRET: str = "your-walmart-client-secret"
     
-    # Logging
-    LOG_LEVEL: str = "DEBUG"
-    LOG_FORMAT: str = "json"
-    
     # CORS
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
@@ -172,6 +238,12 @@ class DevelopmentConfig(BaseSettings):
     EMAIL_FROM: str = os.getenv("EMAIL_FROM", "noreply@example.com")
     EMAIL_TEMPLATES_DIR: str = os.path.join("core", "templates", "email")
 
+    # Performance
+    SLOW_REQUEST_THRESHOLD: float = 1.0  # Threshold in seconds for slow request logging
+    WORKER_CONNECTIONS: int = 1000
+    KEEPALIVE_TIMEOUT: int = 65
+    GRACEFUL_TIMEOUT: int = 120
+
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> PostgresDsn:
         """Get database URI."""
@@ -183,6 +255,11 @@ class DevelopmentConfig(BaseSettings):
             port=int(self.POSTGRES_PORT),
             path=self.POSTGRES_DB
         )
+
+    @property
+    def DATABASE_URL(self) -> PostgresDsn:
+        """Alias for SQLALCHEMY_DATABASE_URI for compatibility."""
+        return self.SQLALCHEMY_DATABASE_URI
 
     @property
     def sync_database_url(self) -> PostgresDsn:

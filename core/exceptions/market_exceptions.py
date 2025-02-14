@@ -1,53 +1,34 @@
-"""Market-related exceptions module."""
+"""Market-related exceptions."""
 
-from typing import Dict, Any, Optional, List
-from .base import BaseError, ValidationError
+from typing import Dict, Any, Optional
+from .base_exceptions import BaseError, ValidationError
 
 class MarketError(BaseError):
     """Base class for market-related errors."""
     
     def __init__(
         self,
-        message: str = "Market operation failed",
+        message: str,
         details: Optional[Dict[str, Any]] = None
     ):
-        super().__init__(
-            message=message,
-            error_code="market_error",
-            details=details
-        )
+        super().__init__(message)
+        self.details = details or {}
+        
+    def _get_details(self) -> Dict[str, Any]:
+        return self.details
 
 class MarketValidationError(ValidationError):
     """Raised when market validation fails."""
     
     def __init__(
         self,
-        message: str = "Market validation error",
-        errors: Optional[List[Dict[str, Any]]] = None,
-        field_prefix: str = "market"
+        message: str = "Market validation failed",
+        errors: Optional[Dict[str, Any]] = None
     ):
-        super().__init__(
-            message=message,
-            errors=errors,
-            field_prefix=field_prefix
-        )
-
-class InvalidMarketDataError(MarketError):
-    """Raised when market data is invalid."""
-    
-    def __init__(
-        self,
-        message: str = "Invalid market data",
-        details: Optional[Dict[str, Any]] = None
-    ):
-        super().__init__(
-            message=message,
-            error_code="invalid_market_data",
-            details=details
-        )
+        super().__init__(message=message, errors=errors)
 
 class MarketNotFoundError(MarketError):
-    """Raised when a market cannot be found."""
+    """Raised when a market is not found."""
     
     def __init__(
         self,
@@ -60,22 +41,21 @@ class MarketNotFoundError(MarketError):
         )
 
 class MarketConnectionError(MarketError):
-    """Raised when there's an error connecting to a market API."""
+    """Raised when connection to a market fails."""
     
     def __init__(
         self,
-        market_type: str,
+        market: str,
         reason: str,
         details: Optional[Dict[str, Any]] = None
     ):
-        error_details = {
-            "market_type": market_type,
+        error_details = details or {}
+        error_details.update({
+            "market": market,
             "reason": reason
-        }
-        if details:
-            error_details.update(details)
+        })
         super().__init__(
-            message=f"Error connecting to {market_type} market: {reason}",
+            message=f"Failed to connect to market {market}: {reason}",
             details=error_details
         )
 
@@ -84,17 +64,20 @@ class MarketRateLimitError(MarketError):
     
     def __init__(
         self,
-        market_type: str,
+        market: str,
         limit: int,
-        window: str
+        reset_time: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
     ):
+        error_details = details or {}
+        error_details.update({
+            "market": market,
+            "limit": limit,
+            "reset_time": reset_time
+        })
         super().__init__(
-            message=f"Rate limit exceeded for {market_type}: {limit} requests per {window}",
-            details={
-                "market_type": market_type,
-                "limit": limit,
-                "window": window
-            }
+            message=f"Rate limit exceeded for market {market}",
+            details=error_details
         )
 
 class MarketConfigurationError(MarketError):
@@ -102,18 +85,17 @@ class MarketConfigurationError(MarketError):
     
     def __init__(
         self,
-        market_type: str,
+        market: str,
         reason: str,
         details: Optional[Dict[str, Any]] = None
     ):
-        error_details = {
-            "market_type": market_type,
+        error_details = details or {}
+        error_details.update({
+            "market": market,
             "reason": reason
-        }
-        if details:
-            error_details.update(details)
+        })
         super().__init__(
-            message=f"Invalid configuration for {market_type} market: {reason}",
+            message=f"Invalid configuration for market {market}: {reason}",
             details=error_details
         )
 
@@ -122,21 +104,19 @@ class MarketOperationError(MarketError):
     
     def __init__(
         self,
+        market: str,
         operation: str,
         reason: str,
-        market_type: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None
     ):
-        error_details = {
+        error_details = details or {}
+        error_details.update({
+            "market": market,
             "operation": operation,
             "reason": reason
-        }
-        if market_type:
-            error_details["market_type"] = market_type
-        if details:
-            error_details.update(details)
+        })
         super().__init__(
-            message=f"Market operation error during {operation}: {reason}",
+            message=f"Operation {operation} failed for market {market}: {reason}",
             details=error_details
         )
 
@@ -146,41 +126,139 @@ class MarketAuthenticationError(MarketError):
     def __init__(
         self,
         market: str,
-        message: str = "Market authentication failed",
+        reason: str,
         details: Optional[Dict[str, Any]] = None
     ):
-        error_details = {"market": market}
-        if details:
-            error_details.update(details)
+        error_details = details or {}
+        error_details.update({
+            "market": market,
+            "reason": reason
+        })
         super().__init__(
-            message=message,
-            error_code="market_authentication_error",
+            message=f"Authentication failed for market {market}: {reason}",
             details=error_details
         )
 
-class InvalidDealDataError(MarketError):
-    """Raised when deal data is invalid."""
+class MarketProductError(MarketError):
+    """Raised when there's an error with market products."""
     
     def __init__(
         self,
-        message: str = "Invalid deal data",
+        market: str,
+        product_id: str,
+        reason: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        error_details.update({
+            "market": market,
+            "product_id": product_id,
+            "reason": reason
+        })
+        super().__init__(
+            message=f"Product error in market {market} for {product_id}: {reason}",
+            details=error_details
+        )
+
+class ProductNotFoundError(MarketProductError):
+    """Raised when a product is not found in the market."""
+    
+    def __init__(
+        self,
+        market: str,
+        product_id: str,
         details: Optional[Dict[str, Any]] = None
     ):
         super().__init__(
-            message=message,
-            error_code="invalid_deal_data",
+            market=market,
+            product_id=product_id,
+            reason="Product not found",
             details=details
         )
+
+class PricePredictionError(MarketError):
+    """Raised when price prediction fails."""
+    
+    def __init__(
+        self,
+        market: str,
+        reason: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        error_details.update({
+            "market": market,
+            "reason": reason
+        })
+        super().__init__(
+            message=f"Price prediction failed for market {market}: {reason}",
+            details=error_details
+        )
+
+class InvalidMarketDataError(MarketError):
+    """Raised when market data is invalid."""
+    
+    def __init__(
+        self,
+        market: str,
+        reason: str,
+        data: Optional[Dict[str, Any]] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(
+            message=f"Invalid market data from {market}: {reason}",
+            details={
+                "market": market,
+                "reason": reason,
+                "data": data,
+                **(details or {})
+            }
+        )
+
+class MarketIntegrationError(MarketError):
+    """Raised when there's an error with market integration."""
+    
+    def __init__(
+        self,
+        market: str,
+        operation: str,
+        reason: str,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        error_details.update({
+            "market": market,
+            "operation": operation,
+            "reason": reason
+        })
+        super().__init__(
+            message=f"Market integration error for {market} during {operation}: {reason}",
+            details=error_details
+        )
+
+class RateLimitError(MarketError):
+    """Raised when rate limit is exceeded."""
+    
+    def __init__(
+        self,
+        message: str = "Rate limit exceeded",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(message=message, details=details)
 
 __all__ = [
     'MarketError',
     'MarketValidationError',
-    'InvalidMarketDataError',
     'MarketNotFoundError',
     'MarketConnectionError',
     'MarketRateLimitError',
     'MarketConfigurationError',
     'MarketOperationError',
     'MarketAuthenticationError',
-    'InvalidDealDataError'
+    'MarketProductError',
+    'ProductNotFoundError',
+    'PricePredictionError',
+    'InvalidMarketDataError',
+    'MarketIntegrationError',
+    'RateLimitError',
 ] 

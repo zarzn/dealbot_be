@@ -10,14 +10,16 @@ Classes:
     TokenBalanceHistory: SQLAlchemy model for database table
 """
 
-from uuid import UUID
+from uuid import UUID, uuid4
 from datetime import datetime
 from enum import Enum
 from typing import Optional, Dict, Any
+from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text, ForeignKey
+from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text, ForeignKey, Index, CheckConstraint, DECIMAL
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import func, expression
 from core.models.base import Base
 from core.exceptions import (
     ValidationError,
@@ -26,6 +28,7 @@ from core.exceptions import (
 )
 
 class BalanceChangeType(str, Enum):
+    """Balance change type enumeration."""
     DEDUCTION = "deduction"
     REWARD = "reward"
     REFUND = "refund"
@@ -63,31 +66,28 @@ class TokenBalanceHistoryInDB(TokenBalanceHistoryBase):
         from_attributes = True
 
 class TokenBalanceHistory(Base):
-    __tablename__ = 'token_balance_history'
-    __table_args__ = {'extend_existing': True}
+    """Token balance history database model."""
+    __tablename__ = "token_balance_history"
+    __table_args__ = (
+        Index('ix_token_balance_history_user', 'user_id'),
+        Index('ix_token_balance_history_type', 'change_type'),
+        CheckConstraint('change_amount != 0', name='ch_nonzero_change'),
+        CheckConstraint('balance_after = balance_before + change_amount', name='ch_balance_change_match'),
+    )
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, index=True)
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    token_balance_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("token_balances.id", ondelete="CASCADE"), nullable=False)
-    balance_before: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
-    balance_after: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
-    change_amount: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False)
+    balance_before: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
+    balance_after: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
+    change_amount: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
     change_type: Mapped[BalanceChangeType] = mapped_column(SQLEnum(BalanceChangeType), nullable=False)
     reason: Mapped[str] = mapped_column(String(255), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
-    data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    transaction_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+    transaction_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("token_transactions.id"))
 
     # Relationships
-    user: Mapped["User"] = relationship(
-        "User",
-        back_populates="token_balance_history",
-        lazy="selectin"
-    )
-    token_balance: Mapped["TokenBalance"] = relationship(
-        "TokenBalance",
-        back_populates="history",
-        lazy="selectin"
-    )
+    user = relationship("User", back_populates="balance_history")
+    transaction = relationship("TokenTransaction", backref="balance_changes")
 
     def __repr__(self):
         return f"<TokenBalanceHistory {self.id}>"

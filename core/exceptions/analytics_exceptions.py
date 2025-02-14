@@ -1,7 +1,7 @@
-"""Analytics exceptions module."""
+"""Analytics-related exceptions."""
 
 from typing import Dict, Any, Optional
-from .base import BaseError
+from .base_exceptions import BaseError
 
 class AnalyticsError(BaseError):
     """Base class for analytics-related errors."""
@@ -11,11 +11,11 @@ class AnalyticsError(BaseError):
         message: str = "Analytics operation failed",
         details: Optional[Dict[str, Any]] = None
     ):
-        super().__init__(
-            message=message,
-            error_code="analytics_error",
-            details=details
-        )
+        super().__init__(message)
+        self.details = details or {}
+        
+    def _get_details(self) -> Dict[str, Any]:
+        return self.details
 
 class AnalyticsProcessingError(AnalyticsError):
     """Raised when analytics processing fails."""

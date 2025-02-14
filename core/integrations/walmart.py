@@ -1,82 +1,59 @@
-from typing import Dict, Any, List, Optional
-import aiohttp
-import asyncio
-from datetime import datetime
-import hashlib
-import time
+"""Enhanced Walmart market integration."""
 
-from core.integrations.base import BaseMarketIntegration, IntegrationError
-from core.models.market import MarketType
-from core.exceptions import ValidationError
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timedelta
+import asyncio
+import hmac
+import hashlib
+import base64
+import json
+from urllib.parse import quote
+import aiohttp
+from dataclasses import dataclass
+from redis.asyncio import Redis
+
+from core.integrations.base import MarketBase, MarketCredentials
+from core.exceptions import (
+    MarketIntegrationError,
+    ProductNotFoundError,
+    RateLimitError
+)
+from core.utils.logger import get_logger
+from core.utils.metrics import MetricsCollector
 from core.utils.redis import get_redis_client
 
+logger = get_logger(__name__)
 
-class WalmartIntegration(BaseMarketIntegration):
-    REQUIRED_CREDENTIALS = ["client_id", "client_secret"]
-    CACHE_TTL = 3600  # 1 hour
-    BASE_URL = "https://api.walmart.com/v3"
-    TOKEN_URL = "https://api.walmart.com/v3/token"
+@dataclass
+class WalmartCredentials(MarketCredentials):
+    """Walmart API credentials."""
+    client_id: str
+    client_secret: str
+    region: str = 'US'
 
-    def _validate_credentials(self) -> None:
-        missing_fields = [field for field in self.REQUIRED_CREDENTIALS 
-                         if field not in self.credentials]
-        if missing_fields:
-            raise ValidationError(
-                f"Missing required Walmart API credentials: {', '.join(missing_fields)}"
-            )
-
-    def _initialize_client(self) -> None:
-        self.client_id = self.credentials["client_id"]
-        self.client_secret = self.credentials["client_secret"]
-        self.session = aiohttp.ClientSession()
-
-    async def _get_access_token(self) -> str:
-        """Get or refresh Walmart API access token"""
-        try:
-            redis_client = await get_redis_client()
-            cache_key = f"walmart:token:{self.client_id}"
-            
-            # Try to get cached token
-            cached_token = await redis_client.get(cache_key)
-            if cached_token:
-                return cached_token
-
-            # Generate new token
-            timestamp = str(int(time.time() * 1000))
-            signature = hashlib.sha256(
-                f"{self.client_id}{timestamp}{self.client_secret}".encode()
-            ).hexdigest()
-
-            headers = {
-                "WM_SVC.NAME": "Walmart Marketplace",
-                "WM_QOS.CORRELATION_ID": timestamp,
-                "WM_SEC.TIMESTAMP": timestamp,
-                "WM_SEC.AUTH_SIGNATURE": signature,
-                "Accept": "application/json",
-                "Content-Type": "application/x-www-form-urlencoded",
-            }
-
-            async with self.session.post(
-                self.TOKEN_URL,
-                headers=headers,
-                data={
-                    "grant_type": "client_credentials"
-                }
-            ) as response:
-                if response.status != 200:
-                    raise IntegrationError(f"Failed to get Walmart access token: {await response.text()}")
-                
-                data = await response.json()
-                token = data["access_token"]
-                expires_in = data["expires_in"]
-
-                # Cache token
-                await redis_client.set(cache_key, token, ex=expires_in - 60)  # Expire 1 minute before actual expiration
-                
-                return token
-
-        except Exception as e:
-            self._handle_error(e, "getting Walmart access token")
+class WalmartIntegration(MarketBase):
+    """Enhanced Walmart market integration."""
+    
+    def __init__(
+        self,
+        credentials: WalmartCredentials,
+        redis_client: Optional[Redis] = None,
+        session: Optional[aiohttp.ClientSession] = None,
+        websocket_enabled: bool = True
+    ):
+        super().__init__(credentials, session)
+        self.region = credentials.region
+        self.redis_client = redis_client
+        self.websocket_enabled = websocket_enabled
+        self._ws_connections: Dict[str, aiohttp.ClientWebSocketResponse] = {}
+        self._ws_callbacks: Dict[str, List[callable]] = {}
+        self._base_url = "https://api.walmart.com/v3"
+        
+    async def _get_redis(self) -> Redis:
+        """Get Redis client instance."""
+        if not self.redis_client:
+            self.redis_client = await get_redis_client()
+        return self.redis_client
 
     async def search_products(
         self,
@@ -84,134 +61,377 @@ class WalmartIntegration(BaseMarketIntegration):
         category: Optional[str] = None,
         min_price: Optional[float] = None,
         max_price: Optional[float] = None,
+        sort_by: Optional[str] = None,
         limit: int = 10
     ) -> List[Dict[str, Any]]:
+        """Search for products on Walmart."""
         try:
-            # Try to get from cache first
-            cache_key = f"walmart:search:{query}:{category}:{min_price}:{max_price}:{limit}"
-            redis_client = await get_redis_client()
-            cached_result = await redis_client.get(cache_key)
-            if cached_result:
-                return cached_result
-
+            # Generate search URL
+            url = f"{self._base_url}/items/search"
+            
+            # Prepare parameters
             params = {
-                "query": query,
-                "limit": limit
+                'query': query,
+                'limit': limit
             }
+            
             if category:
-                params["category"] = category
-
-            token = await self._get_access_token()
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json"
-            }
-
-            async with self.session.get(
-                f"{self.BASE_URL}/items/search",
+                params['category'] = category
+                
+            if min_price:
+                params['min_price'] = min_price
+                
+            if max_price:
+                params['max_price'] = max_price
+                
+            if sort_by:
+                params['sort'] = sort_by
+                
+            # Get authentication headers
+            headers = await self._get_auth_headers('GET', url)
+            
+            # Make request
+            response = await self._make_request(
+                'GET',
+                url,
                 headers=headers,
                 params=params
-            ) as response:
-                if response.status != 200:
-                    raise IntegrationError(f"Failed to search Walmart products: {await response.text()}")
-                
-                data = await response.json()
-                items = data.get("items", [])
-
-                formatted_products = []
-                for item in items:
-                    product = self._format_walmart_product(item)
+            )
+            
+            # Process results
+            items = response.get('items', [])
+            processed_items = []
+            
+            for item in items[:limit]:
+                processed_item = await self._process_product(item)
+                if processed_item:
+                    processed_items.append(processed_item)
                     
-                    # Apply price filters if specified
-                    price = float(product["price"]) if product.get("price") else None
-                    if price:
-                        if min_price and price < min_price:
-                            continue
-                        if max_price and price > max_price:
-                            continue
-                    
-                    formatted_products.append(product)
-
-                # Cache the results
-                await redis_client.set(cache_key, formatted_products, ex=self.CACHE_TTL)
-                
-                return formatted_products[:limit]
-
+            return processed_items
+            
         except Exception as e:
-            self._handle_error(e, "searching Walmart products")
-
-    async def get_product_details(self, product_id: str) -> Dict[str, Any]:
+            logger.error(f"Error searching Walmart products: {str(e)}")
+            raise MarketIntegrationError(f"Walmart search failed: {str(e)}")
+            
+    async def get_product_details(
+        self,
+        product_id: str
+    ) -> Dict[str, Any]:
+        """Get detailed product information."""
         try:
-            # Try to get from cache first
-            cache_key = f"walmart:product:{product_id}"
-            redis_client = await get_redis_client()
-            cached_result = await redis_client.get(cache_key)
-            if cached_result:
-                return cached_result
-
-            token = await self._get_access_token()
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json"
-            }
-
-            async with self.session.get(
-                f"{self.BASE_URL}/items/{product_id}",
+            # Check cache first
+            cached_data = await self._get_redis().get(
+                f"walmart:product:{product_id}"
+            )
+            if cached_data:
+                return cached_data
+                
+            # Generate URL
+            url = f"{self._base_url}/items/{product_id}"
+            
+            # Get authentication headers
+            headers = await self._get_auth_headers('GET', url)
+            
+            # Make request
+            response = await self._make_request(
+                'GET',
+                url,
                 headers=headers
-            ) as response:
-                if response.status != 200:
-                    raise IntegrationError(f"Failed to get Walmart product details: {await response.text()}")
+            )
+            
+            # Process product data
+            if not response:
+                raise ProductNotFoundError(f"Product {product_id} not found")
                 
-                item = await response.json()
-                formatted_product = self._format_walmart_product(item)
-
-                # Cache the result
-                await redis_client.set(cache_key, formatted_product, ex=self.CACHE_TTL)
+            product_data = await self._process_product(response)
+            
+            # Cache result
+            await self._get_redis().set(
+                f"walmart:product:{product_id}",
+                product_data,
+                ex=3600  # 1 hour
+            )
+            
+            return product_data
+            
+        except Exception as e:
+            logger.error(f"Error getting Walmart product details: {str(e)}")
+            raise MarketIntegrationError(
+                f"Failed to get product details: {str(e)}"
+            )
+            
+    async def track_price(
+        self,
+        product_id: str,
+        check_interval: int = 300
+    ) -> Dict[str, Any]:
+        """Start tracking product price."""
+        try:
+            # Get initial product data
+            product_data = await self.get_product_details(product_id)
+            
+            # Store tracking configuration
+            tracking_config = {
+                'product_id': product_id,
+                'initial_price': product_data['price'],
+                'check_interval': check_interval,
+                'last_check': datetime.utcnow().isoformat(),
+                'status': 'active'
+            }
+            
+            # Store in Redis
+            await self._get_redis().set(
+                f"walmart:price_track:{product_id}",
+                tracking_config,
+                ex=86400  # 24 hours
+            )
+            
+            # Start WebSocket connection if enabled
+            if self.websocket_enabled:
+                await self.subscribe_to_changes(
+                    product_id,
+                    self._handle_price_update
+                )
                 
-                return formatted_product
-
+            return tracking_config
+            
         except Exception as e:
-            self._handle_error(e, "getting Walmart product details")
-
-    async def get_product_price_history(self, product_id: str) -> List[Dict[str, Any]]:
-        # Note: Walmart API doesn't provide price history
-        # This would require a third-party service or our own price tracking
-        raise NotImplementedError("Price history not available for Walmart products")
-
-    async def check_product_availability(self, product_id: str) -> bool:
+            logger.error(f"Error starting price tracking: {str(e)}")
+            raise MarketIntegrationError(
+                f"Failed to start price tracking: {str(e)}"
+            )
+            
+    async def get_price_history(
+        self,
+        product_id: str,
+        days: int = 30
+    ) -> List[Dict[str, Any]]:
+        """Get product price history."""
         try:
-            product = await self.get_product_details(product_id)
-            return product.get("availability", False)
+            # Get from Redis
+            history = await self._get_redis().lrange(
+                f"walmart:price_history:{product_id}",
+                0,
+                -1
+            )
+            
+            if not history:
+                return []
+                
+            # Filter by date
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            
+            filtered_history = [
+                point for point in history
+                if datetime.fromisoformat(point['timestamp']) >= cutoff
+            ]
+            
+            return sorted(
+                filtered_history,
+                key=lambda x: x['timestamp']
+            )
+            
         except Exception as e:
-            self._handle_error(e, "checking Walmart product availability")
-
-    def _format_walmart_product(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Format Walmart API product data into standardized format"""
+            logger.error(f"Error getting price history: {str(e)}")
+            raise MarketIntegrationError(
+                f"Failed to get price history: {str(e)}"
+            )
+            
+    async def subscribe_to_changes(
+        self,
+        product_id: str,
+        callback: callable
+    ):
+        """Subscribe to product changes via WebSocket."""
         try:
-            return self.format_product_response({
-                "id": item.get("itemId"),
-                "title": item.get("name"),
-                "description": item.get("shortDescription"),
-                "price": float(item.get("salePrice", item.get("price", {}).get("amount"))),
-                "currency": "USD",
-                "url": item.get("productUrl"),
-                "image_url": item.get("imageUrl") or item.get("images", [{}])[0].get("url"),
-                "brand": item.get("brand"),
-                "category": item.get("categoryPath"),
-                "availability": item.get("availabilityStatus") == "IN_STOCK",
-                "rating": float(item.get("customerRating", 0)),
-                "review_count": int(item.get("numReviews", 0)),
-                "marketplace": "walmart",
-                "seller": item.get("sellerName", "Walmart"),
-                "metadata": {
-                    "free_shipping": item.get("freeShipping", False),
-                    "two_day_shipping": item.get("twoDayShipping", False),
-                    "pickup_available": item.get("pickupAvailable", False)
-                }
-            })
+            if not self.websocket_enabled:
+                logger.warning("WebSocket functionality is disabled")
+                return
+                
+            if product_id not in self._ws_connections:
+                # Create new WebSocket connection
+                ws = await self._create_ws_connection(product_id)
+                self._ws_connections[product_id] = ws
+                self._ws_callbacks[product_id] = []
+                
+                # Start listening task
+                asyncio.create_task(
+                    self._listen_for_updates(product_id, ws)
+                )
+                
+            # Add callback
+            self._ws_callbacks[product_id].append(callback)
+            
         except Exception as e:
-            self._handle_error(e, "formatting Walmart product data")
-
-    async def __del__(self):
-        if hasattr(self, "session"):
-            await self.session.close() 
+            logger.error(f"Error subscribing to changes: {str(e)}")
+            raise MarketIntegrationError(
+                f"Failed to subscribe to changes: {str(e)}"
+            )
+            
+    async def unsubscribe_from_changes(
+        self,
+        product_id: str
+    ):
+        """Unsubscribe from product changes."""
+        try:
+            if product_id in self._ws_connections:
+                ws = self._ws_connections.pop(product_id)
+                await ws.close()
+                
+            self._ws_callbacks.pop(product_id, None)
+            
+        except Exception as e:
+            logger.error(f"Error unsubscribing from changes: {str(e)}")
+            
+    async def _get_auth_headers(
+        self,
+        method: str,
+        url: str
+    ) -> Dict[str, str]:
+        """Generate authentication headers for Walmart API."""
+        try:
+            timestamp = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+            
+            return {
+                'WM_SEC.KEY_VERSION': '1',
+                'WM_CONSUMER.ID': self.credentials.client_id,
+                'WM_CONSUMER.INTIMESTAMP': timestamp,
+                'Accept': 'application/json'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating auth headers: {str(e)}")
+            raise MarketIntegrationError(
+                f"Failed to generate auth headers: {str(e)}"
+            )
+            
+    async def _process_product(
+        self,
+        raw_data: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Process raw product data into standardized format."""
+        try:
+            if not raw_data:
+                return None
+                
+            # Extract basic information
+            product_data = {
+                'id': raw_data.get('itemId'),
+                'title': raw_data.get('name'),
+                'price': float(raw_data.get('salePrice', raw_data.get('price', 0))),
+                'currency': 'USD',
+                'url': raw_data.get('productUrl'),
+                'image_url': raw_data.get('largeImage'),
+                'in_stock': raw_data.get('stock', 'NOT_AVAILABLE') == 'AVAILABLE',
+                'rating': float(raw_data.get('customerRating', 0)),
+                'review_count': int(raw_data.get('numReviews', 0)),
+                'seller': raw_data.get('sellerInfo', {}).get('sellerName', 'Walmart'),
+                'category': raw_data.get('categoryPath'),
+                'features': raw_data.get('shortDescription', '').split('\n'),
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            
+            # Validate required fields
+            if not await self._validate_product_data(product_data):
+                return None
+                
+            return product_data
+            
+        except Exception as e:
+            logger.error(f"Error processing product data: {str(e)}")
+            return None
+            
+    async def _create_ws_connection(
+        self,
+        product_id: str
+    ) -> aiohttp.ClientWebSocketResponse:
+        """Create WebSocket connection for real-time updates."""
+        try:
+            ws_url = f"wss://stream.walmart.com/v3/items/{product_id}"
+            
+            # Get authentication headers
+            headers = await self._get_auth_headers('GET', ws_url)
+            
+            # Create WebSocket connection
+            ws = await self._session.ws_connect(
+                ws_url,
+                headers=headers,
+                heartbeat=30
+            )
+            
+            return ws
+            
+        except Exception as e:
+            logger.error(f"Error creating WebSocket connection: {str(e)}")
+            raise MarketIntegrationError(
+                f"Failed to create WebSocket connection: {str(e)}"
+            )
+            
+    async def _listen_for_updates(
+        self,
+        product_id: str,
+        ws: aiohttp.ClientWebSocketResponse
+    ):
+        """Listen for WebSocket updates."""
+        try:
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                        
+                        # Process update
+                        if data.get('type') == 'price_update':
+                            await self._handle_price_update(
+                                product_id,
+                                data
+                            )
+                            
+                    except json.JSONDecodeError:
+                        logger.error("Invalid WebSocket message format")
+                        
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    logger.error(
+                        f"WebSocket error: {ws.exception()}"
+                    )
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Error in WebSocket listener: {str(e)}")
+            
+        finally:
+            # Cleanup
+            if not ws.closed:
+                await ws.close()
+                
+    async def _handle_price_update(
+        self,
+        product_id: str,
+        data: Dict[str, Any]
+    ):
+        """Handle price update from WebSocket."""
+        try:
+            # Record price change
+            price_point = {
+                'price': data['new_price'],
+                'currency': data.get('currency', 'USD'),
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            
+            # Store in Redis
+            await self._get_redis().rpush(
+                f"walmart:price_history:{product_id}",
+                price_point
+            )
+            
+            # Notify callbacks
+            if product_id in self._ws_callbacks:
+                for callback in self._ws_callbacks[product_id]:
+                    try:
+                        await callback(product_id, price_point)
+                    except Exception as cb_error:
+                        logger.error(
+                            f"Error in price update callback: {str(cb_error)}"
+                        )
+                        
+        except Exception as e:
+            logger.error(f"Error handling price update: {str(e)}") 

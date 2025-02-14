@@ -4,7 +4,7 @@ This module defines all configuration settings for the AI Agentic Deals System,
 including database, cache, security, and external service configurations.
 """
 
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Set
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 import os
@@ -147,6 +147,16 @@ class Settings(BaseSettings):
     WALMART_CLIENT_ID: Optional[SecretStr] = None
     WALMART_CLIENT_SECRET: Optional[SecretStr] = None
 
+    # ScraperAPI Configuration
+    SCRAPER_API_KEY: SecretStr = SecretStr("34b092724b61ff18f116305a51ee77e7")
+    SCRAPER_API_BASE_URL: str = "http://api.scraperapi.com"
+    SCRAPER_API_CONCURRENT_LIMIT: conint(ge=1) = 25
+    SCRAPER_API_REQUESTS_PER_SECOND: conint(ge=1) = 3
+    SCRAPER_API_MONTHLY_LIMIT: conint(ge=1) = 200_000
+    SCRAPER_API_TIMEOUT: conint(ge=1) = 70
+    SCRAPER_API_CACHE_TTL: conint(ge=1) = 1800  # 30 minutes
+    SCRAPER_API_BACKGROUND_CACHE_TTL: conint(ge=1) = 7200  # 2 hours
+
     # AI Services
     DEEPSEEK_API_KEY: Optional[SecretStr] = None
     OPENAI_API_KEY: Optional[SecretStr] = None
@@ -187,6 +197,20 @@ class Settings(BaseSettings):
         "https://deals.yourdomain.com",
         "https://api.deals.yourdomain.com"
     ]
+    AUTH_EXCLUDE_PATHS: set[str] = {
+        "/api/v1/auth/login",
+        "/api/v1/auth/register",
+        "/api/v1/auth/refresh",
+        "/api/v1/auth/forgot-password",
+        "/api/v1/auth/reset-password",
+        "/api/v1/auth/verify-email",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/metrics",
+        "/health",
+        "/"
+    }
     JWT_ALGORITHM: str = constants.JWT_ALGORITHM
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: conint(ge=1) = constants.ACCESS_TOKEN_EXPIRE_MINUTES
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: conint(ge=1) = constants.REFRESH_TOKEN_EXPIRE_DAYS
@@ -195,10 +219,51 @@ class Settings(BaseSettings):
     REQUIRE_PASSWORD_CONFIRMATION: bool = True
     MAX_LOGIN_ATTEMPTS: conint(ge=1) = constants.MAX_LOGIN_ATTEMPTS
     LOGIN_ATTEMPT_TIMEOUT: conint(ge=1) = constants.LOCKOUT_DURATION_MINUTES * 60
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    SENSITIVE_HEADERS: Set[str] = {
+        "authorization",
+        "cookie",
+        "x-api-key",
+        "x-csrf-token",
+        "x-xsrf-token",
+        "x-forwarded-for",
+        "x-real-ip",
+        "proxy-authorization",
+        "www-authenticate",
+        "proxy-authenticate"
+    }
+    SENSITIVE_FIELDS: Set[str] = {
+        "password",
+        "password_confirmation",
+        "current_password",
+        "new_password",
+        "token",
+        "access_token",
+        "refresh_token",
+        "api_key",
+        "secret",
+        "private_key",
+        "credit_card",
+        "card_number",
+        "cvv",
+        "ssn",
+        "social_security"
+    }
 
     # Logging
     LOG_LEVEL: str = "INFO"
-    LOG_FORMAT: str = "json"
+    LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    LOG_REQUEST_BODY: bool = True
+    LOG_RESPONSE_BODY: bool = False
+    LOGGING_EXCLUDE_PATHS: Set[str] = {
+        "/api/v1/health",
+        "/api/v1/metrics",
+        "/docs",
+        "/redoc",
+        "/openapi.json"
+    }
     LOG_FILE: Optional[Path] = None
     LOG_RETENTION_DAYS: conint(ge=1) = 30
     LOG_MAX_SIZE: conint(ge=1) = 10485760  # 10MB
@@ -424,3 +489,6 @@ def get_settings() -> Settings:
 
 # Create settings instance
 settings = get_settings()
+
+# Export settings instance
+__all__ = ['settings', 'Settings', 'get_settings']

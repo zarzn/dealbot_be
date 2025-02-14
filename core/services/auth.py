@@ -27,7 +27,7 @@ from core.models.auth import (
     TokenScope
 )
 from core.exceptions import (
-    AuthError,
+    AuthenticationError,
     InvalidCredentialsError,
     TokenError,
     SessionExpiredError,

@@ -1,7 +1,7 @@
-"""Deal-specific exceptions module."""
+"""Deal-related exceptions."""
 
-from typing import Optional, Dict, Any, List
-from .base import BaseError, ValidationError, NotFoundException
+from typing import Optional, Dict, Any
+from .base_exceptions import BaseError, ValidationError, NotFoundException
 
 __all__ = [
     'DealError',
@@ -12,112 +12,93 @@ __all__ = [
     'DealValidationError',
     'DealProcessingError',
     'DealScoreError',
-    'DealAnalysisError'
+    'DealAnalysisError',
+    'DealMatchError'
 ]
 
 class DealError(BaseError):
-    """Base class for deal-related errors."""
+    """Base exception for deal-related errors."""
     
     def __init__(
         self,
         message: str,
         deal_id: Optional[str] = None,
-        error_code: str = "deal_error",
         details: Optional[Dict[str, Any]] = None
     ):
-        error_details = details or {}
-        if deal_id:
-            error_details["deal_id"] = deal_id
-            
-        super().__init__(
-            message=message,
-            error_code=error_code,
-            details=error_details
-        )
+        super().__init__(message)
+        self.deal_id = deal_id
+        self.details = details or {}
+        
+    def _get_details(self) -> Dict[str, Any]:
+        return {
+            'deal_id': self.deal_id,
+            **self.details
+        }
 
-class DealNotFoundError(NotFoundException):
-    """Deal not found error."""
+class DealNotFoundError(DealError):
+    """Raised when a deal is not found."""
+    pass
+
+class InvalidDealDataError(DealError):
+    """Raised when deal data is invalid."""
     
     def __init__(
         self,
-        message: str = "Deal not found",
+        message: str,
         deal_id: Optional[str] = None,
+        validation_errors: Optional[Dict[str, str]] = None,
         details: Optional[Dict[str, Any]] = None
     ):
-        error_details = details or {}
-        if deal_id:
-            error_details["deal_id"] = deal_id
-            
-        super().__init__(
-            message=message,
-            resource_type="deal",
-            resource_id=deal_id
-        )
-
-class InvalidDealDataError(ValidationError):
-    """Invalid deal data error."""
-    
-    def __init__(
-        self,
-        message: str = "Invalid deal data",
-        errors: Optional[List[Dict[str, Any]]] = None,
-        details: Optional[Dict[str, Any]] = None
-    ):
-        error_details = details or {}
-        super().__init__(
-            message=message,
-            errors=errors,
-            field_prefix="deal"
-        )
+        super().__init__(message, deal_id, details)
+        self.validation_errors = validation_errors or {}
+        
+    def _get_details(self) -> Dict[str, Any]:
+        details = super()._get_details()
+        details['validation_errors'] = self.validation_errors
+        return details
 
 class DealExpirationError(DealError):
-    """Error raised when a deal has expired."""
-    
-    def __init__(
-        self,
-        deal_id: str,
-        message: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None
-    ):
-        super().__init__(
-            message=message or f"Deal {deal_id} has expired",
-            deal_id=deal_id,
-            error_code="deal_expired",
-            details=details
-        )
+    """Raised when a deal has expired."""
+    pass
 
 class DealPriceError(DealError):
-    """Error raised when there are issues with deal pricing."""
+    """Raised when there's an error with deal pricing."""
     
     def __init__(
         self,
-        deal_id: str,
         message: str,
+        deal_id: Optional[str] = None,
+        price: Optional[float] = None,
         details: Optional[Dict[str, Any]] = None
     ):
-        super().__init__(
-            message=message,
-            deal_id=deal_id,
-            error_code="deal_price_error",
-            details=details
-        )
+        super().__init__(message, deal_id, details)
+        self.price = price
+        
+    def _get_details(self) -> Dict[str, Any]:
+        details = super()._get_details()
+        details['price'] = self.price
+        return details
 
 class DealValidationError(DealError):
-    """Error raised during deal validation."""
+    """Raised when deal validation fails."""
     
     def __init__(
         self,
         message: str,
+        deal_id: Optional[str] = None,
+        field: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None
     ):
-        super().__init__(
-            message=message,
-            error_code="deal_validation_error",
-            details=details
-        )
+        super().__init__(message, deal_id, details)
+        self.field = field
+        
+    def _get_details(self) -> Dict[str, Any]:
+        details = super()._get_details()
+        details['field'] = self.field
+        return details
 
 class DealProcessingError(DealError):
-    """Error raised when deal processing fails."""
+    """Raised when deal processing fails."""
     
     def __init__(
         self,
@@ -126,47 +107,64 @@ class DealProcessingError(DealError):
         operation: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None
     ):
-        error_details = details or {}
-        if operation:
-            error_details["operation"] = operation
-            
-        super().__init__(
-            message=message,
-            deal_id=deal_id,
-            error_code="deal_processing_error",
-            details=error_details
-        )
+        super().__init__(message, deal_id, details)
+        self.operation = operation
+        
+    def _get_details(self) -> Dict[str, Any]:
+        details = super()._get_details()
+        details['operation'] = self.operation
+        return details
 
 class DealScoreError(DealError):
-    """Error raised when deal scoring fails."""
+    """Raised when deal scoring fails."""
     
     def __init__(
         self,
         message: str,
         deal_id: Optional[str] = None,
-        score_type: Optional[str] = None,
-        score_details: Optional[Dict[str, Any]] = None,
+        score: Optional[float] = None,
         details: Optional[Dict[str, Any]] = None
     ):
-        error_details = details or {}
-        if score_type:
-            error_details["score_type"] = score_type
-        if score_details:
-            error_details["score_details"] = score_details
-            
-        super().__init__(
-            message=message,
-            deal_id=deal_id,
-            error_code="deal_score_error",
-            details=error_details
-        )
+        super().__init__(message, deal_id, details)
+        self.score = score
+        
+    def _get_details(self) -> Dict[str, Any]:
+        details = super()._get_details()
+        details['score'] = self.score
+        return details
 
 class DealAnalysisError(DealError):
     """Raised when deal analysis fails."""
+    
     def __init__(
         self,
-        message: str = "Deal analysis failed",
+        message: str,
+        deal_id: Optional[str] = None,
+        analysis_type: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None
     ):
-        super().__init__(message=message, details=details)
-        self.error_code = "deal_analysis_error" 
+        super().__init__(message, deal_id, details)
+        self.analysis_type = analysis_type
+        
+    def _get_details(self) -> Dict[str, Any]:
+        details = super()._get_details()
+        details['analysis_type'] = self.analysis_type
+        return details
+
+class DealMatchError(DealError):
+    """Raised when deal matching fails."""
+    
+    def __init__(
+        self,
+        message: str,
+        deal_id: Optional[str] = None,
+        goal_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(message, deal_id, details)
+        self.goal_id = goal_id
+        
+    def _get_details(self) -> Dict[str, Any]:
+        details = super()._get_details()
+        details['goal_id'] = self.goal_id
+        return details 

@@ -21,6 +21,7 @@ from core.utils.metrics import MetricsCollector
 from core.exceptions import (
     BaseError,
     ValidationError,
+    MarketError,
     IntegrationError,
     NetworkError,
     ServiceError

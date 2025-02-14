@@ -1,7 +1,7 @@
 """API-related exceptions module."""
 
 from typing import Dict, Any, Optional, List
-from .base import BaseError, ValidationError
+from .base_exceptions import BaseError, ValidationError
 
 class APIError(BaseError):
     """Base class for API-related errors."""

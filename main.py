@@ -1,6 +1,7 @@
 """Main application module."""
 
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import configure_mappers
@@ -15,84 +16,119 @@ logging.basicConfig(
 )
 
 # Configure SQLAlchemy logging
-sqlalchemy_logger = logging.getLogger('sqlalchemy')
-sqlalchemy_logger.setLevel(logging.ERROR)
-sqlalchemy_logger.propagate = False  # Prevent propagation to root logger
+loggers = {
+    'sqlalchemy': logging.ERROR,
+    'sqlalchemy.engine': logging.ERROR,
+    'sqlalchemy.pool': logging.ERROR,
+    'sqlalchemy.dialects': logging.ERROR,
+    'sqlalchemy.orm': logging.ERROR
+}
 
-sqlalchemy_engine_logger = logging.getLogger('sqlalchemy.engine')
-sqlalchemy_engine_logger.setLevel(logging.ERROR)
-sqlalchemy_engine_logger.propagate = False
-
-sqlalchemy_pool_logger = logging.getLogger('sqlalchemy.pool')
-sqlalchemy_pool_logger.setLevel(logging.ERROR)
-sqlalchemy_pool_logger.propagate = False
-
-sqlalchemy_dialects_logger = logging.getLogger('sqlalchemy.dialects')
-sqlalchemy_dialects_logger.setLevel(logging.ERROR)
-sqlalchemy_dialects_logger.propagate = False
-
-sqlalchemy_orm_logger = logging.getLogger('sqlalchemy.orm')
-sqlalchemy_orm_logger.setLevel(logging.ERROR)
-sqlalchemy_orm_logger.propagate = False
+for logger_name, level in loggers.items():
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(level)
+    logger.propagate = False
 
 logger = logging.getLogger(__name__)
 
 # Import all models to ensure they are registered with SQLAlchemy
-from core.models.base import Base
-from core.models.user import User
-from core.models.goal import Goal
-from core.models.deal import Deal
-from core.models.notification import Notification
-from core.models.chat import ChatMessage
-from core.models.token import TokenTransaction, TokenBalanceHistory, TokenWallet
-from core.models.market import Market
+from core.models import (
+    Base, User, Goal, Deal, Notification, ChatMessage,
+    TokenTransaction, TokenBalanceHistory, TokenWallet,
+    Market, PricePoint, PriceTracker, PricePrediction,
+    MessageRole, MessageStatus
+)
 
 # Import relationships module
 from core.models.relationships import setup_relationships
 
-# Set up relationships before any database operations
-logger.info("Setting up model relationships...")
-setup_relationships()
+# Import middleware setup
+from core.middleware import setup_middleware
 
-# Configure mappers after relationships are set
-logger.info("Configuring SQLAlchemy mappers...")
-configure_mappers()
+# Import routers
+from core.api.v1.auth.router import router as auth_router
+from core.api.v1.users.router import router as users_router
+from core.api.v1.goals.router import router as goals_router
+from core.api.v1.deals.router import router as deals_router
+from core.api.v1.markets.router import router as markets_router
+from core.api.v1.chat.router import router as chat_router
+from core.api.v1.token.router import router as token_router
+from core.api.v1.notifications.router import router as notifications_router
+from core.api.v1.health.router import router as health_router
+from core.api.v1.price_tracking.router import router as price_tracking_router
+from core.api.v1.price_prediction.router import router as price_prediction_router
 
-# Import router after all models and mappers are configured
-from core.api.v1 import api_router
+# Import websocket handlers
+from core.api.v1.notifications.websocket import handle_websocket
 
-# Create FastAPI application
-app = FastAPI(
-    title="AI Agentic Deals API",
-    description="API for AI-driven deal monitoring and analysis",
-    version="1.0.0"
-)
+from core.config import settings
 
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend domain
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    allow_websockets=True,  # Explicitly allow WebSocket connections
-)
-
-# Include API routes
-app.include_router(api_router, prefix="/api/v1")
-
-@app.on_event("startup")
-async def startup_event():
-    """Run startup tasks."""
-    logger.info("Starting up AI Agentic Deals API...")
-    # Verify mapper configuration
-    logger.info("Verifying SQLAlchemy configuration...")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager."""
     try:
-        configure_mappers()  # Re-run to verify configuration
-        logger.info("SQLAlchemy configuration verified successfully")
+        # Configure SQLAlchemy mappers
+        logger.info("Configuring SQLAlchemy mappers...")
+        configure_mappers()
+        logger.info("SQLAlchemy mappers configured")
+        
+        yield
     except Exception as e:
-        logger.error(f"Error in SQLAlchemy configuration: {str(e)}")
+        logger.error(f"Error during startup: {str(e)}")
         raise
+    finally:
+        # Cleanup
+        logger.info("Shutting down application...")
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+    app = FastAPI(
+        title=settings.APP_NAME,
+        version=settings.APP_VERSION,
+        description="AI-powered deal monitoring system",
+        lifespan=lifespan
+    )
+
+    # CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"]
+    )
+
+    # Setup middleware
+    setup_middleware(app)
+
+    # Include routers
+    app.include_router(auth_router, prefix=f"{settings.API_V1_PREFIX}/auth", tags=["Authentication"])
+    app.include_router(users_router, prefix=f"{settings.API_V1_PREFIX}/users", tags=["Users"])
+    app.include_router(goals_router, prefix=f"{settings.API_V1_PREFIX}/goals", tags=["Goals"])
+    app.include_router(deals_router, prefix=f"{settings.API_V1_PREFIX}/deals", tags=["Deals"])
+    app.include_router(markets_router, prefix=f"{settings.API_V1_PREFIX}/markets", tags=["Markets"])
+    app.include_router(chat_router, prefix=f"{settings.API_V1_PREFIX}/chat", tags=["Chat"])
+    app.include_router(token_router, prefix=f"{settings.API_V1_PREFIX}/token", tags=["Token"])
+    app.include_router(notifications_router, prefix=f"{settings.API_V1_PREFIX}/notifications", tags=["Notifications"])
+    app.include_router(price_tracking_router, prefix=f"{settings.API_V1_PREFIX}/price-tracking", tags=["Price Tracking"])
+    app.include_router(price_prediction_router, prefix=f"{settings.API_V1_PREFIX}/price-prediction", tags=["Price Prediction"])
+    app.include_router(health_router, prefix=f"{settings.API_V1_PREFIX}/health", tags=["System"])
+
+    # WebSocket endpoint
+    app.websocket("/notifications/ws")(handle_websocket)
+
+    @app.get("/")
+    async def root():
+        """Root endpoint for health check"""
+        return {
+            "status": "ok",
+            "version": settings.APP_VERSION,
+            "environment": settings.ENVIRONMENT
+        }
+
+    return app
+
+app = create_app()
 
 # For SQLite (if used in development)
 @event.listens_for(Engine, "connect")

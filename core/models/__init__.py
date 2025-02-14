@@ -5,7 +5,6 @@ This module exports all models and their Pydantic schemas for the AI Agentic Dea
 
 # Base models
 from .base import Base
-from .database import BaseRepository, get_db
 
 # Enums
 from .enums import MarketType, MarketStatus, MarketCategory
@@ -31,6 +30,33 @@ from .deal import (
     DealStatus,
     DealSource,
     PriceHistory
+)
+
+# Price tracking models
+from .price_tracking import (
+    PricePoint,
+    PriceTracker,
+    PricePointBase,
+    PricePointCreate,
+    PricePointResponse,
+    PriceTrackerBase,
+    PriceTrackerCreate,
+    PriceTrackerResponse,
+    PriceTrackerUpdate,
+    PriceStatistics
+)
+
+# Price prediction models
+from .price_prediction import (
+    PricePrediction,
+    ModelMetrics,
+    PricePredictionBase,
+    PricePredictionCreate,
+    PricePredictionPoint,
+    PricePredictionResponse,
+    PriceAnalysis,
+    ModelPerformance,
+    PriceTrend
 )
 
 # Token models
@@ -79,11 +105,23 @@ from .deal_score import (
     DealScoreResponse
 )
 
+# Chat models
+from .chat import (
+    ChatMessage,
+    ChatMessageCreate,
+    ChatMessageResponse,
+    ChatResponse,
+    ChatHistory,
+    ChatRequest,
+    ChatAnalytics,
+    ChatFilter,
+    MessageRole,
+    MessageStatus
+)
+
 __all__ = [
     # Base
     'Base',
-    'BaseRepository',
-    'get_db',
 
     # Enums
     'MarketType',
@@ -116,6 +154,29 @@ __all__ = [
     'DealStatus',
     'DealSource',
     'PriceHistory',
+
+    # Price Tracking
+    'PricePoint',
+    'PriceTracker',
+    'PricePointBase',
+    'PricePointCreate',
+    'PricePointResponse',
+    'PriceTrackerBase',
+    'PriceTrackerCreate',
+    'PriceTrackerResponse',
+    'PriceTrackerUpdate',
+    'PriceStatistics',
+
+    # Price Prediction
+    'PricePrediction',
+    'ModelMetrics',
+    'PricePredictionBase',
+    'PricePredictionCreate',
+    'PricePredictionPoint',
+    'PricePredictionResponse',
+    'PriceAnalysis',
+    'ModelPerformance',
+    'PriceTrend',
 
     # Token
     'TokenTransaction',
@@ -159,5 +220,17 @@ __all__ = [
     'DealScore',
     'DealScoreCreate',
     'DealScoreUpdate',
-    'DealScoreResponse'
+    'DealScoreResponse',
+
+    # Chat
+    'ChatMessage',
+    'ChatMessageCreate',
+    'ChatMessageResponse',
+    'ChatResponse',
+    'ChatHistory',
+    'ChatRequest',
+    'ChatAnalytics',
+    'ChatFilter',
+    'MessageRole',
+    'MessageStatus'
 ]

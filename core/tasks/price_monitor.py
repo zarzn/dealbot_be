@@ -14,7 +14,7 @@ from core.services.market_search import MarketSearchService
 from core.repositories.market import MarketRepository
 from core.repositories.goal import GoalRepository
 from core.utils.redis import RedisClient
-from core.exceptions.base import BaseException
+from core.exceptions.base_exceptions import BaseException
 from core.exceptions.deal_exceptions import DealValidationError
 from core.utils.logger import get_logger
 

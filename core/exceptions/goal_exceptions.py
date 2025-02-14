@@ -1,7 +1,7 @@
 """Goal-related exceptions module."""
 
 from typing import Dict, Any, Optional, List
-from .base import BaseError, ValidationError
+from .base_exceptions import BaseError, ValidationError
 
 class GoalError(BaseError):
     """Base class for goal-related errors."""
@@ -11,11 +11,11 @@ class GoalError(BaseError):
         message: str = "Goal operation failed",
         details: Optional[Dict[str, Any]] = None
     ):
-        super().__init__(
-            message=message,
-            error_code="goal_error",
-            details=details
-        )
+        super().__init__(message)
+        self.details = details or {}
+        
+    def _get_details(self) -> Dict[str, Any]:
+        return self.details
 
 class GoalValidationError(ValidationError):
     """Raised when goal validation fails."""
@@ -23,7 +23,7 @@ class GoalValidationError(ValidationError):
     def __init__(
         self,
         message: str = "Goal validation error",
-        errors: Optional[List[Dict[str, Any]]] = None,
+        errors: Optional[Dict[str, Any]] = None,
         field_prefix: str = "goal"
     ):
         super().__init__(

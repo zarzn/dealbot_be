@@ -13,14 +13,14 @@ Classes:
     TransactionHistoryResponse: Model for transaction history response
 """
 
-from uuid import UUID
+from uuid import UUID, uuid4
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text, DECIMAL, ForeignKey, JSON
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text, DECIMAL, ForeignKey, JSON, Index, CheckConstraint, Integer, Text
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.sql import func, expression
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from core.models.base import Base
@@ -38,6 +38,7 @@ __all__ = [
 ]
 
 class TransactionType(str, Enum):
+    """Transaction type enumeration."""
     PAYMENT = "payment"
     REFUND = "refund"
     REWARD = "reward"
@@ -45,10 +46,11 @@ class TransactionType(str, Enum):
     SEARCH_REFUND = "search_refund"
 
 class TransactionStatus(str, Enum):
+    """Transaction status enumeration."""
     PENDING = "pending"
     COMPLETED = "completed"
     FAILED = "failed"
-    REFUNDED = "refunded"
+    CANCELLED = "cancelled"
 
 class TokenTransactionBase(BaseModel):
     user_id: UUID
@@ -104,27 +106,35 @@ class TransactionHistoryResponse(BaseModel):
     page_size: int
 
 class TokenTransaction(Base):
-    __tablename__ = 'tokentransaction'
+    """Token transaction database model."""
+    __tablename__ = "token_transactions"
+    __table_args__ = (
+        Index('ix_token_transactions_user', 'user_id'),
+        Index('ix_token_transactions_status', 'status'),
+        Index('ix_token_transactions_type', 'type'),
+        CheckConstraint('amount > 0', name='ch_positive_amount'),
+    )
 
-    id: Mapped[UUID] = mapped_column(PG_UUID, primary_key=True, server_default=text("gen_random_uuid()"))
-    user_id: Mapped[UUID] = mapped_column(PG_UUID, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     type: Mapped[TransactionType] = mapped_column(SQLEnum(TransactionType), nullable=False)
-    status: Mapped[TransactionStatus] = mapped_column(SQLEnum(TransactionStatus), nullable=False, default=TransactionStatus.PENDING)
-    amount: Mapped[Decimal] = mapped_column(DECIMAL(precision=18, scale=8), nullable=False)
-    balance_before: Mapped[Decimal] = mapped_column(DECIMAL(precision=18, scale=8), nullable=False)
-    balance_after: Mapped[Decimal] = mapped_column(DECIMAL(precision=18, scale=8), nullable=False)
-    details: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
-    signature: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # Blockchain transaction signature
+    amount: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
+    status: Mapped[TransactionStatus] = mapped_column(SQLEnum(TransactionStatus), default=TransactionStatus.PENDING)
+    tx_hash: Mapped[Optional[str]] = mapped_column(String(66))
+    block_number: Mapped[Optional[int]] = mapped_column(Integer)
+    gas_used: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(18, 8))
+    gas_price: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(18, 8))
+    network_fee: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(18, 8))
+    meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+    error: Mapped[Optional[str]] = mapped_column(Text)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    max_retries: Mapped[int] = mapped_column(Integer, default=3)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"), onupdate=text("now()"))
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
-    user: Mapped["User"] = relationship(
-        "User",
-        back_populates="token_transactions",
-        lazy="selectin"
-    )
+    user = relationship("User", back_populates="transactions")
 
     def __repr__(self) -> str:
         return f"<TokenTransaction(id={self.id}, type={self.type}, amount={self.amount})>"

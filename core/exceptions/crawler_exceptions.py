@@ -1,7 +1,7 @@
 """Crawler-related exceptions module."""
 
 from typing import Dict, Any, Optional, List
-from .base import BaseError, ValidationError
+from .base_exceptions import BaseError, ValidationError
 
 class CrawlerError(BaseError):
     """Base class for crawler-related errors."""
@@ -11,11 +11,11 @@ class CrawlerError(BaseError):
         message: str = "Crawler operation failed",
         details: Optional[Dict[str, Any]] = None
     ):
-        super().__init__(
-            message=message,
-            error_code="crawler_error",
-            details=details
-        )
+        super().__init__(message)
+        self.details = details or {}
+        
+    def _get_details(self) -> Dict[str, Any]:
+        return self.details
 
 class CrawlerRequestError(CrawlerError):
     """Raised when a crawler request fails."""

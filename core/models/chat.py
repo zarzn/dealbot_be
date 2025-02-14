@@ -6,49 +6,68 @@ including message types and response formats.
 
 from datetime import datetime
 from typing import Optional, Dict, Any, List
-from uuid import UUID
+from enum import Enum
+from uuid import UUID, uuid4
 import logging
 
 from pydantic import BaseModel, Field, field_validator, ConfigDict
-from sqlalchemy import Column, String, DateTime, ForeignKey, Text, Index
+from sqlalchemy import Column, String, DateTime, ForeignKey, Text, Index, Integer, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
-from sqlalchemy.sql import expression
+from sqlalchemy.sql import expression, text
 
 from core.models.base import Base
-# Custom exception class
-class ChatError(Exception):
-    """Base class for chat-related errors."""
-    pass
+from core.exceptions import ChatError
 
-logger = logging.getLogger(__name__)
+class MessageRole(str, Enum):
+    """Message role types."""
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+class MessageStatus(str, Enum):
+    """Message status types."""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 class ChatMessage(Base):
     """Chat message database model."""
     __tablename__ = "chat_messages"
     __table_args__ = (
         Index('ix_chat_messages_user', 'user_id'),
+        Index('ix_chat_messages_conversation', 'conversation_id'),
         Index('ix_chat_messages_created', 'created_at'),
     )
 
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
-    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    conversation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    role: Mapped[MessageRole] = mapped_column(SQLEnum(MessageRole), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    role: Mapped[str] = mapped_column(String(50), nullable=False)
-    context: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    tokens_used: Mapped[Optional[int]] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=expression.text('CURRENT_TIMESTAMP')
-    )
+    status: Mapped[MessageStatus] = mapped_column(SQLEnum(MessageStatus), default=MessageStatus.PENDING)
+    tokens_used: Mapped[Optional[int]] = mapped_column(Integer)
+    context: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+    chat_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+    error: Mapped[Optional[str]] = mapped_column(Text)
 
     # Relationships
     user = relationship("User", back_populates="chat_messages")
 
     def __repr__(self) -> str:
         """String representation of the chat message."""
-        return f"<ChatMessage {self.role}: {self.content[:50]}...>"
+        return f"<ChatMessage {self.role} ({self.status})>"
+
+    async def mark_completed(self, tokens_used: int) -> None:
+        """Mark message as completed with token usage."""
+        self.status = MessageStatus.COMPLETED
+        self.tokens_used = tokens_used
+
+    async def mark_failed(self, error: str) -> None:
+        """Mark message as failed with error."""
+        self.status = MessageStatus.FAILED
+        self.error = error
 
 class ChatMessageCreate(BaseModel):
     """Schema for creating a chat message."""

@@ -22,8 +22,8 @@ from core.models.notification import (
     NotificationStatus,
     NotificationResponse
 )
-from core.models.notification_preferences import (
-    NotificationPreferences,
+from core.models.user_preferences import (
+    NotificationPreferencesBase as NotificationPreferences,
     NotificationFrequency,
     NotificationTimeWindow
 )

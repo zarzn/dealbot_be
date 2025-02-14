@@ -1,77 +1,96 @@
-"""Test fixtures."""
+"""Test configuration and fixtures."""
 
-import asyncio
 import pytest
-import pytest_asyncio
+import asyncio
+from typing import AsyncGenerator, Generator
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
+from fastapi import FastAPI
+from sqlalchemy.sql import text
+from tests.mocks.redis_mock import AsyncRedisMock
 
-from core.config.test import settings
 from core.database import Base
-from core.models import User
-from core.security import get_password_hash
-from main import app
+from core.config import get_settings, Settings
+from app import create_app
 
-# Create test engine
-test_engine = create_async_engine(str(settings.SQLALCHEMY_DATABASE_URI))
-TestingSessionLocal = sessionmaker(
-    test_engine, class_=AsyncSession, expire_on_commit=False
+settings = get_settings()
+
+# Create test database engine
+test_engine = create_async_engine(
+    settings.TEST_DATABASE_URL,
+    echo=True,
+    future=True
+)
+
+# Create test session factory
+test_async_session = sessionmaker(
+    test_engine,
+    class_=AsyncSession,
+    expire_on_commit=False
 )
 
 @pytest.fixture(scope="session")
 def event_loop():
-    """Create event loop."""
+    """Create an instance of the default event loop for each test case."""
     loop = asyncio.get_event_loop_policy().new_event_loop()
     yield loop
     loop.close()
 
-@pytest_asyncio.fixture(scope="function")
-async def db():
-    """Create database tables."""
+@pytest.fixture(scope="session")
+async def app() -> FastAPI:
+    """Create a fresh database on each test case."""
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+    
+    app = create_app()
+    return app
 
-    async with TestingSessionLocal() as session:
+@pytest.fixture
+async def async_session() -> AsyncGenerator[AsyncSession, None]:
+    """Get a test session for database operations."""
+    async with test_async_session() as session:
         yield session
+        await session.rollback()
+        await session.close()
 
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
-@pytest_asyncio.fixture(scope="function")
-async def client():
-    """Create test client."""
-    async with AsyncClient(app=app, base_url="http://test") as client:
+@pytest.fixture
+async def test_client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
+    """Get a test client for making HTTP requests."""
+    async with AsyncClient(
+        app=app,
+        base_url="http://test",
+        follow_redirects=True
+    ) as client:
         yield client
 
-@pytest_asyncio.fixture(scope="function")
-async def test_user(db: AsyncSession):
-    """Create test user."""
-    user = User(
-        email=settings.TEST_USER_EMAIL,
-        hashed_password=get_password_hash(settings.TEST_USER_PASSWORD),
-        is_active=True,
-    )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
-    return user
+@pytest.fixture(autouse=True)
+async def setup_and_teardown():
+    """Setup before each test and cleanup after."""
+    # Setup - can add any initialization code here
+    yield
+    # Teardown - cleanup after each test
+    async with test_engine.begin() as conn:
+        await conn.execute(text("TRUNCATE TABLE notifications CASCADE"))
+        await conn.execute(text("TRUNCATE TABLE price_points CASCADE"))
+        await conn.execute(text("TRUNCATE TABLE price_trackers CASCADE"))
+        await conn.execute(text("TRUNCATE TABLE price_predictions CASCADE"))
+        await conn.execute(text("TRUNCATE TABLE deals CASCADE"))
 
-@pytest_asyncio.fixture(scope="function")
-async def test_user_token(client: AsyncClient):
-    """Get test user token."""
-    response = await client.post(
-        "/api/v1/auth/login",
-        json={
-            "email": settings.TEST_USER_EMAIL,
-            "password": settings.TEST_USER_PASSWORD,
-        },
-    )
-    return response.json()["access_token"]
+@pytest.fixture
+def redis_mock() -> Generator[AsyncRedisMock, None, None]:
+    """Provide Redis mock for testing."""
+    yield AsyncRedisMock()
 
-@pytest_asyncio.fixture(scope="function")
-async def authorized_client(client: AsyncClient, test_user_token: str):
-    """Create authorized test client."""
-    client.headers["Authorization"] = f"Bearer {test_user_token}"
-    return client 
+@pytest.fixture
+def mock_settings(monkeypatch):
+    """Mock settings for testing."""
+    test_settings = Settings()
+    test_settings.SCRAPER_API_KEY = "34b092724b61ff18f116305a51ee77e7"
+    test_settings.SCRAPER_API_CONCURRENT_LIMIT = 25
+    test_settings.SCRAPER_API_REQUESTS_PER_SECOND = 3
+    test_settings.SCRAPER_API_MONTHLY_LIMIT = 200_000
+    
+    monkeypatch.setattr("core.config.settings", test_settings)
+    return test_settings 

@@ -15,9 +15,11 @@ from core.models.notification import (
     NotificationFilter,
     NotificationAnalytics
 )
-from core.models.notification_preferences import (
-    NotificationPreferencesResponse,
-    NotificationPreferencesUpdate
+from core.models.user_preferences import (
+    UserPreferencesResponse,
+    UserPreferencesUpdate,
+    NotificationFrequency,
+    NotificationTimeWindow
 )
 from core.services.notifications import NotificationService
 from core.database import get_async_db_session as get_db
@@ -197,27 +199,27 @@ async def clear_all_notifications(
 
 @router.get(
     "/preferences",
-    response_model=NotificationPreferencesResponse,
+    response_model=UserPreferencesResponse,
     summary="Get notification preferences"
 )
 async def get_notification_preferences(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
-) -> NotificationPreferencesResponse:
+) -> UserPreferencesResponse:
     """Get notification preferences for the current user."""
     notification_service = NotificationService(db)
     return await notification_service.get_user_preferences(current_user.id)
 
 @router.put(
     "/preferences",
-    response_model=NotificationPreferencesResponse,
+    response_model=UserPreferencesResponse,
     summary="Update notification preferences"
 )
 async def update_notification_preferences(
-    preferences: NotificationPreferencesUpdate,
+    preferences: UserPreferencesUpdate,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
-) -> NotificationPreferencesResponse:
+) -> UserPreferencesResponse:
     """Update notification preferences for the current user."""
     notification_service = NotificationService(db)
     return await notification_service.update_preferences(

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_db
 from core.models.goal_types import GoalStatus
 from core.services.token_service import TokenService
-from core.exceptions.base import BaseError as CoreBaseError
+from core.exceptions.base_exceptions import BaseError as CoreBaseError
 from core.exceptions.goal_exceptions import GoalProcessingError
 from core.models.database import Goal as GoalModel
 from sqlalchemy.future import select

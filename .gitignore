@@ -26,113 +26,97 @@ env/
 ENV/
 .env
 .venv
-.env.*
-!.env.example
+.python-version
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
-.DS_Store
-.vs/
-
-# Testing
-.coverage
-htmlcov/
-.tox/
-.pytest_cache/
-coverage.xml
-*.cover
-.hypothesis/
+.project
+.pydevproject
+.settings/
+*.sublime-workspace
+*.sublime-project
 
 # Logs
-*.log
 logs/
-log/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
 # Database
 *.sqlite3
 *.db
+*.sql
+postgres-data/
 
-# Celery
-celerybeat-schedule
-celerybeat.pid
+# Environment variables
+.env
+.env.*
+!.env.example
 
-# Redis
-dump.rdb
+# Secrets and Keys
+*.pem
+*.key
+*.crt
+firebase-credentials.json
+google-credentials.json
+aws-credentials.json
+*.keystore
+
+# Cache
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.coverage.*
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
 
 # Docker
 .docker/
 docker-compose.override.yml
 
-# Alembic
-alembic/versions/*
-!alembic/versions/.gitkeep
-
-# Cache
-.cache/
-.mypy_cache/
-
-# Local development
+# Development/Local files
 local_settings.py
-*.local
+dev_settings.py
+test_settings.py
+*.local.*
+
+# Redis
+dump.rdb
+*.rdb
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
 
 # Temporary files
 *.tmp
 *.temp
-*.bak
 *.swp
+*.swo
 *~
 
-# System Files
+# System files
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Compiled files
-*.pyc
-*.pyo
-*.pyd
-*.so
-*.dll
-*.dylib
+# Alembic
+alembic/versions/*
+!alembic/versions/.gitkeep
 
-# Distribution / packaging
-.Python
-*.manifest
-*.spec
+# FastAPI
+fastapi.log*
 
-# Unit test / coverage reports
-nosetests.xml
-coverage.xml
-*.cover
-.coverage.*
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# pipenv
-Pipfile.lock
-
-# poetry
-poetry.lock
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/ 
+# Token and blockchain related
+wallet-config.json
+node_modules/
+contracts/build/ 
