@@ -7,8 +7,8 @@ import random
 import asyncio
 from uuid import uuid4
 
-from core.integrations.markets.base.market_base import MarketBase, MarketCredentials
-from core.exceptions.market import MarketIntegrationError, ProductNotFoundError
+from backend.core.integrations.markets.base.market_base import MarketBase, MarketCredentials
+from backend.core.exceptions.market_exceptions import MarketIntegrationError, ProductNotFoundError
 
 class MockMarketCredentials(MarketCredentials):
     """Mock market credentials for testing."""

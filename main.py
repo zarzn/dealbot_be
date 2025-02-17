@@ -2,11 +2,12 @@
 
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import configure_mappers
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
+from fastapi.responses import JSONResponse
 
 # Configure logging
 logging.basicConfig(
@@ -36,7 +37,7 @@ from core.models import (
     Base, User, Goal, Deal, Notification, ChatMessage,
     TokenTransaction, TokenBalanceHistory, TokenWallet,
     Market, PricePoint, PriceTracker, PricePrediction,
-    MessageRole, MessageStatus
+    MessageRole, MessageStatus, AuthToken
 )
 
 # Import relationships module
@@ -67,6 +68,11 @@ from core.config import settings
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     try:
+        # Set up model relationships
+        logger.info("Setting up model relationships...")
+        setup_relationships()
+        logger.info("Model relationships set up")
+
         # Configure SQLAlchemy mappers
         logger.info("Configuring SQLAlchemy mappers...")
         configure_mappers()
@@ -89,20 +95,37 @@ def create_app() -> FastAPI:
         lifespan=lifespan
     )
 
-    # CORS middleware
+    # Add CORS middleware first
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"]
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+        max_age=600,  # 10 minutes
     )
 
-    # Setup middleware
-    setup_middleware(app)
+    # Setup other middleware
+    @app.on_event("startup")
+    async def startup_event():
+        await setup_middleware(app)
+
+    # Add OPTIONS handler for all routes
+    @app.options("/{full_path:path}")
+    async def options_handler(request: Request):
+        return JSONResponse(
+            content={},
+            headers={
+                "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Credentials": "true",
+            },
+        )
 
     # Include routers
-    app.include_router(auth_router, prefix=f"{settings.API_V1_PREFIX}/auth", tags=["Authentication"])
+    app.include_router(auth_router, prefix=f"{settings.API_V1_PREFIX}", tags=["Authentication"])
     app.include_router(users_router, prefix=f"{settings.API_V1_PREFIX}/users", tags=["Users"])
     app.include_router(goals_router, prefix=f"{settings.API_V1_PREFIX}/goals", tags=["Goals"])
     app.include_router(deals_router, prefix=f"{settings.API_V1_PREFIX}/deals", tags=["Deals"])

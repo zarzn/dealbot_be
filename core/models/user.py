@@ -15,7 +15,7 @@ Classes:
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, EmailStr, Field, field_validator, conint
+from pydantic import BaseModel, EmailStr, Field, field_validator, conint, ConfigDict
 from sqlalchemy import (
     Column, String, Boolean, DateTime, Numeric, text, Text, Integer,
     Index, CheckConstraint, UniqueConstraint, Enum as SQLEnum,
@@ -43,6 +43,7 @@ from core.exceptions import (
     SmartContractError
 )
 from core.config import settings
+from core.models.token import TokenTransaction, TokenBalanceHistory, TokenWallet, TokenBalance
 
 logger = logging.getLogger(__name__)
 
@@ -221,14 +222,15 @@ class UserResponse(UserBase):
     total_tokens_spent: float = Field(default=0.0)
     total_rewards_earned: float = Field(default=0.0)
 
-    class Config:
-        from_attributes = True
-        json_encoders = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={
             datetime: lambda v: v.isoformat(),
             UUID: lambda v: str(v),
             UserStatus: lambda v: v.value,
             NotificationPreference: lambda v: v.value
         }
+    )
 
 class UserInDB(UserBase):
     """Model for user in database with password."""
@@ -238,8 +240,7 @@ class UserInDB(UserBase):
     updated_at: datetime
     last_payment_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class User(Base):
     """SQLAlchemy model for user table"""
@@ -278,7 +279,20 @@ class User(Base):
     )
     preferences: Mapped[Dict[str, Any]] = mapped_column(
         JSONB,
-        default=UserBase.__fields__['preferences'].default_factory(),
+        default={
+            "theme": "light",
+            "notifications": "all",
+            "email_notifications": True,
+            "push_notifications": False,
+            "telegram_notifications": False,
+            "discord_notifications": False,
+            "deal_alert_threshold": 0.8,
+            "auto_buy_enabled": False,
+            "auto_buy_threshold": 0.95,
+            "max_auto_buy_amount": 100.0,
+            "language": "en",
+            "timezone": "UTC"
+        },
         nullable=False
     )
     status: Mapped[str] = mapped_column(
@@ -308,9 +322,22 @@ class User(Base):
         cascade="all, delete-orphan",
         lazy="selectin"
     )
+    deals: Mapped[List["Deal"]] = relationship(
+        "Deal",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
     notifications: Mapped[List["Notification"]] = relationship(
         "Notification",
         back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+    notification_preferences: Mapped["UserPreferences"] = relationship(
+        "UserPreferences",
+        back_populates="user",
+        uselist=False,
         cascade="all, delete-orphan",
         lazy="selectin"
     )
@@ -350,8 +377,25 @@ class User(Base):
         backref=backref("referred_by_user", remote_side=[id]),
         lazy="selectin"
     )
-    notification_preferences = relationship("NotificationPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    price_trackers: Mapped[List["PriceTracker"]] = relationship(
+        "PriceTracker",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+    price_predictions: Mapped[List["PricePrediction"]] = relationship(
+        "PricePrediction",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
     agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
+    auth_tokens: Mapped[List["AuthToken"]] = relationship(
+        "AuthToken",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
 
     def __repr__(self) -> str:
         """String representation of the user."""
@@ -475,7 +519,9 @@ class User(Base):
             if operation == 'deduction':
                 if user.token_balance < amount:
                     raise InsufficientBalanceError(
-                        f"Insufficient token balance. Required: {amount}, Available: {user.token_balance}"
+                        required=amount,
+                        available=user.token_balance,
+                        message=f"Insufficient token balance. Required: {amount}, Available: {user.token_balance}"
                     )
                 user.token_balance -= amount
                 user.total_tokens_spent += amount

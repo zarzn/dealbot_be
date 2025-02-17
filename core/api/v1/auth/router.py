@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +31,13 @@ from core.exceptions import (
     EmailNotVerifiedError,
 )
 
-router = APIRouter(tags=["authentication"])
+router = APIRouter(
+    prefix="/auth",
+    tags=["authentication"],
+    # Enable automatic OPTIONS response for all routes
+    generate_unique_id_function=lambda route: f"{route.name}",
+)
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 class UserResponse(BaseModel):
@@ -77,7 +83,10 @@ async def register(
     # Check if user already exists
     existing_user = await User.get_by_email(db, user.email)
     if existing_user:
-        raise InvalidCredentialsError("Email already registered")
+        raise InvalidCredentialsError(
+            message="Email already registered",
+            error_code="email_already_exists"
+        )
 
     # Create user
     hashed_password = get_password_hash(user.password)
@@ -115,7 +124,10 @@ async def login(
     try:
         user = await authenticate_user(form_data.username, form_data.password, db)
         if not user:
-            raise InvalidCredentialsError("Invalid email or password")
+            raise InvalidCredentialsError(
+                message="Invalid email or password",
+                error_code="invalid_login"
+            )
             
         # Temporarily disable email verification check
         # if not user.email_verified:
@@ -126,7 +138,8 @@ async def login(
         return Token(
             access_token=access_token,
             refresh_token=refresh_token,
-            token_type="bearer"
+            token_type="bearer",
+            expires_in=30 * 60  # 30 minutes in seconds
         )
     except (AccountLockedError, RateLimitExceededError) as e:
         raise HTTPException(
@@ -194,7 +207,8 @@ async def verify_magic_link(
         return Token(
             access_token=access_token,
             refresh_token=refresh_token,
-            token_type="Bearer"
+            token_type="bearer",
+            expires_in=30 * 60  # 30 minutes in seconds
         )
     except Exception as e:
         raise HTTPException(

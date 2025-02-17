@@ -6,11 +6,11 @@ from typing import Dict, List, Optional
 from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
-from sqlalchemy import Column, ForeignKey, String, JSON, DateTime, Boolean, Time, ARRAY
+from sqlalchemy import Column, ForeignKey, String, JSON, DateTime, Boolean, Time, ARRAY, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
-from core.database import Base
+from core.models.base import Base
 from core.models.notification import NotificationChannel, NotificationType
 
 class Theme(str, Enum):
@@ -24,6 +24,7 @@ class Language(str, Enum):
     EN = "en"
     ES = "es"
     FR = "fr"
+    DE = "de"
 
 class NotificationFrequency(str, Enum):
     """Notification frequency settings"""
@@ -69,50 +70,48 @@ class NotificationPreferencesBase(BaseModel):
     minimum_priority: str = Field(default="low")
 
 class UserPreferences(Base):
-    """User preferences model."""
+    """User preferences SQLAlchemy model."""
     __tablename__ = "user_preferences"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True), 
         ForeignKey("users.id", ondelete="CASCADE"), 
-        nullable=False
+        nullable=False,
+        unique=True
     )
-    theme: Mapped[str] = mapped_column(String, default=Theme.SYSTEM)
-    language: Mapped[str] = mapped_column(String, default=Language.EN)
+    theme: Mapped[str] = mapped_column(String, default=Theme.SYSTEM.value)
+    language: Mapped[str] = mapped_column(String, default=Language.EN.value)
     timezone: Mapped[str] = mapped_column(String, default="UTC")
     
     # Notification preferences
     enabled_channels: Mapped[List[str]] = mapped_column(
         ARRAY(String),
         nullable=False,
-        default=[NotificationChannel.IN_APP.value, NotificationChannel.EMAIL.value]
+        server_default=text("ARRAY['in_app', 'email']")
     )
     notification_frequency: Mapped[Dict] = mapped_column(
         JSONB,
         nullable=False,
-        default=lambda: {
-            NotificationType.DEAL_MATCH.value: NotificationFrequency.IMMEDIATE.value,
-            NotificationType.GOAL_COMPLETED.value: NotificationFrequency.IMMEDIATE.value,
-            NotificationType.GOAL_EXPIRED.value: NotificationFrequency.DAILY.value,
-            NotificationType.PRICE_DROP.value: NotificationFrequency.IMMEDIATE.value,
-            NotificationType.TOKEN_LOW.value: NotificationFrequency.DAILY.value,
-            NotificationType.SYSTEM.value: NotificationFrequency.IMMEDIATE.value,
-            NotificationType.CUSTOM.value: NotificationFrequency.IMMEDIATE.value
-        }
+        server_default=text("""
+            '{"deal_match": "immediate", 
+              "goal_completed": "immediate", 
+              "goal_expired": "daily", 
+              "price_drop": "immediate", 
+              "token_low": "daily", 
+              "system": "immediate", 
+              "custom": "immediate"}'::jsonb
+        """)
     )
     time_windows: Mapped[Dict] = mapped_column(
         JSONB,
         nullable=False,
-        default=lambda: {
-            channel.value: {
-                "start_time": "09:00",
-                "end_time": "21:00",
-                "timezone": "UTC"
-            } for channel in NotificationChannel
-        }
+        server_default=text("""
+            '{"in_app": {"start_time": "09:00", "end_time": "21:00", "timezone": "UTC"},
+              "email": {"start_time": "09:00", "end_time": "21:00", "timezone": "UTC"}}'::jsonb
+        """)
     )
-    muted_until: Mapped[Optional[time]] = mapped_column(Time(timezone=True), nullable=True)
+    muted_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     do_not_disturb: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     email_digest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     push_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -122,23 +121,23 @@ class UserPreferences(Base):
     minimum_priority: Mapped[str] = mapped_column(String(10), nullable=False, default="low")
     
     # Alert settings
-    deal_alert_settings: Mapped[Dict] = mapped_column(JSONB, default={})
-    price_alert_settings: Mapped[Dict] = mapped_column(JSONB, default={})
-    email_preferences: Mapped[Dict] = mapped_column(JSONB, default={})
+    deal_alert_settings: Mapped[Dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    price_alert_settings: Mapped[Dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    email_preferences: Mapped[Dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), 
-        default=datetime.utcnow
+        server_default=text('CURRENT_TIMESTAMP')
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow
+        server_default=text('CURRENT_TIMESTAMP'),
+        onupdate=text('CURRENT_TIMESTAMP')
     )
 
     # Relationships
-    user = relationship("User", back_populates="preferences")
+    user = relationship("User", back_populates="notification_preferences")
 
     def to_dict(self) -> Dict:
         """Convert preferences to dictionary"""

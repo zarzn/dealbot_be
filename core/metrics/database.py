@@ -5,36 +5,47 @@ This module provides metrics collection for database operations using Prometheus
 
 from prometheus_client import Counter, Histogram
 import time
+from typing import Optional
 
 class DatabaseMetrics:
     """Database metrics collector."""
     
+    _instance: Optional['DatabaseMetrics'] = None
+    
+    def __new__(cls) -> 'DatabaseMetrics':
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
     def __init__(self):
-        self.connection_checkouts = Counter(
-            'db_connection_checkouts_total',
-            'Total number of database connection checkouts'
-        )
-        self.connection_checkins = Counter(
-            'db_connection_checkins_total',
-            'Total number of database connection checkins'
-        )
-        self.connection_failures = Counter(
-            'db_connection_failures_total',
-            'Total number of database connection failures'
-        )
-        self.successful_transactions = Counter(
-            'db_successful_transactions_total',
-            'Total number of successful database transactions'
-        )
-        self.failed_transactions = Counter(
-            'db_failed_transactions_total',
-            'Total number of failed database transactions'
-        )
-        self.transaction_duration = Histogram(
-            'db_transaction_duration_seconds',
-            'Database transaction duration in seconds',
-            buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
-        )
+        if not hasattr(self, '_initialized') or not self._initialized:
+            self.connection_checkouts = Counter(
+                'db_connection_checkouts_total',
+                'Total number of database connection checkouts'
+            )
+            self.connection_checkins = Counter(
+                'db_connection_checkins_total',
+                'Total number of database connection checkins'
+            )
+            self.connection_failures = Counter(
+                'db_connection_failures_total',
+                'Total number of database connection failures'
+            )
+            self.successful_transactions = Counter(
+                'db_successful_transactions_total',
+                'Total number of successful database transactions'
+            )
+            self.failed_transactions = Counter(
+                'db_failed_transactions_total',
+                'Total number of failed database transactions'
+            )
+            self.transaction_duration = Histogram(
+                'db_transaction_duration_seconds',
+                'Database transaction duration in seconds',
+                buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
+            )
+            self._initialized = True
 
     def connection_checkout(self):
         """Record a connection checkout."""

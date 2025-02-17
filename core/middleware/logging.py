@@ -21,7 +21,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         sensitive_fields: Set[str] = None,
         exclude_paths: Set[str] = None,
         log_request_body: bool = True,
-        log_response_body: bool = False
+        log_response_body: bool = False,
+        log_headers: bool = True,
+        log_query_params: bool = True
     ):
         super().__init__(app)
         # Import settings here to avoid circular imports
@@ -31,6 +33,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         self.exclude_paths = exclude_paths or settings.LOGGING_EXCLUDE_PATHS
         self.log_request_body = log_request_body if log_request_body is not None else settings.LOG_REQUEST_BODY
         self.log_response_body = log_response_body if log_response_body is not None else settings.LOG_RESPONSE_BODY
+        self.log_headers = log_headers if log_headers is not None else settings.LOG_HEADERS
+        self.log_query_params = log_query_params if log_query_params is not None else settings.LOG_QUERY_PARAMS
 
     async def dispatch(
         self,
@@ -74,10 +78,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             "request_id": request_id,
             "method": request.method,
             "path": request.url.path,
-            "query_params": dict(request.query_params),
-            "headers": self._sanitize_headers(dict(request.headers)),
-            "client_ip": self._get_client_ip(request)
         }
+
+        if self.log_query_params:
+            log_data["query_params"] = dict(request.query_params)
+            
+        if self.log_headers:
+            log_data["headers"] = self._sanitize_headers(dict(request.headers))
+            
+        log_data["client_ip"] = self._get_client_ip(request)
 
         if self.log_request_body and request.method in {"POST", "PUT", "PATCH"}:
             try:
@@ -99,8 +108,10 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             "request_id": request_id,
             "status_code": response.status_code,
             "duration": f"{duration:.3f}s",
-            "headers": self._sanitize_headers(dict(response.headers))
         }
+
+        if self.log_headers:
+            log_data["headers"] = self._sanitize_headers(dict(response.headers))
 
         if self.log_response_body and response.body:
             try:

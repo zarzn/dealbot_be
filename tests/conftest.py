@@ -1,5 +1,8 @@
 """Test configuration and fixtures."""
 
+import os
+os.environ["ENVIRONMENT"] = "test"
+
 import pytest
 import asyncio
 from typing import AsyncGenerator, Generator
@@ -8,17 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from fastapi import FastAPI
 from sqlalchemy.sql import text
-from tests.mocks.redis_mock import AsyncRedisMock
+from .mocks.redis_mock import AsyncRedisMock
 
-from core.database import Base
-from core.config import get_settings, Settings
-from app import create_app
+from backend.core.database import Base
+from backend.core.config import get_settings
+from backend.main import create_app
 
+# Get test settings
 settings = get_settings()
 
 # Create test database engine
 test_engine = create_async_engine(
-    settings.TEST_DATABASE_URL,
+    str(settings.TEST_DATABASE_URL),  # Convert PostgresDsn to string
     echo=True,
     future=True
 )
@@ -84,13 +88,21 @@ def redis_mock() -> Generator[AsyncRedisMock, None, None]:
     yield AsyncRedisMock()
 
 @pytest.fixture
-def mock_settings(monkeypatch):
+def mock_settings():
     """Mock settings for testing."""
-    test_settings = Settings()
-    test_settings.SCRAPER_API_KEY = "34b092724b61ff18f116305a51ee77e7"
-    test_settings.SCRAPER_API_CONCURRENT_LIMIT = 25
-    test_settings.SCRAPER_API_REQUESTS_PER_SECOND = 3
-    test_settings.SCRAPER_API_MONTHLY_LIMIT = 200_000
+    from pydantic import SecretStr
     
-    monkeypatch.setattr("core.config.settings", test_settings)
-    return test_settings 
+    class MockSettings:
+        """Mock settings for testing."""
+        
+        def __init__(self):
+            self.SCRAPER_API_KEY = SecretStr("34b092724b61ff18f116305a51ee77e7")
+            self.SCRAPER_API_BASE_URL = "http://api.scraperapi.com"
+            self.SCRAPER_API_CONCURRENT_LIMIT = 25
+            self.SCRAPER_API_REQUESTS_PER_SECOND = 3
+            self.SCRAPER_API_MONTHLY_LIMIT = 200_000
+            self.SCRAPER_API_TIMEOUT = 70
+            self.SCRAPER_API_CACHE_TTL = 1800
+            self.SCRAPER_API_BACKGROUND_CACHE_TTL = 7200
+    
+    return MockSettings() 

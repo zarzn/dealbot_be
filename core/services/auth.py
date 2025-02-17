@@ -19,12 +19,11 @@ from pydantic import BaseModel
 
 from core.config import settings
 from core.models.user import User
-from core.models.auth import (
-    TokenData,
-    Token,
+from core.models.auth_token import (
     TokenType,
     TokenStatus,
-    TokenScope
+    TokenScope,
+    AuthToken
 )
 from core.exceptions import (
     AuthenticationError,
@@ -50,6 +49,30 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
 logger = logging.getLogger(__name__)
+
+class Token(BaseModel):
+    """Token response model."""
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    refresh_token: Optional[str] = None
+
+    class Config:
+        """Pydantic model configuration."""
+        from_attributes = True
+
+class TokenData(BaseModel):
+    """Token data model for decoded JWT payload."""
+    sub: str  # User ID
+    exp: Optional[int] = None  # Expiration timestamp
+    type: Optional[str] = None  # Token type (access, refresh, etc.)
+    scope: Optional[str] = None  # Token scope
+    refresh: Optional[bool] = None  # Whether this is a refresh token
+    jti: Optional[str] = None  # JWT ID for blacklisting
+
+    class Config:
+        """Pydantic model configuration."""
+        from_attributes = True
 
 # Token expiration times (in minutes)
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
@@ -96,21 +119,33 @@ async def authenticate_user(
         
         if not user:
             logger.warning(f"User not found or inactive: {email}")
-            return None
+            raise InvalidCredentialsError(
+                message="Invalid email or password",
+                error_code="user_not_found"
+            )
             
         # Verify password using the verify_password function
         if not verify_password(password, user.password):
             logger.warning(f"Invalid password for user: {email}")
-            return None
+            raise InvalidCredentialsError(
+                message="Invalid email or password",
+                error_code="invalid_password"
+            )
             
         # Update last login time
         user.last_login_at = datetime.utcnow()
         await db.commit()
             
         return user
+    except InvalidCredentialsError:
+        raise
     except Exception as e:
         logger.error(f"Error authenticating user: {e}")
-        raise ValueError("Could not authenticate user")
+        raise InvalidCredentialsError(
+            message="Authentication failed",
+            error_code="auth_error",
+            details={"error": str(e)}
+        )
 
 async def create_access_token(
     data: Dict[str, Any],
@@ -449,7 +484,7 @@ async def create_magic_link_token(data: Dict[str, Any]) -> str:
         
         encoded_jwt = jwt.encode(
             to_encode,
-            settings.SECRET_KEY,
+            settings.SECRET_KEY.get_secret_value(),
             algorithm=settings.JWT_ALGORITHM
         )
         return encoded_jwt

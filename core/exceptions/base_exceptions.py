@@ -6,15 +6,23 @@ from datetime import datetime
 class BaseError(Exception):
     """Base exception class for all application exceptions."""
     
-    def __init__(self, message: str):
+    def __init__(
+        self,
+        message: str,
+        error_code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
         super().__init__(message)
         self.message = message
+        self.error_code = error_code or self.__class__.__name__.lower()
+        self.details = details or {}
         self.timestamp = datetime.utcnow()
         
     def to_dict(self) -> Dict[str, Any]:
         """Convert exception to dictionary format."""
         return {
             'error': self.__class__.__name__,
+            'error_code': self.error_code,
             'message': self.message,
             'timestamp': self.timestamp.isoformat(),
             'details': self._get_details()
@@ -22,7 +30,7 @@ class BaseError(Exception):
         
     def _get_details(self) -> Dict[str, Any]:
         """Get additional error details. Override in subclasses."""
-        return {}
+        return self.details
 
 class ValidationError(BaseError):
     """Raised when data validation fails."""

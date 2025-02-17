@@ -3,23 +3,22 @@
 This module exports all models and their Pydantic schemas for the AI Agentic Deals System.
 """
 
+# Auth models
+from .auth_token import (
+    AuthToken,
+    AuthTokenCreate,
+    AuthTokenUpdate,
+    AuthTokenResponse,
+    TokenType,
+    TokenStatus,
+    TokenScope
+)
+
 # Base models
 from .base import Base
 
 # Enums
 from .enums import MarketType, MarketStatus, MarketCategory
-
-# User models
-from .user import (
-    User, UserBase, UserCreate, UserUpdate, UserResponse,
-    UserStatus, NotificationPreference
-)
-
-# Goal models
-from .goal import (
-    Goal, GoalBase, GoalCreate, GoalUpdate, GoalResponse,
-    GoalStatus, GoalPriority
-)
 
 # Deal models
 from .deal import (
@@ -57,6 +56,18 @@ from .price_prediction import (
     PriceAnalysis,
     ModelPerformance,
     PriceTrend
+)
+
+# User models
+from .user import (
+    User, UserBase, UserCreate, UserUpdate, UserResponse,
+    UserStatus, NotificationPreference
+)
+
+# Goal models
+from .goal import (
+    Goal, GoalBase, GoalCreate, GoalUpdate, GoalResponse,
+    GoalStatus, GoalPriority
 )
 
 # Token models
@@ -120,6 +131,15 @@ from .chat import (
 )
 
 __all__ = [
+    # Auth
+    'AuthToken',
+    'AuthTokenCreate',
+    'AuthTokenUpdate',
+    'AuthTokenResponse',
+    'TokenType',
+    'TokenStatus',
+    'TokenScope',
+
     # Base
     'Base',
 
@@ -127,24 +147,6 @@ __all__ = [
     'MarketType',
     'MarketStatus',
     'MarketCategory',
-
-    # User
-    'User',
-    'UserBase',
-    'UserCreate',
-    'UserUpdate',
-    'UserResponse',
-    'UserStatus',
-    'NotificationPreference',
-
-    # Goal
-    'Goal',
-    'GoalBase',
-    'GoalCreate',
-    'GoalUpdate',
-    'GoalResponse',
-    'GoalStatus',
-    'GoalPriority',
 
     # Deal
     'Deal',
@@ -177,6 +179,24 @@ __all__ = [
     'PriceAnalysis',
     'ModelPerformance',
     'PriceTrend',
+
+    # User
+    'User',
+    'UserBase',
+    'UserCreate',
+    'UserUpdate',
+    'UserResponse',
+    'UserStatus',
+    'NotificationPreference',
+
+    # Goal
+    'Goal',
+    'GoalBase',
+    'GoalCreate',
+    'GoalUpdate',
+    'GoalResponse',
+    'GoalStatus',
+    'GoalPriority',
 
     # Token
     'TokenTransaction',

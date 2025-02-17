@@ -123,11 +123,31 @@ class BaseConfig(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FORMAT: str = "json"
 
-    # CORS
-    CORS_ORIGINS: list[str] = ["*"]
-    CORS_CREDENTIALS: bool = True
-    CORS_METHODS: list[str] = ["*"]
-    CORS_HEADERS: list[str] = ["*"]
+    # CORS Configuration
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "*"  # Allow all origins in development
+    ]
+    CORS_METHODS: list[str] = ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"]
+    CORS_HEADERS: list[str] = [
+        "Content-Type",
+        "Authorization",
+        "X-Requested-With",
+        "Accept",
+        "Origin",
+        "Access-Control-Request-Method",
+        "Access-Control-Request-Headers",
+        "Access-Control-Allow-Origin",
+        "Access-Control-Allow-Credentials",
+        "Access-Control-Allow-Methods",
+        "Access-Control-Allow-Headers"
+    ]
+    CORS_EXPOSE_HEADERS: list[str] = ["*"]
+    CORS_MAX_AGE: int = 600  # 10 minutes
+    CORS_ALLOW_CREDENTIALS: bool = True
 
     # Rate Limiting
     RATE_LIMIT_PER_SECOND: int = 10

@@ -1,18 +1,19 @@
 """Price tracking models."""
 
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, Any, List
 from uuid import UUID
 from decimal import Decimal
 
-from sqlalchemy import Integer, String, DateTime, Boolean, ForeignKey, Numeric, text
+from sqlalchemy import (
+    Integer, String, DateTime, Boolean, ForeignKey, 
+    Numeric, text, CheckConstraint, Index
+)
 from sqlalchemy.dialects.postgresql import UUID as PGUUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from core.models.base import Base
-from core.models.deal import Deal
-from core.models.user import User
 
 class PricePoint(Base):
     """SQLAlchemy model for price points."""
@@ -26,7 +27,7 @@ class PricePoint(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime, server_default=text("NOW()"))
     meta_data: Mapped[Optional[Dict]] = mapped_column(JSONB)
 
-    # Relationships
+    # Relationships - use string reference to avoid circular import
     deal = relationship("Deal", back_populates="price_points")
 
 class PriceTracker(Base):
@@ -44,7 +45,7 @@ class PriceTracker(Base):
     notification_settings: Mapped[Optional[Dict]] = mapped_column(JSONB)
     meta_data: Mapped[Optional[Dict]] = mapped_column(JSONB)
 
-    # Relationships
+    # Relationships - use string references to avoid circular imports
     deal = relationship("Deal", back_populates="price_trackers")
     user = relationship("User", back_populates="price_trackers")
 
@@ -66,8 +67,7 @@ class PricePointResponse(PricePointBase):
     id: int
     timestamp: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class PriceTrackerBase(BaseModel):
     """Base model for price trackers."""
@@ -92,8 +92,7 @@ class PriceTrackerResponse(PriceTrackerBase):
     price_change_percentage: Optional[float] = None
     status: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class PriceTrackerUpdate(BaseModel):
     """Schema for updating a price tracker."""

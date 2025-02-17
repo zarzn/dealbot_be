@@ -15,7 +15,7 @@ from ..constants import (
     REDIS_KEY_PREFIX
 )
 from datetime import timedelta
-from pydantic import SecretStr
+from pydantic import SecretStr, Field, conint
 import os
 from typing import Any, Dict, Optional
 from pydantic import PostgresDsn, RedisDsn
@@ -243,6 +243,16 @@ class DevelopmentConfig(BaseSettings):
     WORKER_CONNECTIONS: int = 1000
     KEEPALIVE_TIMEOUT: int = 65
     GRACEFUL_TIMEOUT: int = 120
+
+    # ScraperAPI Configuration
+    SCRAPER_API_KEY: SecretStr = Field(default=SecretStr(""), env="SCRAPER_API_KEY")
+    SCRAPER_API_BASE_URL: str = Field(default="http://api.scraperapi.com", env="SCRAPER_API_BASE_URL")
+    SCRAPER_API_CONCURRENT_LIMIT: conint(ge=1) = Field(default=25, env="SCRAPER_API_CONCURRENT_LIMIT")
+    SCRAPER_API_REQUESTS_PER_SECOND: conint(ge=1) = Field(default=3, env="SCRAPER_API_REQUESTS_PER_SECOND")
+    SCRAPER_API_MONTHLY_LIMIT: conint(ge=1) = Field(default=200_000, env="SCRAPER_API_MONTHLY_LIMIT")
+    SCRAPER_API_TIMEOUT: conint(ge=1) = Field(default=70, env="SCRAPER_API_TIMEOUT")
+    SCRAPER_API_CACHE_TTL: conint(ge=1) = Field(default=1800, env="SCRAPER_API_CACHE_TTL")
+    SCRAPER_API_BACKGROUND_CACHE_TTL: conint(ge=1) = Field(default=7200, env="SCRAPER_API_BACKGROUND_CACHE_TTL")
 
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> PostgresDsn:

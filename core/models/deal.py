@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
-from sqlalchemy.sql import expression
+from sqlalchemy.sql import expression, text
 
 from core.models.base import Base
 
@@ -182,6 +182,7 @@ class Deal(Base):
     price_points = relationship("PricePoint", back_populates="deal", cascade="all, delete-orphan")
     price_trackers = relationship("PriceTracker", back_populates="deal", cascade="all, delete-orphan")
     price_predictions = relationship("PricePrediction", back_populates="deal", cascade="all, delete-orphan")
+    price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
     scores = relationship("DealScore", back_populates="deal", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="deal", cascade="all, delete-orphan")
 

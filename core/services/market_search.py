@@ -15,7 +15,7 @@ from functools import partial
 from core.models.market import MarketType
 from core.repositories.market import MarketRepository
 from core.integrations.factory import MarketIntegrationFactory
-from core.utils.redis import get_redis_client, set_cache, get_cache
+from core.utils.redis import get_redis_client, set_cache, get_cache, RedisClient
 from core.utils.logger import get_logger
 from core.utils.metrics import MetricsCollector
 from core.exceptions import (
@@ -24,7 +24,8 @@ from core.exceptions import (
     MarketError,
     IntegrationError,
     NetworkError,
-    ServiceError
+    ServiceError,
+    DataQualityError
 )
 from core.config import settings
 
@@ -46,17 +47,18 @@ class MarketSearchService:
 
     def __init__(self, market_repository: MarketRepository):
         self.market_repository = market_repository
-        self.redis_client = None
+        self.redis_client = RedisClient()  # Use singleton RedisClient instance
 
     async def _check_rate_limit(self, key: str, limit: int) -> bool:
         """Check rate limit using Redis."""
-        if not self.redis_client:
-            self.redis_client = await get_redis_client()
-
-        current = await self.redis_client.incr(f"ratelimit:{key}")
-        if current == 1:
-            await self.redis_client.expire(f"ratelimit:{key}", 60)  # 1 minute window
-        return current <= limit
+        try:
+            current = await self.redis_client.incrby(f"ratelimit:{key}")
+            if current == 1:
+                await self.redis_client.expire(f"ratelimit:{key}", 60)  # 1 minute window
+            return current <= limit
+        except Exception as e:
+            logger.error(f"Rate limit check failed: {str(e)}")
+            return True  # Allow on error
 
     async def search_products(
         self,

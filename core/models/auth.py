@@ -15,64 +15,14 @@ from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.sql import text
 
 from core.models.base import Base
-
-class TokenType(str, Enum):
-    """Token type enumeration."""
-    BEARER = "bearer"
-    REFRESH = "refresh"
-
-class TokenStatus(str, Enum):
-    """Token status enumeration."""
-    ACTIVE = "active"
-    REVOKED = "revoked"
-    EXPIRED = "expired"
-
-class TokenScope(str, Enum):
-    """Token scope enumeration."""
-    FULL = "full"
-    READ = "read"
-    WRITE = "write"
-
-class AuthToken(Base):
-    """Authentication token database model."""
-    __tablename__ = "auth_tokens"
-    __table_args__ = (
-        Index('ix_auth_tokens_user', 'user_id'),
-        Index('ix_auth_tokens_token', 'token'),
-        Index('ix_auth_tokens_status', 'status'),
-    )
-
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    token: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    token_type: Mapped[TokenType] = mapped_column(SQLEnum(TokenType), nullable=False)
-    status: Mapped[TokenStatus] = mapped_column(SQLEnum(TokenStatus), default=TokenStatus.ACTIVE)
-    scope: Mapped[TokenScope] = mapped_column(SQLEnum(TokenScope), default=TokenScope.FULL)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
-
-    # Relationships
-    user = relationship("User", back_populates="auth_tokens")
-
-    def __repr__(self) -> str:
-        """String representation of the token."""
-        return f"<AuthToken {self.token_type} ({self.status})>"
-
-    async def revoke(self) -> None:
-        """Revoke the token."""
-        self.status = TokenStatus.REVOKED
-
-    async def is_valid(self) -> bool:
-        """Check if token is valid."""
-        return (
-            self.status == TokenStatus.ACTIVE and
-            datetime.utcnow() < self.expires_at
-        )
+from .auth_token import TokenType, TokenStatus, TokenScope, AuthToken
 
 class Token(BaseModel):
     """Token schema."""
     access_token: str
-    token_type: TokenType = TokenType.BEARER
+    refresh_token: Optional[str] = None
+    token_type: str = "bearer"
+    expires_in: int = Field(..., description="Token expiration time in seconds")
 
 class TokenData(BaseModel):
     """Token data schema."""

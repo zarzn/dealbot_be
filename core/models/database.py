@@ -311,92 +311,15 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         finally:
             await session.close()
 
-"""Database models for price tracking and prediction."""
-
-class PricePoint(Base):
-    """Price point record in database."""
-    __tablename__ = "price_points"
-
-    id = Column(Integer, primary_key=True, index=True)
-    deal_id = Column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False)
-    price = Column(Numeric(10, 2), nullable=False)
-    currency = Column(String, default="USD")
-    source = Column(String, nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
-    meta_data = Column(JSON)
-
-    # Relationships
-    deal = relationship("Deal", back_populates="price_points")
-
-class PriceTracker(Base):
-    """Price tracker configuration in database."""
-    __tablename__ = "price_trackers"
-
-    id = Column(Integer, primary_key=True, index=True)
-    deal_id = Column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False)
-    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    initial_price = Column(Numeric(10, 2), nullable=False)
-    threshold_price = Column(Numeric(10, 2))
-    check_interval = Column(Integer, default=300)  # seconds
-    last_check = Column(DateTime, default=datetime.utcnow)
-    is_active = Column(Boolean, default=True)
-    notification_settings = Column(JSON)
-    meta_data = Column(JSON)
-
-    # Relationships
-    deal = relationship("Deal", back_populates="price_tracker")
-    user = relationship("User", back_populates="price_trackers", lazy="selectin")
-
-class PricePrediction(Base):
-    """Price prediction record in database."""
-    __tablename__ = "price_predictions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    deal_id = Column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False)
-    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    model_name = Column(String, nullable=False)
-    prediction_days = Column(Integer, default=7)
-    confidence_threshold = Column(Float, default=0.8)
-    predictions = Column(JSON, nullable=False)  # List of prediction points
-    overall_confidence = Column(Float, nullable=False)
-    trend_direction = Column(String)
-    trend_strength = Column(Float)
-    seasonality_score = Column(Float)
-    features_used = Column(JSON)  # List of features
-    model_params = Column(JSON)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    meta_data = Column(JSON)
-
-    # Relationships
-    deal = relationship("Deal", back_populates="price_predictions")
-    user = relationship("User", back_populates="price_predictions", lazy="selectin")
-
-class ModelMetrics(Base):
-    """Model performance metrics in database."""
-    __tablename__ = "model_metrics"
-
-    id = Column(Integer, primary_key=True, index=True)
-    model_name = Column(String, nullable=False)
-    accuracy = Column(Float, nullable=False)
-    mae = Column(Float, nullable=False)
-    mse = Column(Float, nullable=False)
-    rmse = Column(Float, nullable=False)
-    mape = Column(Float, nullable=False)
-    r2_score = Column(Float, nullable=False)
-    training_time = Column(Float)
-    prediction_time = Column(Float)
-    last_retrain = Column(DateTime, nullable=False)
-    feature_importance = Column(JSON)
-    meta_data = Column(JSON)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-
 # Update Deal model relationships
 from core.models.deal import Deal
-Deal.price_points = relationship("PricePoint", back_populates="deal", cascade="all, delete-orphan")
-Deal.price_tracker = relationship("PriceTracker", back_populates="deal", uselist=False, cascade="all, delete-orphan")
+Deal.price_trackers = relationship("PriceTracker", back_populates="deal", cascade="all, delete-orphan")
 Deal.price_predictions = relationship("PricePrediction", back_populates="deal", cascade="all, delete-orphan")
+Deal.price_points = relationship("PricePoint", back_populates="deal", cascade="all, delete-orphan")
+Deal.price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
 
 # Update User model relationships
 from core.models.user import User
 User.price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
 User.price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
+User.deals = relationship("Deal", back_populates="user", cascade="all, delete-orphan")

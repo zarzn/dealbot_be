@@ -77,6 +77,7 @@ class TokenBalanceHistory(Base):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token_balance_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("token_balances.id", ondelete="CASCADE"), nullable=False)
     balance_before: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
     balance_after: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
     change_amount: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
@@ -84,9 +85,11 @@ class TokenBalanceHistory(Base):
     reason: Mapped[str] = mapped_column(String(255), nullable=False)
     transaction_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     transaction_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("token_transactions.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
 
     # Relationships
-    user = relationship("User", back_populates="balance_history")
+    user = relationship("User", back_populates="token_balance_history")
+    token_balance = relationship("TokenBalance", back_populates="history")
     transaction = relationship("TokenTransaction", backref="balance_changes")
 
     def __repr__(self):

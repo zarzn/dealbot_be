@@ -15,7 +15,7 @@ from sqlalchemy.sql import expression, text
 from pydantic import BaseModel, Field
 
 from core.models.base import Base
-from core.exceptions import AgentError
+from core.exceptions.agent_exceptions import AgentError
 
 class AgentType(str, enum.Enum):
     """Agent type enumeration."""
@@ -37,9 +37,13 @@ class Agent(Base):
     __table_args__ = (
         Index('ix_agents_type', 'agent_type'),
         Index('ix_agents_status', 'status'),
+        Index('ix_agents_user', 'user_id'),
+        Index('ix_agents_goal', 'goal_id'),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    goal_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("goals.id", ondelete="CASCADE"), nullable=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     agent_type: Mapped[AgentType] = mapped_column(SQLEnum(AgentType), nullable=False)
     status: Mapped[AgentStatus] = mapped_column(SQLEnum(AgentStatus), default=AgentStatus.INACTIVE)
@@ -49,6 +53,12 @@ class Agent(Base):
     error_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[Optional[str]] = mapped_column(Text)
     last_active: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
+
+    # Relationships
+    user = relationship("User", back_populates="agents")
+    goal = relationship("Goal", back_populates="agents")
 
     def __repr__(self) -> str:
         """String representation of the agent."""

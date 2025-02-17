@@ -2,12 +2,15 @@
 
 from typing import List
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import AuthMiddleware
 from .rate_limit import RateLimitMiddleware
 from .performance import PerformanceMiddleware
 from .logging import RequestLoggingMiddleware
 from core.config import settings
+from core.utils.metrics import MetricsManager
+from core.utils.redis import get_redis_client
 
 __all__ = [
     "AuthMiddleware",
@@ -17,15 +20,33 @@ __all__ = [
     "setup_middleware"
 ]
 
-def setup_middleware(app: FastAPI) -> None:
+async def setup_middleware(app: FastAPI) -> None:
     """Configure and add middleware to the FastAPI application.
     
     The order of middleware is important:
-    1. Request Logging (outermost) - To log all requests including those rejected by other middleware
-    2. Performance Monitoring - To track performance including auth and rate limiting overhead
-    3. Rate Limiting - To prevent abuse before processing auth
-    4. Authentication (innermost) - To authenticate requests that passed rate limiting
+    1. CORS (outermost) - To handle preflight requests before other middleware
+    2. Request Logging - To log all requests including those rejected by other middleware
+    3. Performance Monitoring - To track performance including auth and rate limiting overhead
+    4. Rate Limiting - To prevent abuse before processing auth
+    5. Authentication (innermost) - To authenticate requests that passed rate limiting
     """
+    # Initialize metrics manager
+    metrics_manager = MetricsManager()
+
+    # Get Redis client
+    redis_client = await get_redis_client()
+
+    # Add CORS middleware first
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+        max_age=600  # 10 minutes
+    )
+
     # Request Logging Middleware
     app.add_middleware(
         RequestLoggingMiddleware,
@@ -41,16 +62,17 @@ def setup_middleware(app: FastAPI) -> None:
     # Performance Monitoring Middleware
     app.add_middleware(
         PerformanceMiddleware,
-        slow_request_threshold=settings.SLOW_REQUEST_THRESHOLD,
-        log_performance=settings.LOG_PERFORMANCE
+        metrics_manager=metrics_manager,
+        slow_request_threshold=settings.SLOW_REQUEST_THRESHOLD
     )
     
     # Rate Limiting Middleware
     app.add_middleware(
         RateLimitMiddleware,
-        rate_limit_per_second=settings.RATE_LIMIT_PER_SECOND,
-        rate_limit_per_minute=settings.RATE_LIMIT_PER_MINUTE,
-        burst_limit=settings.RATE_LIMIT_BURST
+        redis_client=redis_client,
+        limit=settings.RATE_LIMIT_PER_MINUTE,
+        window=60,  # 1 minute window
+        exclude_paths=settings.AUTH_EXCLUDE_PATHS
     )
     
     # Authentication Middleware

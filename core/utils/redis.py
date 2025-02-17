@@ -83,17 +83,25 @@ async def close_redis_client() -> None:
             logger.error(f"Error closing Redis connection pool: {str(e)}")
             raise
 
-async def set_cache(key: str, value: Any, expire: Optional[Union[int, timedelta]] = None) -> bool:
-    """Set a value in Redis cache.
-    
-    Args:
-        key: Cache key
-        value: Value to cache (will be JSON serialized)
-        expire: Expiration time in seconds or timedelta
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
+# Function-based interface for simpler use cases
+async def get_cache(key: str) -> Optional[Any]:
+    """Get a value from Redis cache."""
+    try:
+        redis = await get_redis_client()
+        value = await redis.get(key)
+        if value:
+            return json.loads(value)
+        return None
+    except Exception as e:
+        logger.error(f"Error getting cache for key {key}: {str(e)}")
+        return None
+
+async def set_cache(
+    key: str,
+    value: Any,
+    expire: Optional[Union[int, timedelta]] = None
+) -> bool:
+    """Set a value in Redis cache."""
     try:
         redis = await get_redis_client()
         serialized = json.dumps(value)
@@ -108,34 +116,8 @@ async def set_cache(key: str, value: Any, expire: Optional[Union[int, timedelta]
         logger.error(f"Error setting cache for key {key}: {str(e)}")
         return False
 
-async def get_cache(key: str) -> Optional[Any]:
-    """Get a value from Redis cache.
-    
-    Args:
-        key: Cache key
-        
-    Returns:
-        Optional[Any]: Cached value if exists, None otherwise
-    """
-    try:
-        redis = await get_redis_client()
-        value = await redis.get(key)
-        if value:
-            return json.loads(value)
-        return None
-    except Exception as e:
-        logger.error(f"Error getting cache for key {key}: {str(e)}")
-        return None
-
 async def delete_cache(key: str) -> bool:
-    """Delete a value from Redis cache.
-    
-    Args:
-        key: Cache key
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
+    """Delete a value from Redis cache."""
     try:
         redis = await get_redis_client()
         await redis.delete(key)
@@ -144,28 +126,123 @@ async def delete_cache(key: str) -> bool:
         logger.error(f"Error deleting cache for key {key}: {str(e)}")
         return False
 
-async def clear_cache_pattern(pattern: str) -> bool:
-    """Clear all cache keys matching a pattern.
+# Class-based interface for more complex use cases
+class RedisClient:
+    """Redis client wrapper class."""
     
-    Args:
-        pattern: Redis key pattern to match
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    try:
-        redis = await get_redis_client()
-        cursor = 0
-        while True:
-            cursor, keys = await redis.scan(cursor, match=pattern)
-            if keys:
-                await redis.delete(*keys)
-            if cursor == 0:
-                break
-        return True
-    except Exception as e:
-        logger.error(f"Error clearing cache pattern {pattern}: {str(e)}")
-        return False
+    _instance: Optional['RedisClient'] = None
+    
+    def __new__(cls) -> 'RedisClient':
+        """Implement singleton pattern."""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        """Initialize Redis client."""
+        if not hasattr(self, '_initialized') or not self._initialized:
+            self._client = None
+            self._pipeline = None
+            self._initialized = True
+    
+    async def _get_client(self) -> Redis:
+        """Get Redis client instance."""
+        if self._client is None:
+            self._client = await get_redis_client()
+        return self._client
+    
+    async def get(self, key: str) -> Optional[Any]:
+        """Get a value from Redis cache."""
+        try:
+            redis = await self._get_client()
+            value = await redis.get(key)
+            if value:
+                return json.loads(value)
+            return None
+        except Exception as e:
+            logger.error(f"Error getting cache for key {key}: {str(e)}")
+            return None
+    
+    async def set(
+        self,
+        key: str,
+        value: Any,
+        expire: Optional[Union[int, timedelta]] = None
+    ) -> bool:
+        """Set a value in Redis cache."""
+        try:
+            redis = await self._get_client()
+            serialized = json.dumps(value)
+            if expire:
+                if isinstance(expire, timedelta):
+                    expire = int(expire.total_seconds())
+                await redis.setex(key, expire, serialized)
+            else:
+                await redis.set(key, serialized)
+            return True
+        except Exception as e:
+            logger.error(f"Error setting cache for key {key}: {str(e)}")
+            return False
+    
+    async def delete(self, key: str) -> bool:
+        """Delete a value from Redis cache."""
+        try:
+            redis = await self._get_client()
+            await redis.delete(key)
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting cache for key {key}: {str(e)}")
+            return False
+    
+    async def clear_pattern(self, pattern: str) -> bool:
+        """Clear all cache keys matching a pattern."""
+        try:
+            redis = await self._get_client()
+            cursor = 0
+            while True:
+                cursor, keys = await redis.scan(cursor, match=pattern)
+                if keys:
+                    await redis.delete(*keys)
+                if cursor == 0:
+                    break
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing cache pattern {pattern}: {str(e)}")
+            return False
+    
+    async def incrby(self, key: str, amount: int = 1) -> int:
+        """Increment a key by the given amount."""
+        try:
+            redis = await self._get_client()
+            return await redis.incrby(key, amount)
+        except Exception as e:
+            logger.error(f"Error incrementing key {key}: {str(e)}")
+            return 0
+    
+    async def expire(self, key: str, seconds: int) -> bool:
+        """Set expiration time for a key."""
+        try:
+            redis = await self._get_client()
+            return await redis.expire(key, seconds)
+        except Exception as e:
+            logger.error(f"Error setting expiration for key {key}: {str(e)}")
+            return False
+    
+    @property
+    async def pipeline(self):
+        """Get Redis pipeline."""
+        if self._pipeline is None:
+            redis = await self._get_client()
+            self._pipeline = redis.pipeline()
+        return self._pipeline
+    
+    async def close(self) -> None:
+        """Close Redis client connection."""
+        if self._client is not None:
+            await close_redis_client()
+            self._client = None
+            self._pipeline = None
 
 class RateLimit:
     """Rate limiting implementation using Redis."""
@@ -178,15 +255,7 @@ class RateLimit:
         window: int = 60,
         precision: int = 60
     ):
-        """Initialize rate limiter.
-        
-        Args:
-            redis: Redis client instance
-            key: Rate limit key
-            limit: Maximum number of requests
-            window: Time window in seconds
-            precision: Time precision in seconds
-        """
+        """Initialize rate limiter."""
         self.redis = redis
         self.key = key
         self.limit = limit
@@ -195,25 +264,16 @@ class RateLimit:
         self.redis_key = f"rate_limit:{key}"
 
     async def is_allowed(self) -> bool:
-        """Check if request is allowed under rate limit.
-        
-        Returns:
-            True if request is allowed
-        """
+        """Check if request is allowed under rate limit."""
         try:
             current = await self._get_counter()
             return current < self.limit
         except Exception as e:
             logger.error(f"Error checking rate limit: {str(e)}")
-            # Default to allowing request on error
             return True
 
     async def increment(self) -> int:
-        """Increment request counter.
-        
-        Returns:
-            Current request count
-        """
+        """Increment request counter."""
         try:
             current_time = int(time.time())
             pipeline = self.redis.pipeline()
@@ -245,42 +305,39 @@ class RateLimit:
             return 0
 
     async def get_reset_time(self) -> datetime:
-        """Get time when rate limit will reset.
-        
-        Returns:
-            Datetime when rate limit will reset
-        """
+        """Get time when rate limit will reset."""
         try:
+            current_time = int(time.time())
             oldest = await self.redis.zrange(
                 self.redis_key,
                 0,
                 0,
                 withscores=True
             )
-            if oldest:
-                reset_time = int(oldest[0][1]) + self.window
-                return datetime.fromtimestamp(reset_time)
-            return datetime.now()
+            if not oldest:
+                return datetime.fromtimestamp(current_time)
+            
+            oldest_time = int(float(oldest[0][1]))
+            reset_time = oldest_time + self.window
+            
+            return datetime.fromtimestamp(reset_time)
         except Exception as e:
             logger.error(f"Error getting rate limit reset time: {str(e)}")
-            return datetime.now()
+            return datetime.fromtimestamp(time.time() + self.window)
 
     async def _get_counter(self) -> int:
-        """Get current request count.
-        
-        Returns:
-            Current number of requests in window
-        """
-        current_time = int(time.time())
-        
-        # Get counts in current window
-        counts = await self.redis.zcount(
-            self.redis_key,
-            current_time - self.window,
-            current_time
-        )
-        
-        return counts
+        """Get current request count."""
+        try:
+            current_time = int(time.time())
+            count = await self.redis.zcount(
+                self.redis_key,
+                current_time - self.window,
+                current_time
+            )
+            return count
+        except Exception as e:
+            logger.error(f"Error getting rate limit counter: {str(e)}")
+            return 0
 
     async def reset(self) -> None:
         """Reset rate limit counter."""
@@ -290,11 +347,7 @@ class RateLimit:
             logger.error(f"Error resetting rate limit: {str(e)}")
 
     async def get_remaining(self) -> int:
-        """Get remaining requests allowed.
-        
-        Returns:
-            Number of requests remaining in current window
-        """
+        """Get remaining requests allowed."""
         try:
             current = await self._get_counter()
             return max(0, self.limit - current)
@@ -303,15 +356,10 @@ class RateLimit:
             return 0
 
     async def check_limit(self) -> None:
-        """Check and enforce rate limit.
-        
-        Raises:
-            RateLimitError: If rate limit is exceeded
-        """
+        """Check rate limit and raise error if exceeded."""
         if not await self.is_allowed():
             reset_time = await self.get_reset_time()
             raise RateLimitError(
-                message="Rate limit exceeded",
-                limit=self.limit,
-                reset_at=reset_time
+                "Rate limit exceeded",
+                reset_time=reset_time
             )

@@ -4,20 +4,48 @@
 import asyncio
 import sys
 import os
+import logging
 
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.database.init_db import init_database
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy import text
+from core.config import settings
+from core.models import Base
 
-async def main():
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+async def init_db():
     """Initialize the database."""
     try:
-        await init_database()
-        print("Database initialization completed successfully")
+        # Create async engine
+        engine = create_async_engine(str(settings.DATABASE_URL))
+        
+        async with engine.begin() as conn:
+            # Drop all tables if they exist
+            await conn.run_sync(Base.metadata.drop_all)
+            
+            # Create all tables
+            await conn.run_sync(Base.metadata.create_all)
+            
+            # Verify tables were created
+            result = await conn.execute(text("""
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'public'
+            """))
+            tables = [row[0] for row in result]
+            logger.info(f"Created tables: {', '.join(tables)}")
+
+        logger.info("Database initialization completed successfully")
     except Exception as e:
-        print(f"Error initializing database: {str(e)}")
+        logger.error(f"Error initializing database: {str(e)}")
         raise
+    finally:
+        await engine.dispose()
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(init_db()) 

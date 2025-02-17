@@ -9,11 +9,12 @@ class AuthError(BaseError):
     def __init__(
         self,
         message: str = "Authentication operation failed",
+        error_code: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None
     ):
         super().__init__(
             message=message,
-            error_code="auth_error",
+            error_code=error_code or "auth_error",
             details=details
         )
 
@@ -60,10 +61,12 @@ class InvalidCredentialsError(AuthError):
     def __init__(
         self,
         message: str = "Invalid credentials",
+        error_code: Optional[str] = None,
         details: Optional[Dict[str, Any]] = None
     ):
         super().__init__(
             message=message,
+            error_code=error_code or "invalid_credentials",
             details=details or {}
         )
 

@@ -169,11 +169,17 @@ class ProductNotFoundError(MarketProductError):
         product_id: str,
         details: Optional[Dict[str, Any]] = None
     ):
+        error_details = details or {}
+        error_details.update({
+            "market": market,
+            "product_id": product_id,
+            "reason": "Product not found"
+        })
         super().__init__(
             market=market,
             product_id=product_id,
-            reason="Product not found",
-            details=details
+            reason=f"Product {product_id} not found",
+            details=error_details
         )
 
 class PricePredictionError(MarketError):

@@ -134,7 +134,7 @@ class TokenTransaction(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
-    user = relationship("User", back_populates="transactions")
+    user = relationship("User", back_populates="token_transactions")
 
     def __repr__(self) -> str:
         return f"<TokenTransaction(id={self.id}, type={self.type}, amount={self.amount})>"

@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 from enum import Enum
 from sqlalchemy import (
     Column, String, Float, DateTime, Enum as SQLEnum, 
-    ForeignKey, JSON, BigInteger, Boolean, Numeric, text
+    ForeignKey, JSON, BigInteger, Boolean, Numeric, text, Index, CheckConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship
