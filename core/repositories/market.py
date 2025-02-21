@@ -7,7 +7,8 @@ from sqlalchemy.exc import SQLAlchemyError
 import logging
 from sqlalchemy.orm import selectinload
 
-from core.models.market import Market, MarketCreate, MarketUpdate, MarketType, MarketStatus, MarketCategory
+from core.models.market import Market, MarketCreate, MarketUpdate
+from core.models.enums import MarketType, MarketStatus, MarketCategory
 from core.exceptions import (
     MarketNotFoundError,
     InvalidMarketDataError,

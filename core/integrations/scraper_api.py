@@ -34,8 +34,9 @@ class ScraperAPIService:
     ):
         # Handle API key initialization
         if api_key is None:
-            self.api_key = settings.SCRAPER_API_KEY.get_secret_value()
-        elif isinstance(api_key, SecretStr):
+            api_key = settings.SCRAPER_API_KEY
+        
+        if isinstance(api_key, SecretStr):
             self.api_key = api_key.get_secret_value()
         else:
             self.api_key = str(api_key)
@@ -423,8 +424,31 @@ class ScraperAPIService:
                     market="amazon",
                     product_id=product_id
                 )
+
+            # Normalize the response
+            normalized_product = {
+                'id': product_id,
+                'asin': product_id,
+                'name': result.get('name'),
+                'title': result.get('name'),
+                'price': float(result.get('price', {}).get('current_price', 0.0)),
+                'price_string': result.get('price', {}).get('current_price_string', '$0.00'),
+                'currency': result.get('price', {}).get('currency', 'USD'),
+                'url': f"https://www.amazon.com/dp/{product_id}",
+                'market_type': 'amazon',
+                'rating': float(result.get('rating', {}).get('rating', 0.0)),
+                'review_count': int(result.get('rating', {}).get('count', 0)),
+                'image_url': result.get('main_image', ''),
+                'availability': result.get('stock_status', {}).get('in_stock', False),
+                'product_information': result.get('product_information', {}),
+                'metadata': {
+                    'source': 'amazon',
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'raw_fields': list(result.keys())
+                }
+            }
                 
-            return result
+            return normalized_product
             
         except ProductNotFoundError:
             raise

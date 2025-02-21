@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
 from decimal import Decimal
-from pydantic import BaseModel, HttpUrl, Field, validator, conint, confloat
+from pydantic import BaseModel, HttpUrl, Field, field_validator, conint, confloat
 import enum
 
 from sqlalchemy import (
@@ -46,6 +46,98 @@ class DealPriority(int, enum.Enum):
     URGENT = 4
     CRITICAL = 5
 
+class DealSearch(BaseModel):
+    """Deal search parameters."""
+    query: Optional[str] = None
+    category: Optional[str] = None
+    min_price: Optional[float] = Field(None, ge=0)
+    max_price: Optional[float] = Field(None, ge=0)
+    source: Optional[str] = None
+    sort_by: Optional[str] = "relevance"
+    sort_order: Optional[str] = "desc"
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=20, ge=1, le=100)
+
+    @field_validator('max_price')
+    @classmethod
+    def validate_max_price(cls, v, values):
+        """Validate max_price is greater than min_price."""
+        if v is not None and values.get('min_price') is not None:
+            if v < values['min_price']:
+                raise ValueError("max_price must be greater than min_price")
+        return v
+
+class DealFilter(BaseModel):
+    """Deal filter parameters."""
+    category: Optional[str] = None
+    price_min: Optional[float] = Field(None, ge=0)
+    price_max: Optional[float] = Field(None, ge=0)
+    source: Optional[str] = None
+    sort_by: Optional[str] = "relevance"
+    sort_order: Optional[str] = "desc"
+
+class PriceHistoryBase(BaseModel):
+    """Base model for price history."""
+    price: Decimal
+    currency: str
+    timestamp: datetime
+    source: str
+    meta_data: Optional[Dict[str, Any]] = None
+
+class PriceHistory(Base):
+    """SQLAlchemy model for price history."""
+    __tablename__ = "price_histories"
+    __table_args__ = (
+        UniqueConstraint('deal_id', 'timestamp', name='uq_price_history_deal_time'),
+        CheckConstraint('price > 0', name='ch_positive_historical_price'),
+        Index('ix_price_histories_deal_time', 'deal_id', 'timestamp'),
+        Index('ix_price_histories_market', 'market_id'),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    deal_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"))
+    market_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"))
+    price: Mapped[Decimal] = mapped_column(DECIMAL(10, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), default="USD")
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    deal = relationship("Deal", back_populates="price_histories")
+    market = relationship("Market", back_populates="price_histories")
+
+    def __repr__(self) -> str:
+        """String representation of the price history entry."""
+        return "<PriceHistory {} {} at {}>".format(self.price, self.currency, self.timestamp)
+
+class PriceHistoryResponse(PriceHistoryBase):
+    """Response model for price history."""
+    id: UUID
+    deal_id: UUID
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        """Pydantic model configuration."""
+        from_attributes = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat(),
+            UUID: lambda v: str(v),
+            Decimal: lambda v: str(v)
+        }
+
+class AIAnalysis(BaseModel):
+    """AI analysis of a deal."""
+    score: float = Field(..., ge=0, le=1)
+    confidence: float = Field(..., ge=0, le=1)
+    price_trend: str
+    price_prediction: Decimal
+    recommendations: List[str]
+    meta_data: Optional[Dict[str, Any]] = None
+
 class DealBase(BaseModel):
     """Base deal model."""
     title: str = Field(..., min_length=1, max_length=255)
@@ -61,16 +153,16 @@ class DealBase(BaseModel):
     expires_at: Optional[datetime] = None
     status: DealStatus = Field(default=DealStatus.ACTIVE)
 
+    @field_validator('original_price')
     @classmethod
-    @validator('original_price')
     def validate_original_price(cls, v: Optional[Decimal], values: Dict[str, Any]) -> Optional[Decimal]:
         """Validate original price is greater than current price."""
         if v is not None and 'price' in values and v <= values['price']:
             raise ValueError("Original price must be greater than current price")
         return v
 
+    @field_validator('expires_at')
     @classmethod
-    @validator('expires_at')
     def validate_expiry(cls, v: Optional[datetime]) -> Optional[datetime]:
         """Validate expiry date is in the future."""
         if v is not None and v <= datetime.utcnow():
@@ -94,8 +186,8 @@ class DealUpdate(BaseModel):
     deal_metadata: Optional[Dict[str, Any]] = None
     availability: Optional[Dict[str, Any]] = None
 
+    @field_validator('original_price')
     @classmethod
-    @validator('original_price')
     def validate_original_price(cls, v: Optional[Decimal], values: Dict[str, Any]) -> Optional[Decimal]:
         """Validate original price is greater than current price."""
         if v is not None and 'price' in values and values['price'] is not None and v <= values['price']:
@@ -179,42 +271,15 @@ class Deal(Base):
     user = relationship("User", back_populates="deals")
     goal = relationship("Goal", back_populates="deals")
     market = relationship("Market", back_populates="deals")
-    price_points = relationship("PricePoint", back_populates="deal", cascade="all, delete-orphan")
-    price_trackers = relationship("PriceTracker", back_populates="deal", cascade="all, delete-orphan")
-    price_predictions = relationship("PricePrediction", back_populates="deal", cascade="all, delete-orphan")
     price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
-    scores = relationship("DealScore", back_populates="deal", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="deal", cascade="all, delete-orphan")
+    scores = relationship("DealScore", back_populates="deal", cascade="all, delete-orphan")
+    trackers = relationship("TrackedDeal", back_populates="deal", cascade="all, delete-orphan")
+    goal_matches = relationship("DealMatch", back_populates="deal", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:
         """String representation of the deal."""
-        return f"<Deal {self.title} ({self.price} {self.currency})>"
-
-class PriceHistory(Base):
-    """Price history database model."""
-    __tablename__ = "price_histories"
-    __table_args__ = (
-        UniqueConstraint('deal_id', 'timestamp', name='uq_price_history_deal_time'),
-        CheckConstraint('price > 0', name='ch_positive_historical_price'),
-        Index('ix_price_histories_deal_time', 'deal_id', 'timestamp'),
-    )
-
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    deal_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"))
-    market_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"))
-    price: Mapped[Decimal] = mapped_column(DECIMAL(10, 2), nullable=False)
-    currency: Mapped[str] = mapped_column(String(3), default="USD")
-    timestamp: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    source: Mapped[str] = mapped_column(String(50))
-    price_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
-
-    # Relationships
-    deal = relationship("Deal", back_populates="price_histories")
-    market = relationship("Market", back_populates="price_histories")
-
-    def __repr__(self) -> str:
-        """String representation of the price history entry."""
-        return f"<PriceHistory {self.price} {self.currency} at {self.timestamp}>"
+        return "<Deal {} ({} {})>".format(self.title, self.price, self.currency)
 
 class DealAnalysis(BaseModel):
     deal_id: UUID
@@ -226,7 +291,7 @@ class DealAnalysis(BaseModel):
     recommendations: List[str]
     
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 class DealSearchFilters(BaseModel):
     min_price: Optional[Decimal] = Field(None, ge=0)
@@ -236,21 +301,13 @@ class DealSearchFilters(BaseModel):
     condition: Optional[List[str]] = None
     sort_by: Optional[str] = Field(None, pattern="^(price_asc|price_desc|rating|expiry|relevance)$")
     
-    @validator("max_price")
+    @field_validator("max_price")
+    @classmethod
     def validate_price_range(cls, v, values):
         if v is not None and "min_price" in values and values["min_price"] is not None:
             if v < values["min_price"]:
                 raise ValueError("max_price must be greater than min_price")
         return v
-
-class DealFilter(BaseModel):
-    """Model for filtering deals"""
-    category: Optional[str] = None
-    price_min: Optional[float] = None
-    price_max: Optional[float] = None
-    source: Optional[str] = None
-    status: Optional[DealStatus] = None
-    priority: Optional[DealPriority] = None
 
 class DealAnalytics(BaseModel):
     """Model for deal analytics"""

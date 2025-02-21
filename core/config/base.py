@@ -15,7 +15,7 @@ class BaseConfig(BaseSettings):
     APP_VERSION: str = "1.0.0"
     API_PREFIX: str = "/api/v1"
     API_V1_PREFIX: str = "/api/v1"
-    DEBUG: bool = False
+    DEBUG: bool = True
     ENVIRONMENT: str = "development"
     
     # Security
@@ -26,11 +26,11 @@ class BaseConfig(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # Database
-    POSTGRES_USER: str
-    POSTGRES_PASSWORD: str
-    POSTGRES_DB: str
-    POSTGRES_HOST: str
-    POSTGRES_PORT: int = 5432
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: str = "12345678"
+    POSTGRES_DB: str = "deals"
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: str = "5432"
     DATABASE_URL: Optional[str] = None
     DB_POOL_SIZE: int = 5
     DB_POOL_TIMEOUT: int = 30
@@ -41,30 +41,30 @@ class BaseConfig(BaseSettings):
     DB_MAX_RETRIES: int = 3
     DB_RETRY_DELAY: int = 1
 
-    @model_validator(mode='before')
-    @classmethod
-    def assemble_db_url(cls, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Assemble database URL with the correct format for asyncpg."""
-        if isinstance(data.get("DATABASE_URL"), str):
-            return data
-        
-        port = data.get("POSTGRES_PORT")
-        if isinstance(port, str):
-            port = int(port)
-        
-        # Construct URL as a string
-        data["DATABASE_URL"] = f"postgresql+asyncpg://{data.get('POSTGRES_USER')}:{data.get('POSTGRES_PASSWORD')}@{data.get('POSTGRES_HOST')}:{port}/{data.get('POSTGRES_DB')}"
-        return data
+    @property
+    def SQLALCHEMY_DATABASE_URI(self) -> PostgresDsn:
+        """Get database URI."""
+        return PostgresDsn.build(
+            scheme="postgresql+asyncpg",
+            username=self.POSTGRES_USER,
+            password=self.POSTGRES_PASSWORD,
+            host=self.POSTGRES_HOST,
+            port=int(self.POSTGRES_PORT),
+            path=f"/{self.POSTGRES_DB}"
+        )
 
     # Redis
-    REDIS_HOST: str
-    REDIS_PORT: int
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_PASSWORD: Optional[str] = None
     REDIS_POOL_SIZE: int = 10
     REDIS_TIMEOUT: int = 5
     REDIS_URL: Optional[RedisDsn] = None
     REDIS_SSL: bool = False
+    REDIS_MAX_CONNECTIONS: int = 10
+    REDIS_SOCKET_TIMEOUT: int = 5
+    REDIS_CONNECT_TIMEOUT: int = 5
 
     @model_validator(mode='before')
     @classmethod
@@ -92,8 +92,8 @@ class BaseConfig(BaseSettings):
     TOKEN_CACHE_TTL: int = 3000
 
     # AI Services
-    DEEPSEEK_API_KEY: str
-    OPENAI_API_KEY: Optional[str] = None
+    DEEPSEEK_API_KEY: SecretStr
+    OPENAI_API_KEY: SecretStr
     LLM_MODEL: str = "deepseek"
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 1000

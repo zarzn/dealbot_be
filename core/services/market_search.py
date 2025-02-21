@@ -12,8 +12,12 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 from functools import partial
 
-from core.models.market import MarketType
+from core.models.enums import MarketType
+from core.models.market import Market
+from core.models.deal import Deal
+from core.models.goal import Goal
 from core.repositories.market import MarketRepository
+from core.repositories.deal import DealRepository
 from core.integrations.factory import MarketIntegrationFactory
 from core.utils.redis import get_redis_client, set_cache, get_cache, RedisClient
 from core.utils.logger import get_logger
@@ -500,7 +504,7 @@ class MarketSearchService:
         try:
             return MarketIntegrationFactory.get_integration(
                 market.type,
-                market.api_credentials
+                {"api_key": market.api_key}
             )
         except Exception as e:
             logger.error(

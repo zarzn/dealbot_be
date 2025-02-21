@@ -81,11 +81,12 @@ class TokenBalanceHistory(Base):
     balance_before: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
     balance_after: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
     change_amount: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
-    change_type: Mapped[BalanceChangeType] = mapped_column(SQLEnum(BalanceChangeType), nullable=False)
+    change_type: Mapped[str] = mapped_column(SQLEnum(BalanceChangeType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     reason: Mapped[str] = mapped_column(String(255), nullable=False)
     transaction_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     transaction_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("token_transactions.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
 
     # Relationships
     user = relationship("User", back_populates="token_balance_history")
@@ -99,6 +100,8 @@ class TokenBalanceHistory(Base):
     async def create(cls, db, **kwargs) -> 'TokenBalanceHistory':
         """Create a new balance history record with proper validation"""
         try:
+            if isinstance(kwargs.get('change_type'), BalanceChangeType):
+                kwargs['change_type'] = kwargs['change_type'].value
             history = cls(**kwargs)
             db.add(history)
             await db.commit()

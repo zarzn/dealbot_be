@@ -61,6 +61,31 @@ EXTERNAL_REQUEST_COUNT = Counter(
     ["service", "operation", "status"]
 )
 
+# Market metrics
+MARKET_SEARCH_LATENCY = Histogram(
+    "market_search_latency_seconds",
+    "Market search latency in seconds",
+    ["market_type"]
+)
+
+MARKET_SEARCH_COUNT = Counter(
+    "market_search_count_total",
+    "Market search count",
+    ["market_type", "status"]
+)
+
+MARKET_PRODUCT_DETAILS_LATENCY = Histogram(
+    "market_product_details_latency_seconds",
+    "Market product details latency in seconds",
+    ["market_type"]
+)
+
+MARKET_PRICE_HISTORY_LATENCY = Histogram(
+    "market_price_history_latency_seconds",
+    "Market price history latency in seconds",
+    ["market_type"]
+)
+
 # Business metrics
 DEAL_FOUND_COUNT = Counter(
     "deal_found_total",
@@ -95,6 +120,33 @@ CPU_USAGE = Gauge(
 
 class MetricsCollector:
     """Metrics collection utility"""
+    @staticmethod
+    def track_search_cache_hit() -> None:
+        """Track search cache hit."""
+        try:
+            CACHE_HIT_COUNT.labels(cache_type="search").inc()
+        except Exception as e:
+            logger.error(f"Error tracking search cache hit: {str(e)}")
+
+    @staticmethod
+    def track_product_details_cache_hit() -> None:
+        """Track product details cache hit."""
+        try:
+            CACHE_HIT_COUNT.labels(cache_type="product_details").inc()
+        except Exception as e:
+            logger.error(f"Error tracking product details cache hit: {str(e)}")
+
+    @staticmethod
+    def track_market_search_error(market_type: str, error_type: str) -> None:
+        """Track market search error."""
+        try:
+            MARKET_SEARCH_COUNT.labels(
+                market_type=market_type,
+                status="error"
+            ).inc()
+        except Exception as e:
+            logger.error(f"Error tracking market search error: {str(e)}")
+
     @staticmethod
     def track_request(method: str, endpoint: str, status: int, duration: float) -> None:
         """Track request metrics"""
@@ -155,6 +207,54 @@ class MetricsCollector:
             ).inc()
         except Exception as e:
             logger.error(f"Error tracking external request metrics: {str(e)}")
+
+    @staticmethod
+    def track_market_search(
+        query: str,
+        results_count: int,
+        search_time: float,
+        successful_markets: int,
+        failed_markets: int
+    ) -> None:
+        """Track market search metrics"""
+        try:
+            MARKET_SEARCH_LATENCY.labels(
+                market_type="all"
+            ).observe(search_time)
+            
+            MARKET_SEARCH_COUNT.labels(
+                market_type="all",
+                status="success" if failed_markets == 0 else "partial"
+            ).inc()
+        except Exception as e:
+            logger.error(f"Error tracking market search metrics: {str(e)}")
+
+    @staticmethod
+    def track_product_details(
+        market_type: str,
+        response_time: float
+    ) -> None:
+        """Track product details metrics"""
+        try:
+            MARKET_PRODUCT_DETAILS_LATENCY.labels(
+                market_type=market_type
+            ).observe(response_time)
+        except Exception as e:
+            logger.error(f"Error tracking product details metrics: {str(e)}")
+
+    @staticmethod
+    def track_price_history(
+        market_type: str,
+        history_points: int,
+        response_time: float
+    ) -> None:
+        """Track price history metrics"""
+        try:
+            MARKET_PRICE_HISTORY_LATENCY.labels(
+                market_type=market_type
+            ).observe(response_time)
+        except Exception as e:
+            logger.error(f"Error tracking price history metrics: {str(e)}")
 
     @staticmethod
     def track_deal_found(source: str, category: str) -> None:

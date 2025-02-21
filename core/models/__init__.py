@@ -113,7 +113,8 @@ from .deal_score import (
     DealScore,
     DealScoreCreate,
     DealScoreUpdate,
-    DealScoreResponse
+    DealScoreResponse,
+    DealMatch
 )
 
 # Chat models
@@ -241,6 +242,7 @@ __all__ = [
     'DealScoreCreate',
     'DealScoreUpdate',
     'DealScoreResponse',
+    'DealMatch',
 
     # Chat
     'ChatMessage',

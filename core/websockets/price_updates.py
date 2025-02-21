@@ -9,12 +9,13 @@ from uuid import UUID
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database.session import async_session
+from core.models.base import Base
 from core.models.price_tracking import PricePoint, PriceTracker
 from core.models.price_prediction import PricePrediction
 from core.services.price_tracking import PriceTrackingService
 from core.services.price_prediction import PricePredictionService
 from core.utils.logger import get_logger
+from core.database import get_async_db_session
 
 logger = get_logger(__name__)
 
@@ -82,6 +83,34 @@ class PriceUpdateManager:
                 
         logger.info(f"Unsubscribed from deal {deal_id}")
 
+    async def send_initial_data(
+        self,
+        websocket: WebSocket,
+        deal_id: UUID
+    ) -> None:
+        """Send initial price and prediction data for a deal."""
+        try:
+            async with get_async_db_session() as session:
+                # Get recent price history
+                tracking_service = PriceTrackingService(session)
+                price_history = await tracking_service.get_price_history(deal_id)
+                
+                # Get latest prediction
+                prediction_service = PricePredictionService(session)
+                predictions = await prediction_service.get_predictions(deal_id)
+                
+                # Send initial data
+                await websocket.send_json({
+                    'type': 'initial_data',
+                    'deal_id': str(deal_id),
+                    'price_history': [p.model_dump() for p in price_history],
+                    'predictions': [p.model_dump() for p in predictions],
+                    'timestamp': datetime.utcnow().isoformat()
+                })
+                
+        except Exception as e:
+            logger.error(f"Error sending initial data: {str(e)}")
+
     async def broadcast_price_update(
         self,
         deal_id: UUID,
@@ -126,40 +155,6 @@ class PriceUpdateManager:
                         logger.error(f"Error sending prediction update: {str(e)}")
                         await self.handle_disconnection(websocket, user_id)
 
-    async def send_initial_data(
-        self,
-        websocket: WebSocket,
-        deal_id: UUID
-    ) -> None:
-        """Send initial price and prediction data for a deal."""
-        try:
-            async with async_session() as session:
-                # Get recent price history
-                tracking_service = PriceTrackingService(session)
-                price_history = await tracking_service.get_price_history(
-                    deal_id=deal_id,
-                    limit=100
-                )
-                
-                # Get latest prediction
-                prediction_service = PricePredictionService(session)
-                predictions = await prediction_service.get_deal_predictions(
-                    deal_id=deal_id,
-                    days_ahead=30
-                )
-                
-                # Send initial data
-                await websocket.send_json({
-                    'type': 'initial_data',
-                    'deal_id': str(deal_id),
-                    'price_history': [p.model_dump() for p in price_history],
-                    'predictions': [p.model_dump() for p in predictions],
-                    'timestamp': datetime.utcnow().isoformat()
-                })
-                
-        except Exception as e:
-            logger.error(f"Error sending initial data: {str(e)}")
-
     async def handle_disconnection(
         self,
         websocket: WebSocket,
@@ -194,17 +189,18 @@ class PriceUpdateManager:
         """Monitor for price updates in background."""
         while True:
             try:
-                async with async_session() as session:
-                    # Get active trackers with recent updates
+                async with get_async_db_session() as session:
                     tracking_service = PriceTrackingService(session)
-                    recent_updates = await tracking_service.get_recent_updates()
-                    
-                    # Broadcast updates
-                    for update in recent_updates:
-                        await self.broadcast_price_update(
-                            update.deal_id,
-                            update.model_dump()
-                        )
+                    for user_id, connections in self.active_connections.items():
+                        for websocket in connections:
+                            for deal_id in self.user_subscriptions[websocket]:
+                                price_history = await tracking_service.get_price_history(deal_id)
+                                if price_history:
+                                    latest_price = price_history[0]
+                                    await self.broadcast_price_update(
+                                        deal_id,
+                                        latest_price.model_dump()
+                                    )
                         
                 await asyncio.sleep(5)  # Check every 5 seconds
                 
@@ -218,17 +214,18 @@ class PriceUpdateManager:
         """Monitor for prediction updates in background."""
         while True:
             try:
-                async with async_session() as session:
-                    # Get recent prediction updates
+                async with get_async_db_session() as session:
                     prediction_service = PricePredictionService(session)
-                    recent_updates = await prediction_service.get_recent_updates()
-                    
-                    # Broadcast updates
-                    for update in recent_updates:
-                        await self.broadcast_prediction_update(
-                            update.deal_id,
-                            update.model_dump()
-                        )
+                    for user_id, connections in self.active_connections.items():
+                        for websocket in connections:
+                            for deal_id in self.user_subscriptions[websocket]:
+                                predictions = await prediction_service.get_predictions(deal_id)
+                                if predictions:
+                                    latest_prediction = predictions[0]
+                                    await self.broadcast_prediction_update(
+                                        deal_id,
+                                        latest_prediction.model_dump()
+                                    )
                         
                 await asyncio.sleep(60)  # Check every minute
                 
@@ -248,6 +245,7 @@ async def handle_websocket(
     """Handle WebSocket connection and messages."""
     try:
         await price_update_manager.connect(websocket, user_id)
+        websocket.user_id = user_id  # Store user_id for later use
         
         while True:
             try:

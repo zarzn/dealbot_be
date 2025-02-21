@@ -1,18 +1,22 @@
 """Configuration module for the AI Agentic Deals System."""
 
-import os
+from functools import lru_cache
+from typing import Union
+
 from .base import BaseConfig
 from .development import DevelopmentConfig
 from .production import ProductionConfig
 from .test import TestSettings
 
-def get_settings():
-    """Get settings based on environment."""
-    environment = os.getenv("ENVIRONMENT", "development")
+@lru_cache()
+def get_settings() -> Union[BaseConfig, TestSettings]:
+    """Get configuration settings based on environment."""
+    import os
+    env = os.getenv("ENVIRONMENT", "development")
     
-    if environment == "production":
+    if env == "production":
         return ProductionConfig()
-    elif environment == "test":
+    elif env == "test":
         return TestSettings()
     
     return DevelopmentConfig()

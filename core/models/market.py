@@ -54,29 +54,34 @@ class Market(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(100))
-    type: Mapped[MarketType] = mapped_column(SQLAlchemyEnum(MarketType))
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    api_endpoint: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    api_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    status: Mapped[MarketStatus] = mapped_column(SQLAlchemyEnum(MarketStatus), default=MarketStatus.ACTIVE)
-    config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
-    rate_limit: Mapped[int] = mapped_column(Integer, default=100)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=expression.true())
-    error_count: Mapped[int] = mapped_column(Integer, default=0, server_default=expression.text('0'))
-    requests_today: Mapped[int] = mapped_column(Integer, default=0, server_default=expression.text('0'))
-    total_requests: Mapped[int] = mapped_column(Integer, default=0, server_default=expression.text('0'))
-    success_rate: Mapped[float] = mapped_column(Float, default=1.0, server_default=expression.text('1.0'))
-    avg_response_time: Mapped[float] = mapped_column(Float, default=0.0, server_default=expression.text('0.0'))
-    last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    last_error_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_successful_request: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_reset_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    type: Mapped[str] = mapped_column(String(20), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    api_endpoint: Mapped[Optional[str]] = mapped_column(String(255))
+    api_key: Mapped[Optional[str]] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default=MarketStatus.ACTIVE.value)
+    config: Mapped[Optional[Dict]] = mapped_column(JSONB)
+    rate_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    requests_today: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_requests: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    success_rate: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    avg_response_time: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+    last_error_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_successful_request: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_reset_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP")
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=text('CURRENT_TIMESTAMP'),
-        onupdate=text('CURRENT_TIMESTAMP')
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        onupdate=text("CURRENT_TIMESTAMP")
     )
 
     # Relationships
@@ -138,14 +143,14 @@ class Market(Base):
                 
                 error_threshold = getattr(settings, 'MARKET_ERROR_THRESHOLD', MARKET_ERROR_THRESHOLD)
                 if self.error_count >= error_threshold:
-                    self.status = MarketStatus.ERROR
+                    self.status = MarketStatus.ERROR.value
                     
             # Update success rate
             self.success_rate = (self.total_requests - self.error_count) / self.total_requests
             
             # Check if rate limited
             if self.requests_today >= self.rate_limit:
-                self.status = MarketStatus.RATE_LIMITED
+                self.status = MarketStatus.RATE_LIMITED.value
                 
             await db.commit()
             
@@ -174,15 +179,15 @@ class Market(Base):
     async def reset_error_state(self, db: AsyncSession) -> None:
         """Reset market error state."""
         try:
-            if self.status not in [MarketStatus.ERROR, MarketStatus.RATE_LIMITED]:
+            if self.status not in [MarketStatus.ERROR.value, MarketStatus.RATE_LIMITED.value]:
                 raise ValidationError("Market is not in error state")
                 
-            self.status = MarketStatus.ACTIVE
+            self.status = MarketStatus.ACTIVE.value
             self.error_count = 0
             self.last_error = None
             self.last_error_at = None
             
-            if self.status == MarketStatus.RATE_LIMITED:
+            if self.status == MarketStatus.RATE_LIMITED.value:
                 self.requests_today = 0
                 self.last_reset_at = datetime.utcnow()
                 
@@ -217,11 +222,11 @@ class Market(Base):
         try:
             query = select(cls).where(
                 cls.is_active == True,
-                cls.status == MarketStatus.ACTIVE
+                cls.status == MarketStatus.ACTIVE.value
             )
             
             if market_type:
-                query = query.where(cls.type == market_type)
+                query = query.where(cls.type == market_type.value)
                 
             if category:
                 query = query.where(cls.config['category'].astext == category.value)
@@ -414,7 +419,7 @@ class MarketStats(BaseModel):
 
     @classmethod
     def from_market(cls, market: Market) -> 'MarketStats':
-        """Create stats from market instance."""
+        """Create MarketStats from Market instance."""
         return cls(
             total_requests=market.total_requests,
             success_rate=market.success_rate,
@@ -445,7 +450,7 @@ class MarketRepository:
                 f"Created new market",
                 extra={
                     'market_id': str(market.id),
-                    'type': market.type.value
+                    'type': market.type
                 }
             )
             return market
@@ -540,7 +545,7 @@ class MarketRepository:
         """Get markets by type."""
         try:
             markets = await self.db.query(Market).filter(
-                Market.type == market_type,
+                Market.type == market_type.value,
                 Market.is_active == True
             ).all()
             
@@ -568,7 +573,7 @@ class MarketRepository:
         try:
             markets = await self.db.query(Market).filter(
                 Market.is_active == True,
-                Market.status == MarketStatus.ACTIVE
+                Market.status == MarketStatus.ACTIVE.value
             ).all()
             
             logger.info(
@@ -589,7 +594,7 @@ class MarketRepository:
         try:
             market = await self.get_by_id(market_id)
             market.is_active = False
-            market.status = MarketStatus.INACTIVE
+            market.status = MarketStatus.INACTIVE.value
             await self.db.commit()
             
             logger.info(
@@ -616,7 +621,7 @@ class MarketRepository:
         try:
             market = await self.get_by_id(market_id)
             market.is_active = True
-            market.status = MarketStatus.ACTIVE
+            market.status = MarketStatus.ACTIVE.value
             market.error_count = 0
             market.last_error = None
             market.last_error_at = None
@@ -712,41 +717,4 @@ class MarketRepository:
                 raise
             raise MarketError(f"Failed to get market health: {str(e)}")
 
-class MarketCategory(str, enum.Enum):
-    """Market category types."""
-    ELECTRONICS = "electronics"
-    FASHION = "fashion"
-    HOME = "home"
-    TOYS = "toys"
-    SPORTS = "sports"
-    BOOKS = "books"
-    AUTOMOTIVE = "automotive"
-    HEALTH = "health"
-    BEAUTY = "beauty"
-    GROCERY = "grocery"
-    PETS = "pets"
-    OFFICE = "office"
-    TOOLS = "tools"
-    GARDEN = "garden"
-    OTHER = "other"
-
-class MarketCondition(str, enum.Enum):
-    """Product condition types."""
-    NEW = "new"
-    LIKE_NEW = "like_new"
-    VERY_GOOD = "very_good"
-    GOOD = "good"
-    ACCEPTABLE = "acceptable"
-    REFURBISHED = "refurbished"
-    USED = "used"
-    FOR_PARTS = "for_parts"
-
-class MarketSource(str, enum.Enum):
-    """Market source types."""
-    AMAZON = "amazon"
-    WALMART = "walmart"
-    EBAY = "ebay"
-    TARGET = "target"
-    BESTBUY = "bestbuy"
-    NEWEGG = "newegg"
-    OTHER = "other" 
+# Remove duplicate enums since they are imported from enums.py 

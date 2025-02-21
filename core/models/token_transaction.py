@@ -18,7 +18,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text, DECIMAL, ForeignKey, JSON, Index, CheckConstraint, Integer, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.sql import func, expression
@@ -64,12 +64,12 @@ class TokenTransactionBase(BaseModel):
         pattern=r'^0x[a-fA-F0-9]{64}$'
     )
 
-    @field_validator('amount')
-    @classmethod
-    def validate_amount(cls, v: float) -> float:
-        if v <= 0:
+    @model_validator(mode='after')
+    def validate_transaction(self) -> 'TokenTransactionBase':
+        """Validate amount is positive."""
+        if self.amount <= 0:
             raise ValueError("Transaction amount must be positive")
-        return v
+        return self
 
 class TokenTransactionCreate(TokenTransactionBase):
     pass
@@ -137,7 +137,7 @@ class TokenTransaction(Base):
     user = relationship("User", back_populates="token_transactions")
 
     def __repr__(self) -> str:
-        return f"<TokenTransaction(id={self.id}, type={self.type}, amount={self.amount})>"
+        return "<TokenTransaction(id={}, type={}, amount={})>".format(self.id, self.type, self.amount)
 
     @classmethod
     async def create(cls, db, **kwargs) -> 'TokenTransaction':
@@ -150,7 +150,7 @@ class TokenTransaction(Base):
             return transaction
         except Exception as e:
             await db.rollback()
-            raise ValueError(f"Failed to create transaction: {str(e)}") from e
+            raise ValueError("Failed to create transaction: {}".format(str(e))) from e
 
     @classmethod
     async def get_by_user(cls, db, user_id: UUID) -> list['TokenTransaction']:

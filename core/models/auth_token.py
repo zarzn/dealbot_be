@@ -42,6 +42,7 @@ class AuthToken(Base):
         Index('ix_auth_tokens_user', 'user_id'),
         Index('ix_auth_tokens_token', 'token'),
         Index('ix_auth_tokens_status', 'status'),
+        {'extend_existing': True}
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)

@@ -10,13 +10,15 @@ from typing import Optional
 from uuid import UUID, uuid4
 import logging
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import Column, DECIMAL, DateTime, ForeignKey, Boolean, Index, CheckConstraint, Numeric, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 
 from core.models.base import Base
+from core.models.token_balance_history import TokenBalanceHistory, BalanceChangeType
+
 logger = logging.getLogger(__name__)
 
 # Custom exception classes
@@ -27,32 +29,26 @@ class TokenBalanceError(Exception):
         super().__init__(self.message)
 
 class InsufficientBalanceError(TokenBalanceError):
-    """Error raised when balance is insufficient."""
-    pass
+    """Raised when attempting to deduct more tokens than available."""
+    def __init__(self, required: Decimal, available: Decimal):
+        self.required = required
+        self.available = available
+        message = f"Insufficient balance for deduction. Required: {required}, Available: {available}"
+        super().__init__(message)
 
 class InvalidBalanceError(TokenBalanceError):
-    """Error raised when balance is invalid."""
+    """Raised when attempting an invalid balance operation."""
     pass
 
 class TokenBalanceBase(BaseModel):
-    """Base token balance model."""
+    """Base schema for token balance."""
     user_id: UUID
-    balance: Decimal = Field(default=Decimal("0"), ge=0)
+    balance: float = Field(ge=0)
 
-    @validator('balance')
+    @field_validator('balance')
     @classmethod
-    def validate_balance(cls, v: Decimal) -> Decimal:
-        """Validate balance is non-negative.
-        
-        Args:
-            v: Balance value to validate
-            
-        Returns:
-            Decimal: The validated balance value
-            
-        Raises:
-            InvalidBalanceError: If balance is negative
-        """
+    def validate_balance(cls, v: float) -> float:
+        """Validate balance is non-negative."""
         if v < 0:
             raise InvalidBalanceError("Balance cannot be negative")
         return v
@@ -61,10 +57,6 @@ class TokenBalanceCreate(TokenBalanceBase):
     """Schema for creating a token balance."""
     pass
 
-class TokenBalanceUpdate(BaseModel):
-    """Schema for updating a token balance."""
-    balance: Optional[Decimal] = Field(None, ge=0)
-
 class TokenBalanceResponse(TokenBalanceBase):
     """Schema for token balance response."""
     id: UUID
@@ -72,7 +64,6 @@ class TokenBalanceResponse(TokenBalanceBase):
     updated_at: datetime
 
     class Config:
-        """Pydantic model configuration."""
         from_attributes = True
 
 class TokenBalance(Base):
@@ -92,7 +83,7 @@ class TokenBalance(Base):
     # Relationships
     user: Mapped["User"] = relationship(
         "User",
-        back_populates="token_balance_obj",
+        back_populates="token_balance_record",
         lazy="selectin"
     )
     history: Mapped[list["TokenBalanceHistory"]] = relationship(
@@ -104,20 +95,22 @@ class TokenBalance(Base):
 
     def __repr__(self) -> str:
         """String representation of the token balance."""
-        return f"<TokenBalance(user_id={self.user_id}, balance={self.balance})>"
+        return "<TokenBalance(user_id={}, balance={})>".format(self.user_id, self.balance)
 
     async def update_balance(
         self,
         db: AsyncSession,
         amount: Decimal,
-        operation: str = 'deduction'
+        operation: str = 'deduction',
+        reason: str = None
     ) -> None:
-        """Update token balance with validation.
+        """Update token balance with validation and history tracking.
         
         Args:
             db: Database session for transaction management
             amount: Amount to update
             operation: Type of operation ('deduction', 'reward', or 'refund')
+            reason: Description of the balance change reason
             
         Raises:
             InvalidBalanceError: If operation type is invalid
@@ -125,48 +118,57 @@ class TokenBalance(Base):
             TokenBalanceError: If update fails
         """
         try:
-            if operation not in ['deduction', 'reward', 'refund']:
+            # Convert operation to lowercase and validate
+            operation = operation.lower()
+            if operation not in [op.value for op in BalanceChangeType]:
                 raise InvalidBalanceError("Invalid operation type")
 
-            if operation == 'deduction':
+            # Store current balance for history
+            balance_before = self.balance
+
+            # Update balance based on operation
+            if operation == BalanceChangeType.DEDUCTION.value:
                 if self.balance < amount:
-                    raise InsufficientBalanceError(
-                        f"Insufficient balance. Required: {amount}, Available: {self.balance}"
-                    )
+                    raise InsufficientBalanceError(required=amount, available=self.balance)
                 self.balance -= amount
             else:
                 self.balance += amount
 
+            # Create balance history record
+            history_record = TokenBalanceHistory(
+                user_id=self.user_id,
+                token_balance_id=self.id,
+                balance_before=balance_before,
+                balance_after=self.balance,
+                change_amount=amount,
+                change_type=operation,
+                reason=reason or f"Token {operation}"
+            )
+            db.add(history_record)
+
+            # Update timestamp
             self.updated_at = datetime.utcnow()
+
+            # Commit changes
             await db.commit()
+            await db.refresh(self)
+            await db.refresh(history_record)
 
             logger.info(
-                f"Updated token balance",
+                "Balance updated successfully",
                 extra={
                     'user_id': str(self.user_id),
                     'operation': operation,
                     'amount': str(amount),
-                    'new_balance': str(self.balance)
+                    'balance_before': str(balance_before),
+                    'balance_after': str(self.balance)
                 }
             )
-
-        except (InvalidBalanceError, InsufficientBalanceError) as e:
-            await db.rollback()
-            logger.error(
-                f"Failed to update token balance",
-                extra={
-                    'user_id': str(self.user_id),
-                    'operation': operation,
-                    'amount': str(amount),
-                    'error': str(e)
-                }
-            )
-            raise
 
         except Exception as e:
             await db.rollback()
             logger.error(
-                f"Failed to update token balance",
+                "Failed to update balance",
                 extra={
                     'user_id': str(self.user_id),
                     'operation': operation,
@@ -174,4 +176,6 @@ class TokenBalance(Base):
                     'error': str(e)
                 }
             )
-            raise TokenBalanceError(f"Failed to update balance: {str(e)}")
+            if isinstance(e, (InvalidBalanceError, InsufficientBalanceError)):
+                raise
+            raise TokenBalanceError(f"Failed to update balance: {str(e)}") from e

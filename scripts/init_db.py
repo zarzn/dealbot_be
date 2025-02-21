@@ -2,17 +2,8 @@
 """Script to initialize the database tables."""
 
 import asyncio
-import sys
-import os
+import asyncpg
 import logging
-
-# Add the parent directory to the Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy import text
-from core.config import settings
-from core.models import Base
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,31 +12,86 @@ logger = logging.getLogger(__name__)
 async def init_db():
     """Initialize the database."""
     try:
-        # Create async engine
-        engine = create_async_engine(str(settings.DATABASE_URL))
+        # First connect to default postgres database to handle database creation
+        sys_conn = await asyncpg.connect(
+            user='postgres',
+            password='12345678',
+            database='postgres',
+            host='localhost'
+        )
         
-        async with engine.begin() as conn:
-            # Drop all tables if they exist
-            await conn.run_sync(Base.metadata.drop_all)
+        # Check if deals database exists
+        exists = await sys_conn.fetchval(
+            "SELECT 1 FROM pg_database WHERE datname = 'deals'"
+        )
+        
+        if exists:
+            logger.info("Dropping existing deals database...")
+            # Terminate all connections to the deals database
+            await sys_conn.execute("""
+                SELECT pg_terminate_backend(pg_stat_activity.pid)
+                FROM pg_stat_activity
+                WHERE pg_stat_activity.datname = 'deals'
+                AND pid <> pg_backend_pid();
+            """)
+            # Drop the database
+            await sys_conn.execute("DROP DATABASE deals")
+            logger.info("Existing deals database dropped")
+        
+        logger.info("Creating deals database...")
+        await sys_conn.execute("CREATE DATABASE deals")
+        await sys_conn.close()
+        
+        # Now connect to deals database to initialize extensions and schemas
+        conn = await asyncpg.connect(
+            user='postgres',
+            password='12345678',
+            database='deals',
+            host='localhost'
+        )
+        
+        logger.info("Creating required extensions...")
+        # Create required PostgreSQL extensions
+        await conn.execute("""
+            CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+            CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+            CREATE EXTENSION IF NOT EXISTS "hstore";
+        """)
+        
+        # Create a test table to verify database access
+        logger.info("Creating test table...")
+        await conn.execute("""
+            CREATE TABLE test_table (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                name TEXT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
             
-            # Create all tables
-            await conn.run_sync(Base.metadata.create_all)
-            
-            # Verify tables were created
-            result = await conn.execute(text("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public'
-            """))
-            tables = [row[0] for row in result]
-            logger.info(f"Created tables: {', '.join(tables)}")
-
-        logger.info("Database initialization completed successfully")
+            -- Insert a test row
+            INSERT INTO test_table (name) VALUES ('test_entry');
+        """)
+        
+        # Verify the test table
+        result = await conn.fetchval("SELECT COUNT(*) FROM test_table")
+        logger.info(f"Test table created with {result} row(s)")
+        
+        # List all tables
+        tables = await conn.fetch("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'public'
+            AND table_type = 'BASE TABLE'
+        """)
+        logger.info("Current tables in database:")
+        for table in tables:
+            logger.info(f"- {table['table_name']}")
+        
+        logger.info("Database initialization completed successfully!")
+        await conn.close()
+        
     except Exception as e:
         logger.error(f"Error initializing database: {str(e)}")
         raise
-    finally:
-        await engine.dispose()
 
 if __name__ == "__main__":
     asyncio.run(init_db()) 

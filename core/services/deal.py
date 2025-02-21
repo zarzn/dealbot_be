@@ -23,7 +23,10 @@ from apscheduler.triggers.interval import IntervalTrigger
 import httpx
 from uuid import UUID
 from decimal import Decimal
+from sqlalchemy.orm import joinedload
 
+from core.models.user import User
+from core.models.tracked_deal import TrackedDeal
 from core.models.deal import (
     Deal,
     DealCreate,
@@ -33,9 +36,11 @@ from core.models.deal import (
     DealSource,
     DealSearchFilters,
     DealResponse,
-    DealFilter
+    DealFilter,
+    DealSearch,
+    PriceHistory,
+    AIAnalysis
 )
-from core.models.goal import Goal
 from core.repositories.deal import DealRepository
 from core.utils.redis import get_redis_client
 from core.exceptions import (
@@ -71,6 +76,8 @@ from core.utils.ecommerce import (
 from core.services.token import TokenService
 from core.services.crawler import WebCrawler
 from core.utils.llm import get_llm_instance
+from core.services.base import BaseService
+from core.services.ai import AIService
 
 logger = logging.getLogger(__name__)
 
@@ -86,21 +93,22 @@ MAX_BATCH_SIZE = 100
 MIN_RETRY_DELAY = 4  # seconds
 MAX_RETRY_DELAY = 10  # seconds
 
-class DealService:
-    def __init__(self, db: Session):
-        self.db = db
-        self.repository = DealRepository(db)
+class DealService(BaseService):
+    def __init__(self, session: AsyncSession):
+        super().__init__(session)
+        self.repository = DealRepository(session)
         self.redis = get_redis_client()
         self.llm_chain = self._initialize_llm_chain()
         self.scheduler = AsyncIOScheduler()
         self.amazon_api = AmazonAPI()
         self.walmart_api = WalmartAPI()
-        self.token_service = TokenService(db)
+        self.token_service = TokenService(session)
         self.crawler = WebCrawler()
         self._initialize_scheduler()
         self._setup_rate_limiting()
         self._setup_error_handlers()
         self._background_tasks = None
+        self.ai_service = AIService()
 
     def set_background_tasks(self, background_tasks: Optional[BackgroundTasks]) -> None:
         """Set the background tasks instance.
@@ -594,221 +602,196 @@ class DealService:
 
     async def search_deals(
         self,
-        query: str,
-        limit: int = 10,
-        filters: Optional[DealSearchFilters] = None
-    ) -> List[Deal]:
+        search: DealSearch,
+        user_id: Optional[UUID] = None
+    ) -> List[DealResponse]:
         """
-        Search for deals with caching and rate limiting.
-        
-        Args:
-            query: Search query string
-            limit: Maximum number of results
-            filters: Optional search filters
-            
-        Returns:
-            List of matching deals
+        Search for deals based on criteria
         """
-        try:
-            # Generate cache key based on query and filters
-            cache_key = f"deal_search:{query}:{limit}"
-            if filters:
-                cache_key += f":{filters.json()}"
-                
-            # Try to get cached results first
-            cached_results = await self._get_cached_search(cache_key)
-            if cached_results:
-                logger.info(f"Cache hit for search query: {query}")
-                return cached_results
-                
-            # Apply rate limiting
-            await self._check_rate_limit("search")
-            
-            # Perform search with filters
-            results = await self._search_with_rate_limit(query, limit, filters)
-            
-            # Cache the results
-            await self._cache_search(cache_key, results)
-            
-            return results
-            
-        except RateLimitExceededError as e:
-            logger.error(f"Rate limit exceeded for search: {str(e)}")
-            raise
-        except Exception as e:
-            logger.error(f"Error in search_deals: {str(e)}")
-            raise DealError(f"Failed to search deals: {str(e)}")
-
-    async def _check_rate_limit(self, operation: str) -> None:
-        """Check rate limiting for specific operations."""
-        key = f"rate_limit:{operation}"
-        current = await self.redis.incr(key)
-        
-        if current == 1:
-            await self.redis.expire(key, 60)  # Reset after 1 minute
-            
-        if current > settings.RATE_LIMIT_PER_MINUTE:
-            raise RateLimitExceededError(
-                f"Rate limit exceeded for {operation}. Try again later."
-            )
-            
-    async def _search_with_rate_limit(
-        self,
-        query: str,
-        limit: int,
-        filters: Optional[DealSearchFilters] = None
-    ) -> List[Deal]:
-        """Perform rate-limited search operation."""
-        try:
-            # Build base query
-            base_query = self.repository.build_search_query(query)
-            
-            # Apply filters if provided
-            if filters:
-                base_query = self._apply_search_filters(base_query, filters)
-                
-            # Execute query with limit
-            results = await self.repository.execute_query(base_query, limit)
-            
-            # Enrich results with additional data
-            enriched_results = await self._enrich_search_results(results)
-            
-            return enriched_results
-            
-        except Exception as e:
-            logger.error(f"Error in _search_with_rate_limit: {str(e)}")
-            raise
-            
-    def _apply_search_filters(self, query: Any, filters: DealSearchFilters) -> Any:
-        """Apply search filters to the base query."""
-        if filters.min_price is not None:
-            query = query.filter(Deal.price >= filters.min_price)
-        if filters.max_price is not None:
-            query = query.filter(Deal.price <= filters.max_price)
-        if filters.categories:
-            query = query.filter(Deal.category.in_(filters.categories))
-        if filters.brands:
-            query = query.filter(Deal.brand.in_(filters.brands))
-        if filters.condition:
-            query = query.filter(Deal.condition.in_(filters.condition))
-        if filters.sort_by:
-            query = self._apply_sorting(query, filters.sort_by)
-        return query
-        
-    def _apply_sorting(self, query: Any, sort_by: str) -> Any:
-        """Apply sorting to the query based on sort parameter."""
-        sort_map = {
-            "price_asc": Deal.price.asc(),
-            "price_desc": Deal.price.desc(),
-            "rating": Deal.rating.desc(),
-            "expiry": Deal.expires_at.asc(),
-            "relevance": Deal.score.desc()
-        }
-        return query.order_by(sort_map[sort_by])
-        
-    async def _enrich_search_results(self, results: List[Deal]) -> List[Deal]:
-        """Enrich search results with additional data."""
-        enriched_results = []
-        for deal in results:
-            # Add price history
-            deal.price_history = await self._get_price_history(deal.id)
-            # Add market analysis
-            deal.market_analysis = await self._get_market_analysis(deal)
-            enriched_results.append(deal)
-        return enriched_results
-        
-    async def _get_price_history(self, deal_id: UUID) -> List[Dict]:
-        """Get price history for a deal with caching."""
-        cache_key = f"price_history:{deal_id}"
-        cached_history = await self.redis.get(cache_key)
-        
-        if cached_history:
-            return json.loads(cached_history)
-            
-        history = await self.repository.get_price_history(deal_id)
-        await self.redis.setex(
-            cache_key,
-            CACHE_TTL_PRICE_HISTORY,
-            json.dumps(history)
+        query = select(Deal).options(
+            joinedload(Deal.price_points),
+            joinedload(Deal.tracked_by_users)
         )
-        return history
+
+        if search.query:
+            query = query.filter(Deal.title.ilike(f"%{search.query}%"))
         
-    async def _get_market_analysis(self, deal: Deal) -> Dict:
-        """Get market analysis for a deal."""
-        return {
-            "average_market_price": await self._get_average_market_price(deal),
-            "price_trend": self._calculate_price_trend(deal.price_history),
-            "deal_score": await self._calculate_deal_score(deal)
-        }
+        if search.category:
+            query = query.filter(Deal.category == search.category)
+        
+        if search.min_price is not None:
+            query = query.filter(Deal.price >= search.min_price)
+        
+        if search.max_price is not None:
+            query = query.filter(Deal.price <= search.max_price)
 
-    def _cache_search(self, query: str, results: List[Deal]) -> None:
-        """Cache search results with extended information"""
-        try:
-            cache_data = {
-                'results': [r.json() for r in results],
-                'scores': [r.score for r in results],
-                'timestamp': datetime.now().isoformat()
-            }
-            self.redis.set(f"search:{query}", cache_data, ex=600)  # Cache for 10 minutes
-        except Exception as e:
-            logger.error(f"Failed to cache search results: {str(e)}")
+        # Add sorting
+        if search.sort_by == "price":
+            query = query.order_by(
+                Deal.price.desc() if search.sort_order == "desc" else Deal.price.asc()
+            )
+        elif search.sort_by == "date":
+            query = query.order_by(
+                Deal.found_at.desc() if search.sort_order == "desc" else Deal.found_at.asc()
+            )
 
-    def _get_cached_search(self, query: str) -> Optional[List[Deal]]:
-        """Get cached search results with extended information"""
-        try:
-            cached_data = self.redis.get(f"search:{query}")
-            if cached_data:
-                data = json.loads(cached_data)
-                return [Deal.parse_raw(r) for r in data['results']]
-            return None
-        except Exception as e:
-            logger.error(f"Failed to get cached search results: {str(e)}")
-            return None
+        # Add pagination
+        query = query.offset(search.offset).limit(search.limit)
 
-    async def get_deals(
+        deals = await self.session.execute(query)
+        deals = deals.scalars().unique().all()
+
+        # Convert to response models
+        return [
+            await self._to_response(deal, user_id)
+            for deal in deals
+        ]
+
+    async def get_deal(
         self,
-        user_id: UUID,
-        filters: DealFilter
-    ) -> List[Deal]:
-        """Get deals matching the specified criteria.
-        
-        Args:
-            user_id: ID of the user requesting deals
-            filters: Deal filter criteria
-            
-        Returns:
-            List[Deal]: List of matching deals
+        deal_id: UUID,
+        user_id: Optional[UUID] = None
+    ) -> Optional[DealResponse]:
         """
-        try:
-            # Get deals from repository
-            deals = await self.repository.get_deals(user_id, filters)
-            
-            # Return deals immediately - background processing will be handled by the router
-            return deals
-            
-        except Exception as e:
-            logger.error(f"Failed to get deals: {str(e)}")
-            raise DealError(f"Failed to get deals: {str(e)}")
-            
-    async def process_deal_background(self, deal_id: UUID) -> None:
-        """Process a deal in the background.
-        
-        Args:
-            deal_id: ID of the deal to process
+        Get a specific deal by ID
         """
-        try:
-            deal = await self.repository.get_by_id(deal_id)
-            if not deal:
-                logger.error(f"Deal {deal_id} not found for background processing")
-                return
-                
-            # Calculate score and update deal
-            score = await self._calculate_deal_score(deal)
-            await self.repository.update(deal_id, {"score": score})
-            
-        except Exception as e:
-            logger.error(f"Failed to process deal {deal_id} in background: {str(e)}")
-            # Don't raise the error since this is a background task
+        query = select(Deal).options(
+            joinedload(Deal.price_points),
+            joinedload(Deal.tracked_by_users)
+        ).filter(Deal.id == deal_id)
+
+        deal = await self.session.execute(query)
+        deal = deal.scalar_one_or_none()
+
+        if not deal:
+            return None
+
+        return await self._to_response(deal, user_id)
+
+    async def get_deal_analysis(self, deal_id: UUID) -> Optional[AIAnalysis]:
+        """
+        Get AI analysis for a deal
+        """
+        deal = await self.get_deal(deal_id)
+        if not deal:
+            return None
+
+        return await self.ai_service.analyze_deal(deal)
+
+    async def get_price_history(
+        self,
+        deal_id: UUID,
+        days: int = 30
+    ) -> List[PriceHistory]:
+        """
+        Get price history for a deal
+        """
+        query = select(Deal).options(
+            joinedload(Deal.price_points)
+        ).filter(Deal.id == deal_id)
+
+        deal = await self.session.execute(query)
+        deal = deal.scalar_one_or_none()
+
+        if not deal:
+            return []
+
+        # Convert price points to PriceHistory
+        return [
+            PriceHistory(
+                price=point.price,
+                currency=point.currency,
+                timestamp=point.timestamp,
+                source=point.source,
+                meta_data=point.meta_data
+            )
+            for point in deal.price_points
+        ]
+
+    async def track_deal(self, deal_id: UUID, user_id: UUID) -> None:
+        """
+        Track a deal for a user
+        """
+        tracked_deal = TrackedDeal(
+            deal_id=deal_id,
+            user_id=user_id
+        )
+        self.session.add(tracked_deal)
+        await self.session.commit()
+
+    async def untrack_deal(self, deal_id: UUID, user_id: UUID) -> None:
+        """
+        Untrack a deal for a user
+        """
+        query = select(TrackedDeal).filter(
+            TrackedDeal.deal_id == deal_id,
+            TrackedDeal.user_id == user_id
+        )
+        tracked_deal = await self.session.execute(query)
+        tracked_deal = tracked_deal.scalar_one_or_none()
+
+        if tracked_deal:
+            await self.session.delete(tracked_deal)
+            await self.session.commit()
+
+    async def _to_response(
+        self,
+        deal: Deal,
+        user_id: Optional[UUID] = None
+    ) -> DealResponse:
+        """
+        Convert a Deal model to a DealResponse
+        """
+        # Get price history
+        price_history = [
+            PriceHistory(
+                price=point.price,
+                currency=point.currency,
+                timestamp=point.timestamp,
+                source=point.source,
+                meta_data=point.meta_data
+            )
+            for point in deal.price_points
+        ]
+
+        # Check if deal is tracked by user
+        is_tracked = False
+        if user_id:
+            is_tracked = any(
+                tracked.user_id == user_id
+                for tracked in deal.tracked_by_users
+            )
+
+        # Get price extremes
+        prices = [point.price for point in deal.price_points]
+        lowest_price = min(prices) if prices else None
+        highest_price = max(prices) if prices else None
+
+        # Get AI analysis
+        ai_analysis = await self.ai_service.analyze_deal(deal)
+
+        return DealResponse(
+            id=deal.id,
+            title=deal.title,
+            description=deal.description,
+            url=deal.url,
+            price=deal.price,
+            original_price=deal.original_price,
+            currency=deal.currency,
+            source=deal.source,
+            image_url=deal.image_url,
+            category=deal.category,
+            seller_info=deal.seller_info,
+            shipping_info=deal.shipping_info,
+            is_tracked=is_tracked,
+            lowest_price=lowest_price,
+            highest_price=highest_price,
+            price_history=price_history,
+            ai_analysis=ai_analysis,
+            found_at=deal.found_at,
+            expires_at=deal.expires_at,
+            status=deal.status
+        )
 
     class Config:
         """Pydantic config."""

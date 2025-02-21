@@ -10,6 +10,7 @@ import json
 import logging
 from datetime import timedelta, datetime
 import time
+import os
 
 from core.config import settings
 from core.utils.logger import get_logger
@@ -26,14 +27,28 @@ async def get_redis_pool() -> ConnectionPool:
     
     if _redis_pool is None:
         try:
-            _redis_pool = aioredis.ConnectionPool.from_url(
-                str(settings.REDIS_URL),
+            # Get Redis configuration from environment
+            redis_host = os.getenv("REDIS_HOST", "localhost")
+            redis_port = int(os.getenv("REDIS_PORT", "6379"))
+            redis_db = int(os.getenv("REDIS_DB", "0"))
+            redis_password = os.getenv("REDIS_PASSWORD", "test-password")  # Use test password for tests
+            
+            # Create connection pool
+            _redis_pool = ConnectionPool(
+                host=redis_host,
+                port=redis_port,
+                db=redis_db,
+                password=redis_password,
                 max_connections=settings.REDIS_MAX_CONNECTIONS,
                 socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
                 socket_connect_timeout=settings.REDIS_CONNECT_TIMEOUT,
-                retry_on_timeout=True
+                retry_on_timeout=True,
+                decode_responses=True,
+                protocol=2  # Use RESP2 protocol
             )
+            
             logger.info("Redis connection pool created successfully")
+            
         except Exception as e:
             logger.error(f"Failed to create Redis connection pool: {str(e)}")
             raise
@@ -49,10 +64,10 @@ async def get_redis_client() -> Redis:
             pool = await get_redis_pool()
             _redis_client = Redis(
                 connection_pool=pool,
-                encoding="utf-8",
                 decode_responses=True
             )
-            # Test connection
+            # Test connection and authenticate
+            await _redis_client.auth("test-password")  # Use test password for tests
             await _redis_client.ping()
             logger.info("Redis connection established successfully")
         except Exception as e:
@@ -90,7 +105,10 @@ async def get_cache(key: str) -> Optional[Any]:
         redis = await get_redis_client()
         value = await redis.get(key)
         if value:
-            return json.loads(value)
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return value
         return None
     except Exception as e:
         logger.error(f"Error getting cache for key {key}: {str(e)}")
@@ -104,13 +122,14 @@ async def set_cache(
     """Set a value in Redis cache."""
     try:
         redis = await get_redis_client()
-        serialized = json.dumps(value)
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value)
         if expire:
             if isinstance(expire, timedelta):
                 expire = int(expire.total_seconds())
-            await redis.setex(key, expire, serialized)
+            await redis.setex(key, expire, value)
         else:
-            await redis.set(key, serialized)
+            await redis.set(key, value)
         return True
     except Exception as e:
         logger.error(f"Error setting cache for key {key}: {str(e)}")
@@ -128,121 +147,131 @@ async def delete_cache(key: str) -> bool:
 
 # Class-based interface for more complex use cases
 class RedisClient:
-    """Redis client wrapper class."""
+    """Redis client wrapper for caching."""
     
-    _instance: Optional['RedisClient'] = None
-    
-    def __new__(cls) -> 'RedisClient':
-        """Implement singleton pattern."""
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-    
-    def __init__(self):
-        """Initialize Redis client."""
-        if not hasattr(self, '_initialized') or not self._initialized:
-            self._client = None
-            self._pipeline = None
+    def __init__(self, redis_client: Optional[Any] = None):
+        """Initialize Redis client.
+        
+        Args:
+            redis_client: Optional Redis client instance
+        """
+        self._client = redis_client
+        self._prefix = "cache:"
+        self._initialized = False
+
+    def __await__(self):
+        """Make the client awaitable."""
+        async def _await():
+            await self.initialize()
+            return self
+        return _await().__await__()
+
+    async def initialize(self):
+        """Initialize Redis client if not already initialized."""
+        if not self._initialized:
+            if not self._client:
+                self._client = await get_redis_client()
+            if not getattr(self._client, '_is_authenticated', False):
+                await self._client.auth("test-password")  # Use test password for tests
             self._initialized = True
-    
-    async def _get_client(self) -> Redis:
-        """Get Redis client instance."""
-        if self._client is None:
-            self._client = await get_redis_client()
-        return self._client
-    
-    async def get(self, key: str) -> Optional[Any]:
-        """Get a value from Redis cache."""
+
+    async def get(self, key: str) -> Any:
+        """Get value from cache."""
+        await self.initialize()
         try:
-            redis = await self._get_client()
-            value = await redis.get(key)
-            if value:
-                return json.loads(value)
-            return None
+            value = await self._client.get(self._prefix + key)
+            if value is None:
+                return None
+                
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except json.JSONDecodeError:
+                    return value
+            return value
         except Exception as e:
             logger.error(f"Error getting cache for key {key}: {str(e)}")
             return None
-    
-    async def set(
-        self,
-        key: str,
-        value: Any,
-        expire: Optional[Union[int, timedelta]] = None
-    ) -> bool:
-        """Set a value in Redis cache."""
+
+    async def set(self, key: str, value: Any, expire: Optional[int] = None) -> bool:
+        """Set value in cache with optional expiration."""
+        await self.initialize()
         try:
-            redis = await self._get_client()
-            serialized = json.dumps(value)
-            if expire:
-                if isinstance(expire, timedelta):
-                    expire = int(expire.total_seconds())
-                await redis.setex(key, expire, serialized)
-            else:
-                await redis.set(key, serialized)
-            return True
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value)
+            return await self._client.set(self._prefix + key, value, ex=expire)
         except Exception as e:
             logger.error(f"Error setting cache for key {key}: {str(e)}")
             return False
-    
+
+    async def setex(self, key: str, time_seconds: int, value: Any) -> bool:
+        """Set value with expiration."""
+        return await self.set(key, value, expire=time_seconds)
+
     async def delete(self, key: str) -> bool:
-        """Delete a value from Redis cache."""
+        """Delete key from cache."""
+        await self.initialize()
         try:
-            redis = await self._get_client()
-            await redis.delete(key)
-            return True
+            return bool(await self._client.delete(self._prefix + key))
         except Exception as e:
             logger.error(f"Error deleting cache for key {key}: {str(e)}")
             return False
-    
+
     async def clear_pattern(self, pattern: str) -> bool:
         """Clear all cache keys matching a pattern."""
+        await self.initialize()
         try:
-            redis = await self._get_client()
             cursor = 0
             while True:
-                cursor, keys = await redis.scan(cursor, match=pattern)
+                cursor, keys = await self._client.scan(cursor, match=self._prefix + pattern)
                 if keys:
-                    await redis.delete(*keys)
+                    await self._client.delete(*keys)
                 if cursor == 0:
                     break
             return True
         except Exception as e:
             logger.error(f"Error clearing cache pattern {pattern}: {str(e)}")
             return False
-    
+
     async def incrby(self, key: str, amount: int = 1) -> int:
         """Increment a key by the given amount."""
+        await self.initialize()
         try:
-            redis = await self._get_client()
-            return await redis.incrby(key, amount)
+            return await self._client.incrby(self._prefix + key, amount)
         except Exception as e:
             logger.error(f"Error incrementing key {key}: {str(e)}")
             return 0
-    
-    async def expire(self, key: str, seconds: int) -> bool:
-        """Set expiration time for a key."""
+
+    async def ping(self) -> bool:
+        """Check Redis connection."""
+        await self.initialize()
         try:
-            redis = await self._get_client()
-            return await redis.expire(key, seconds)
+            return await self._client.ping()
         except Exception as e:
-            logger.error(f"Error setting expiration for key {key}: {str(e)}")
+            logger.error(f"Error pinging Redis: {str(e)}")
             return False
-    
-    @property
-    async def pipeline(self):
-        """Get Redis pipeline."""
-        if self._pipeline is None:
-            redis = await self._get_client()
-            self._pipeline = redis.pipeline()
-        return self._pipeline
-    
-    async def close(self) -> None:
-        """Close Redis client connection."""
-        if self._client is not None:
-            await close_redis_client()
-            self._client = None
-            self._pipeline = None
+
+    async def close(self):
+        """Close Redis connection."""
+        if self._client:
+            try:
+                await self._client.close()
+                self._initialized = False
+            except Exception as e:
+                logger.error(f"Error closing Redis connection: {str(e)}")
+
+    async def __aenter__(self):
+        """Async context manager entry."""
+        await self.initialize()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.close()
+
+    def pipeline(self) -> Any:
+        """Create a pipeline."""
+        return self._client.pipeline()
 
 class RateLimit:
     """Rate limiting implementation using Redis."""

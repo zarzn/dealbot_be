@@ -9,9 +9,15 @@ from pydantic import BaseModel
 from fastapi import BackgroundTasks
 from datetime import datetime
 import json
+from sqlalchemy.orm import joinedload
 
-from core.models.goal import GoalCreate, GoalResponse, GoalUpdate
-from core.models.database import Goal as GoalModel
+from core.models.goal import (
+    GoalCreate, 
+    GoalResponse, 
+    GoalUpdate,
+    GoalAnalytics,
+    Goal as GoalModel
+)
 from core.models.goal_types import GoalStatus
 from core.exceptions import (
     GoalError,
@@ -29,7 +35,10 @@ from core.exceptions import (
 from core.services.token import TokenService
 from core.config import settings
 from core.utils.redis import get_redis_client
-from core.tasks.goal_tasks import update_goal_status_task
+from core.tasks.goal_status import update_goal_status_task
+from core.models.user import User
+from core.services.base import BaseService
+from core.services.ai import AIService
 
 logger = logging.getLogger(__name__)
 
@@ -37,16 +46,12 @@ class GoalCacheKey(BaseModel):
     user_id: UUID
     goal_id: UUID
 
-class GoalService:
+class GoalService(BaseService):
     """Service layer for goal management operations"""
     
-    def __init__(
-        self, 
-        db: AsyncSession, 
-        token_service: TokenService
-    ):
-        self.db = db
-        self.token_service = token_service
+    def __init__(self, session: AsyncSession):
+        super().__init__(session)
+        self.ai_service = AIService()
         self.redis_client = None
         
     async def init_redis(self) -> None:
@@ -108,9 +113,9 @@ class GoalService:
             )
             
             # Add to database
-            self.db.add(goal_model)
-            await self.db.commit()
-            await self.db.refresh(goal_model)
+            self.session.add(goal_model)
+            await self.session.commit()
+            await self.session.refresh(goal_model)
             
             # Schedule background tasks using Celery
             update_goal_status_task.delay(goal_model.id, user_id)
@@ -144,12 +149,11 @@ class GoalService:
                 return cached_goals
                 
             # Fallback to database
-            result = await self.db.execute(
-                select(GoalModel)
-                .where(GoalModel.user_id == user_id)
-                .order_by(GoalModel.created_at.desc())
-            )
-            goals = result.scalars().all()
+            query = select(GoalModel).options(
+                joinedload(GoalModel.matched_deals)
+            ).filter(GoalModel.user_id == user_id)
+            result = await self.session.execute(query)
+            goals = result.scalars().unique().all()
             
             # Cache the results
             await self._cache_goals(user_id, goals)
@@ -158,7 +162,7 @@ class GoalService:
                 f"Retrieved {len(goals)} goals from database for user {user_id}",
                 extra={"user_id": user_id}
             )
-            return [GoalResponse.from_orm(goal) for goal in goals]
+            return [await self._to_response(goal) for goal in goals]
         except Exception as e:
             logger.error(
                 f"Failed to get goals for user {user_id}: {str(e)}",
@@ -180,11 +184,13 @@ class GoalService:
                 return cached_goal
                 
             # Fallback to database
-            result = await self.db.execute(
-                select(GoalModel)
-                .where(GoalModel.id == goal_id)
-                .where(GoalModel.user_id == user_id)
+            query = select(GoalModel).options(
+                joinedload(GoalModel.matched_deals)
+            ).filter(
+                GoalModel.id == goal_id,
+                GoalModel.user_id == user_id
             )
+            result = await self.session.execute(query)
             goal = result.scalar_one_or_none()
             if not goal:
                 raise GoalNotFoundError(f"Goal {goal_id} not found")
@@ -196,7 +202,7 @@ class GoalService:
                 f"Retrieved goal {goal_id} from database for user {user_id}",
                 extra={"goal_id": goal_id, "user_id": user_id}
             )
-            return GoalResponse.from_orm(goal)
+            return await self._to_response(goal)
         except Exception as e:
             logger.error(
                 f"Failed to get goal {goal_id} for user {user_id}: {str(e)}",
@@ -222,12 +228,12 @@ class GoalService:
             goal = await self.get_goal(user_id, goal_id)
             
             # Update status
-            await self.db.execute(
+            await self.session.execute(
                 update(GoalModel)
                 .where(GoalModel.id == goal_id)
                 .values(status=status, updated_at=datetime.utcnow())
             )
-            await self.db.commit()
+            await self.session.commit()
             
             # Invalidate cache
             await self._invalidate_goal_cache(user_id, goal_id)
@@ -239,9 +245,9 @@ class GoalService:
                 f"Updated goal {goal_id} status to {status}",
                 extra={"goal_id": goal_id, "status": status}
             )
-            return GoalResponse.from_orm(goal)
+            return goal
         except Exception as e:
-            await self.db.rollback()
+            await self.session.rollback()
             logger.error(
                 f"Failed to update goal {goal_id} status: {str(e)}",
                 exc_info=True,
@@ -256,11 +262,11 @@ class GoalService:
             await self.get_goal(user_id, goal_id)
             
             # Delete goal
-            await self.db.execute(
+            await self.session.execute(
                 delete(GoalModel)
                 .where(GoalModel.id == goal_id)
             )
-            await self.db.commit()
+            await self.session.commit()
             
             # Invalidate cache
             await self._invalidate_goal_cache(user_id, goal_id)
@@ -270,7 +276,7 @@ class GoalService:
                 extra={"goal_id": goal_id, "user_id": user_id}
             )
         except Exception as e:
-            await self.db.rollback()
+            await self.session.rollback()
             logger.error(
                 f"Failed to delete goal {goal_id}: {str(e)}",
                 exc_info=True,
@@ -366,3 +372,61 @@ class GoalService:
                 extra={"goal_id": goal_id}
             )
             raise APIServiceUnavailableError("Failed to invalidate cache") from e
+
+    async def get_goal_analytics(
+        self,
+        goal_id: UUID,
+        user_id: UUID
+    ) -> Optional[GoalAnalytics]:
+        """
+        Get analytics for a goal
+        """
+        goal = await self.get_goal(goal_id, user_id)
+        if not goal:
+            return None
+
+        # Get matched deals
+        matched_deals = [
+            MatchedDeal(
+                deal_id=match.deal_id,
+                title=match.deal.title,
+                price=match.deal.price,
+                match_score=match.score,
+                matched_at=match.matched_at
+            )
+            for match in goal.matched_deals
+        ]
+
+        # Calculate analytics
+        active_matches = sum(1 for match in matched_deals if match.match_score >= goal.notification_threshold)
+        scores = [match.match_score for match in matched_deals]
+        best_score = max(scores) if scores else None
+        avg_score = sum(scores) / len(scores) if scores else None
+
+        return GoalAnalytics(
+            total_matches=len(matched_deals),
+            active_matches=active_matches,
+            best_match_score=best_score,
+            average_match_score=avg_score,
+            total_notifications=len([m for m in matched_deals if m.match_score >= goal.notification_threshold]),
+            last_checked=goal.last_checked_at,
+            recent_matches=sorted(matched_deals, key=lambda x: x.matched_at, reverse=True)[:5]
+        )
+
+    async def _to_response(self, goal: GoalModel) -> GoalResponse:
+        """
+        Convert a Goal model to a GoalResponse
+        """
+        analytics = await self.get_goal_analytics(goal.id, goal.user_id)
+
+        return GoalResponse(
+            id=goal.id,
+            user_id=goal.user_id,
+            title=goal.title,
+            constraints=goal.constraints,
+            status=goal.status,
+            created_at=goal.created_at,
+            updated_at=goal.updated_at,
+            last_checked_at=goal.last_checked_at,
+            analytics=analytics
+        )

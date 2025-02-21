@@ -18,8 +18,9 @@ UpdateSchemaType = TypeVar('UpdateSchemaType', bound=BaseModel)
 class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
     """Base service class providing common CRUD operations."""
     
-    def __init__(self, repository: BaseRepository[ModelType]):
+    def __init__(self, repository: BaseRepository[ModelType], session: AsyncSession):
         self.repository = repository
+        self.session = session
 
     async def create(self, db: AsyncSession, obj_in: CreateSchemaType) -> ModelType:
         """Create a new record."""

@@ -25,6 +25,26 @@ from core.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 
+class DealMatch(Base):
+    """Model for matching deals to goals."""
+    __tablename__ = "deal_matches"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    goal_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("goals.id", ondelete="CASCADE"))
+    deal_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"))
+    match_score: Mapped[float] = mapped_column(Float, nullable=False)
+    match_criteria: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=expression.text("CURRENT_TIMESTAMP"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=expression.text("CURRENT_TIMESTAMP"))
+
+    # Relationships
+    goal = relationship("Goal", back_populates="matched_deals")
+    deal = relationship("Deal", back_populates="goal_matches")
+
+    def __repr__(self) -> str:
+        """String representation."""
+        return f"<DealMatch goal_id={self.goal_id} deal_id={self.deal_id} score={self.match_score}>"
+
 class DealScore(Base):
     """Deal score database model."""
     __tablename__ = "deal_scores"
@@ -91,7 +111,7 @@ class DealScore(Base):
             await db.refresh(score_obj)
 
             logger.info(
-                f"Created new deal score",
+                "Created new deal score",
                 extra={
                     'deal_id': str(deal_id),
                     'score': score,
@@ -103,7 +123,7 @@ class DealScore(Base):
         except Exception as e:
             await db.rollback()
             logger.error(
-                f"Failed to create deal score",
+                "Failed to create deal score",
                 extra={
                     'deal_id': str(deal_id),
                     'score': score,
@@ -112,7 +132,7 @@ class DealScore(Base):
             )
             if isinstance(e, ValidationError):
                 raise
-            raise ValidationError(f"Failed to create deal score: {str(e)}")
+            raise ValidationError(str(e))
 
     async def update_metrics(
         self,
@@ -128,7 +148,7 @@ class DealScore(Base):
             await db.refresh(self)
 
             logger.info(
-                f"Updated deal score metrics",
+                "Updated deal score metrics",
                 extra={
                     'id': str(self.id),
                     'deal_id': str(self.deal_id),
@@ -139,14 +159,14 @@ class DealScore(Base):
         except Exception as e:
             await db.rollback()
             logger.error(
-                f"Failed to update deal score metrics",
+                "Failed to update deal score metrics",
                 extra={
                     'id': str(self.id),
                     'deal_id': str(self.deal_id),
                     'error': str(e)
                 }
             )
-            raise ValidationError(f"Failed to update deal score metrics: {str(e)}")
+            raise ValidationError(str(e))
 
 # Pydantic models for API
 class DealScoreCreate(BaseModel):

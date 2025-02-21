@@ -13,19 +13,22 @@ from core.models.deal import (
     DealFilter,
     DealRecommendation,
     DealHistory,
-    DealPriceHistory
+    DealPriceHistory,
+    DealSearch,
+    AIAnalysis,
+    PriceHistory
 )
+from core.models.user import User, UserInDB
 from core.services.deal import DealService
 from core.services.analytics import AnalyticsService
 from core.services.recommendation import RecommendationService
-from core.services.auth import get_current_user
-from core.models.user import UserInDB
 from core.services.token import TokenService
 from core.api.v1.dependencies import (
-    get_token_service,
     get_deal_service,
     get_analytics_service,
-    get_recommendation_service
+    get_recommendation_service,
+    get_token_service,
+    get_current_user
 )
 
 router = APIRouter(tags=["deals"])
@@ -306,4 +309,29 @@ async def get_bookmarked_deals(
         )
         return bookmarks
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) 
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/search", response_model=List[DealResponse])
+async def search_deals(
+    search: DealSearch,
+    background_tasks: BackgroundTasks,
+    deal_service: DealService = Depends(get_deal_service),
+    token_service: TokenService = Depends(get_token_service),
+    current_user: Optional[UserInDB] = Depends(get_current_user),
+) -> List[DealResponse]:
+    """
+    Search for deals based on criteria
+    """
+    # Validate token usage if user is authenticated
+    if current_user:
+        await validate_tokens(token_service, current_user.id, "deal_search")
+        
+    # Set up background processing
+    deal_service.set_background_tasks(background_tasks)
+    
+    # Perform search
+    deals = await deal_service.search_deals(
+        search,
+        user_id=current_user.id if current_user else None
+    )
+    return deals 

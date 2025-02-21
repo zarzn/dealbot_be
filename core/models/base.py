@@ -10,7 +10,7 @@ from uuid import UUID
 import json
 import logging
 
-from sqlalchemy import Column, DateTime, text
+from sqlalchemy import Column, DateTime, text, MetaData
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.ext.declarative import declared_attr
@@ -25,8 +25,20 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar('T', bound='Base')
 
+# Configure metadata to allow table redefinition
+metadata = MetaData(naming_convention={
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s"
+})
+
 class Base(DeclarativeBase):
     """Base model class with common functionality."""
+    
+    # Use the configured metadata
+    metadata = metadata
     
     id: Any
     __table__: ClassVar['Table']
@@ -48,6 +60,11 @@ class Base(DeclarativeBase):
     def __tablename__(self) -> str:
         """Generate table name from class name."""
         return self.__class__.__name__.lower()
+        
+    @declared_attr
+    def __table_args__(cls) -> Dict:
+        """Configure table arguments."""
+        return {'extend_existing': True}
 
     def dict(self) -> Dict[str, Any]:
         """Convert model instance to dictionary."""

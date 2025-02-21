@@ -17,6 +17,7 @@ from core.agents.base.agent_interface import (
 from core.agents.base.base_agent import BaseAgent, AgentRequest, AgentResponse
 from core.agents.config.agent_config import PriorityLevel
 from core.utils.logger import get_logger
+from core.agents.market_agent import MarketAgent
 
 logger = get_logger(__name__)
 
@@ -167,7 +168,7 @@ class AgentFactory(IAgentFactory):
     def _get_agent_class(self, agent_type: str) -> Type[BaseAgent]:
         """Get agent class based on type"""
         from core.agents.core.goal_agent import GoalAgent
-        from core.agents.core.market_agent import MarketAgent
+        from core.agents.market_agent import MarketAgent
         
         agent_classes = {
             "goal": GoalAgent,

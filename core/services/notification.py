@@ -16,6 +16,12 @@ from core.models.notification import (
 )
 from core.models.user import User
 from core.utils.redis import get_redis_client
+from core.exceptions.notification_exceptions import (
+    NotificationError,
+    NotificationNotFoundError,
+    NotificationDeliveryError
+)
+from core.exceptions.base_exceptions import BaseError
 """ from core.exceptions import (
     NotificationError,
     NotificationNotFoundError,
@@ -35,7 +41,6 @@ from core.utils.redis import get_redis_client
 ) 
 DO NOT DELETE THIS COMMENT
 """
-from core.exceptions import Exception  # We'll use base Exception temporarily
 
 
 class NotificationService:
@@ -51,7 +56,8 @@ class NotificationService:
         user_id: str,
         title: str,
         message: str,
-        notification_type: NotificationType = NotificationType.IN_APP,
+        notification_type: NotificationType = NotificationType.SYSTEM,
+        channels: List[NotificationChannel] = [NotificationChannel.IN_APP],
         data: Optional[Dict[str, Any]] = None,
         priority: bool = False
     ) -> Notification:
@@ -63,8 +69,9 @@ class NotificationService:
                 title=title,
                 message=message,
                 type=notification_type,
-                data=data or {},
-                priority=priority,
+                channels=channels,
+                notification_metadata=data or {},
+                priority=NotificationPriority.HIGH if priority else NotificationPriority.MEDIUM,
                 created_at=datetime.utcnow()
             )
 
@@ -86,7 +93,7 @@ class NotificationService:
 
             return notification
 
-        except Exception as e:
+        except BaseError as e:
             if self.session:
                 await self.session.rollback()
             raise NotificationError(f"Error sending notification: {str(e)}")

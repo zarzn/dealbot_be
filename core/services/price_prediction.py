@@ -34,6 +34,7 @@ from core.exceptions.price import (
 from core.utils.redis import get_redis_client
 from core.utils.logger import get_logger
 from core.services.base import BaseService
+from core.repositories.price_prediction import PricePredictionRepository
 
 logger = get_logger(__name__)
 
@@ -47,7 +48,8 @@ class PricePredictionService(BaseService):
         min_history_points: int = 30,
         confidence_threshold: float = 0.8
     ):
-        super().__init__(session)
+        self.repository = PricePredictionRepository(session)
+        super().__init__(self.repository, session)
         self._redis_client = redis_client
         self.min_history_points = min_history_points
         self.confidence_threshold = confidence_threshold

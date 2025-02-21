@@ -22,7 +22,7 @@ from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator, model_validator, conint, confloat
 from sqlalchemy import (
     Column, String, Integer, DateTime, select, update, func, Numeric, text,
-    Index, CheckConstraint, UniqueConstraint, Enum as SQLEnum, ForeignKey
+    Index, CheckConstraint, UniqueConstraint, Enum as SQLEnum, ForeignKey, Float, Boolean
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,6 +65,16 @@ class GoalPriority(int, enum.Enum):
     URGENT = 4
     CRITICAL = 5
 
+class GoalType(str, enum.Enum):
+    """Goal type categories."""
+    PRICE_DROP = "price_drop"
+    AVAILABILITY = "availability"
+    DEAL_MATCH = "deal_match"
+    FLASH_SALE = "flash_sale"
+    PRICE_PREDICTION = "price_prediction"
+    MARKET_ANALYSIS = "market_analysis"
+    CUSTOM = "custom"
+
 class GoalBase(BaseModel):
     """Base model for Goal with validation"""
     item_category: MarketCategory = Field(...)
@@ -88,7 +98,7 @@ class GoalBase(BaseModel):
         missing_fields = [field for field in required_fields if field not in constraints]
         if missing_fields:
             raise GoalConstraintError(
-                f"Missing required constraint fields: {', '.join(missing_fields)}"
+                "Missing required constraint fields: {}".format(', '.join(missing_fields))
             )
         
         # Validate price constraints
@@ -101,7 +111,7 @@ class GoalBase(BaseModel):
             if min_price < 0:
                 raise GoalConstraintError("min_price cannot be negative")
             if max_price > settings.MAX_GOAL_PRICE:
-                raise GoalConstraintError(f"max_price cannot exceed {settings.MAX_GOAL_PRICE}")
+                raise GoalConstraintError("max_price cannot exceed {}".format(settings.MAX_GOAL_PRICE))
         except (ValueError, TypeError) as e:
             raise GoalConstraintError("Price constraints must be valid numbers") from e
             
@@ -124,7 +134,7 @@ class GoalBase(BaseModel):
                 raise ValueError("Deadline must be in the future")
             max_deadline = now + timedelta(days=settings.MAX_GOAL_DEADLINE_DAYS)
             if v > max_deadline:
-                raise ValueError(f"Deadline cannot exceed {settings.MAX_GOAL_DEADLINE_DAYS} days")
+                raise ValueError("Deadline cannot exceed {} days".format(settings.MAX_GOAL_DEADLINE_DAYS))
         return v
 
 class GoalCreate(GoalBase):
@@ -155,7 +165,7 @@ class GoalUpdate(BaseModel):
         required_fields = ['max_price', 'min_price', 'brands', 'conditions', 'keywords']
         if not all(field in constraints for field in required_fields):
             raise InvalidGoalConstraintsError(
-                f"Constraints must include: {', '.join(required_fields)}"
+                "Constraints must include: {}".format(', '.join(required_fields))
             )
         
         # Validate price constraints
@@ -167,7 +177,7 @@ class GoalUpdate(BaseModel):
         if min_price < 0:
             raise InvalidGoalConstraintsError("min_price cannot be negative")
         if max_price > settings.MAX_GOAL_PRICE:
-            raise InvalidGoalConstraintsError(f"max_price cannot exceed {settings.MAX_GOAL_PRICE}")
+            raise InvalidGoalConstraintsError("max_price cannot exceed {}".format(settings.MAX_GOAL_PRICE))
             
         return self
 
@@ -337,6 +347,15 @@ class Goal(Base):
         Index('ix_goals_priority_deadline', 'priority', 'deadline'),
         CheckConstraint('tokens_spent >= 0', name='ch_positive_tokens'),
         CheckConstraint('rewards_earned >= 0', name='ch_positive_rewards'),
+        CheckConstraint('max_tokens >= 0', name='ch_positive_max_tokens'),
+        CheckConstraint(
+            'notification_threshold >= 0 AND notification_threshold <= 1',
+            name='ch_valid_notification_threshold'
+        ),
+        CheckConstraint(
+            'auto_buy_threshold >= 0 AND auto_buy_threshold <= 1',
+            name='ch_valid_auto_buy_threshold'
+        )
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -388,6 +407,12 @@ class Goal(Base):
     # Relationships
     user = relationship("User", back_populates="goals")
     deals = relationship("Deal", back_populates="goal", cascade="all, delete-orphan")
+    matched_deals = relationship(
+        "DealMatch",
+        back_populates="goal",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
     notifications = relationship("Notification", back_populates="goal", cascade="all, delete-orphan")
     agents = relationship("Agent", back_populates="goal", cascade="all, delete-orphan")
 
@@ -570,13 +595,13 @@ class Goal(Base):
             "max_tokens": float(self.max_tokens) if self.max_tokens else None,
             "notification_threshold": float(self.notification_threshold) if self.notification_threshold else None,
             "auto_buy_threshold": float(self.auto_buy_threshold) if self.auto_buy_threshold else None,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "last_checked_at": self.last_checked_at.isoformat() if self.last_checked_at else None,
             "matches_found": self.matches_found,
             "deals_processed": self.deals_processed,
-            "tokens_spent": float(self.tokens_spent),
-            "rewards_earned": float(self.rewards_earned),
+            "tokens_spent": float(self.tokens_spent) if self.tokens_spent else 0.0,
+            "rewards_earned": float(self.rewards_earned) if self.rewards_earned else 0.0,
             "last_processed_at": self.last_processed_at.isoformat() if self.last_processed_at else None,
             "processing_stats": self.processing_stats,
             "best_match_score": float(self.best_match_score) if self.best_match_score else None,

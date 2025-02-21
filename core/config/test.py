@@ -129,11 +129,11 @@ class TestSettings(BaseSettings):
     RATE_LIMIT_WINDOW: int = 60  # Window size in seconds
 
     # Database
-    POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "localhost")
-    POSTGRES_PORT: str = os.getenv("POSTGRES_PORT", "5432")
-    POSTGRES_DB: str = os.getenv("POSTGRES_DB", "deals_test")
-    POSTGRES_USER: str = os.getenv("POSTGRES_USER", "postgres")
-    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "12345678")
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: SecretStr = SecretStr("12345678")
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: str = "5432"
+    POSTGRES_DB: str = "deals_test"
     DB_ECHO: bool = True
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
@@ -144,62 +144,34 @@ class TestSettings(BaseSettings):
     DB_IDLE_TIMEOUT: int = 300
 
     @property
-    def SQLALCHEMY_DATABASE_URI(self) -> PostgresDsn:
-        """Get database URI."""
-        return PostgresDsn.build(
-            scheme="postgresql+asyncpg",
-            username=self.POSTGRES_USER,
-            password=self.POSTGRES_PASSWORD,
-            host=self.POSTGRES_HOST,
-            port=int(self.POSTGRES_PORT),
-            path=f"/{self.POSTGRES_DB}"
-        )
-    
-    @property
-    def DATABASE_URL(self) -> PostgresDsn:
+    def DATABASE_URL(self) -> str:
         """Get database URL."""
-        return self.SQLALCHEMY_DATABASE_URI
+        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD.get_secret_value()}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
     
     @property
-    def TEST_DATABASE_URL(self) -> PostgresDsn:
+    def TEST_DATABASE_URL(self) -> str:
         """Get test database URL."""
-        return self.SQLALCHEMY_DATABASE_URI
+        return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD.get_secret_value()}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+    
+    @property
+    def SQLALCHEMY_DATABASE_URI(self) -> str:
+        """Get database URI for SQLAlchemy."""
+        return self.DATABASE_URL
 
     @property
-    def sync_database_url(self) -> PostgresDsn:
+    def sync_database_url(self) -> str:
         """Get synchronous database URL."""
-        return PostgresDsn.build(
-            scheme="postgresql",
-            username=self.POSTGRES_USER,
-            password=self.POSTGRES_PASSWORD,
-            host=self.POSTGRES_HOST,
-            port=int(self.POSTGRES_PORT),
-            path=f"/{self.POSTGRES_DB}"
-        )
+        return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD.get_secret_value()}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
     # Redis
-    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
-    REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_PASSWORD: Optional[str] = None  # Set to None for no authentication
     REDIS_MAX_CONNECTIONS: int = 10
     REDIS_SOCKET_TIMEOUT: int = 5
     REDIS_CONNECT_TIMEOUT: int = 5
-    REDIS_RETRY_ON_TIMEOUT: bool = True
-    REDIS_MAX_RETRIES: int = 3
-    REDIS_RETRY_INTERVAL: int = 1
-    REDIS_DB: int = 0
-    REDIS_PASSWORD: Optional[str] = None
-    REDIS_SSL: bool = False
-    REDIS_ENCODING: str = "utf-8"
-    REDIS_DECODE_RESPONSES: bool = True
-
-    @property
-    def REDIS_URL(self) -> RedisDsn:
-        """Get Redis URL."""
-        return RedisDsn.build(
-            scheme="redis",
-            host=self.REDIS_HOST,
-            port=self.REDIS_PORT
-        )
+    REDIS_URL: str = "redis://localhost:6379/0"  # Add Redis URL for easier connection
 
     # Email
     EMAIL_SERVER_HOST: str = os.getenv("EMAIL_SERVER_HOST", "mailhog")
@@ -211,10 +183,10 @@ class TestSettings(BaseSettings):
 
     # Security
     SECRET_KEY: SecretStr = SecretStr("test-secret-key")
-    JWT_SECRET: SecretStr = SecretStr("test-jwt-secret")
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    JWT_SECRET_KEY: str = "test-jwt-secret"
     JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
     # Test User
     TEST_USER_EMAIL: str = "test@example.com"
@@ -253,8 +225,18 @@ class TestSettings(BaseSettings):
     FCM_RETRY_COUNT: int = 3
     FCM_RETRY_DELAY: int = 1000  # milliseconds
 
+    # AI Services
+    DEEPSEEK_API_KEY: SecretStr = SecretStr("test-deepseek-api-key")
+    OPENAI_API_KEY: SecretStr = SecretStr("test-openai-api-key")
+
+    @property
+    def REDIS_DSN(self) -> str:
+        """Get Redis DSN."""
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+
     class Config:
         """Pydantic config."""
         case_sensitive = True
+        env_file = ".env.test"
 
 settings = TestSettings() 

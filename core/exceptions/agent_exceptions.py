@@ -54,6 +54,10 @@ class AgentCoordinationError(AgentError):
     """Exception raised when agent coordination fails."""
     pass
 
+class LLMProviderError(AgentError):
+    """Exception raised when there is an error with the LLM provider."""
+    pass
+
 __all__ = [
     'AgentError',
     'AgentNotFoundError',
@@ -67,5 +71,6 @@ __all__ = [
     'AgentTimeoutError',
     'AgentMemoryError',
     'AgentDecisionError',
-    'AgentCoordinationError'
+    'AgentCoordinationError',
+    'LLMProviderError'
 ] 

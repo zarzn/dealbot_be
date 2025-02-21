@@ -32,6 +32,7 @@ import json
 import logging
 from enum import Enum
 import sqlalchemy as sa
+from decimal import Decimal
 
 from core.models.base import Base
 from core.exceptions import (
@@ -40,7 +41,8 @@ from core.exceptions import (
     WalletError,
     ValidationError,
     InsufficientBalanceError,
-    SmartContractError
+    SmartContractError,
+    DatabaseError
 )
 from core.config import settings
 from core.models.token import TokenTransaction, TokenBalanceHistory, TokenWallet, TokenBalance
@@ -78,7 +80,7 @@ class UserBase(BaseModel):
         description="User referral code"
     )
     referred_by: Optional[UUID] = None
-    token_balance: float = Field(0.0, ge=0.0, description="User's token balance")
+    token_balance: Decimal = Field(Decimal('0.0'), ge=Decimal('0.0'), description="User's token balance")
     preferences: Dict[str, Any] = Field(
         default_factory=lambda: {
             "theme": "light",
@@ -219,8 +221,8 @@ class UserResponse(UserBase):
     active_goals_count: int = Field(default=0)
     total_deals_found: int = Field(default=0)
     success_rate: float = Field(default=0.0)
-    total_tokens_spent: float = Field(default=0.0)
-    total_rewards_earned: float = Field(default=0.0)
+    total_tokens_spent: Decimal = Field(default=Decimal('0.0'))
+    total_rewards_earned: Decimal = Field(default=Decimal('0.0'))
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -228,7 +230,8 @@ class UserResponse(UserBase):
             datetime: lambda v: v.isoformat(),
             UUID: lambda v: str(v),
             UserStatus: lambda v: v.value,
-            NotificationPreference: lambda v: v.value
+            NotificationPreference: lambda v: v.value,
+            Decimal: lambda v: str(v)  # Convert Decimal to string for JSON
         }
     )
 
@@ -271,9 +274,9 @@ class User(Base):
         ForeignKey('users.id', ondelete='SET NULL'),
         nullable=True
     )
-    token_balance: Mapped[float] = mapped_column(
+    token_balance: Mapped[Decimal] = mapped_column(
         Numeric(18, 8),
-        default=0,
+        default=Decimal('0.0'),
         nullable=False,
         server_default=text('0')
     )
@@ -308,12 +311,22 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
     last_payment_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     active_goals_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_deals_found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     success_rate: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False, default=0.0)
-    total_tokens_spent: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
-    total_rewards_earned: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
+    total_tokens_spent: Mapped[Decimal] = mapped_column(
+        Numeric(18, 8),
+        nullable=False,
+        default=Decimal('0.0'),
+        server_default=text('0')
+    )
+    total_rewards_earned: Mapped[Decimal] = mapped_column(
+        Numeric(18, 8),
+        nullable=False,
+        default=Decimal('0.0'),
+        server_default=text('0')
+    )
 
     # Relationships
     goals: Mapped[List["Goal"]] = relationship(
@@ -324,6 +337,12 @@ class User(Base):
     )
     deals: Mapped[List["Deal"]] = relationship(
         "Deal",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
+    tracked_deals: Mapped[List["TrackedDeal"]] = relationship(
+        "TrackedDeal",
         back_populates="user",
         cascade="all, delete-orphan",
         lazy="selectin"
@@ -365,7 +384,7 @@ class User(Base):
         cascade="all, delete-orphan",
         lazy="selectin"
     )
-    token_balance_obj: Mapped["TokenBalance"] = relationship(
+    token_balance_record: Mapped["TokenBalance"] = relationship(
         "TokenBalance",
         back_populates="user",
         uselist=False,
@@ -389,7 +408,12 @@ class User(Base):
         cascade="all, delete-orphan",
         lazy="selectin"
     )
-    agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
+    agents: Mapped[List["Agent"]] = relationship(
+        "Agent",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        lazy="selectin"
+    )
     auth_tokens: Mapped[List["AuthToken"]] = relationship(
         "AuthToken",
         back_populates="user",
@@ -435,7 +459,7 @@ class User(Base):
             stmt = select(cls).where(
                 and_(
                     cls.email == email,
-                    cls.status == 'active'
+                    cls.status.cast(String) == UserStatus.ACTIVE.value
                 )
             )
             result = await db.execute(stmt)
@@ -459,14 +483,30 @@ class User(Base):
 
     @classmethod
     async def create(cls, db, **kwargs) -> 'User':
-        """Create a new user with proper error handling and validation"""
+        """Create a new user."""
         try:
             # Generate referral code if not provided
             if 'referral_code' not in kwargs:
                 kwargs['referral_code'] = await cls.generate_referral_code(db)
+            
+            # Ensure token_balance is a Decimal
+            if 'token_balance' in kwargs:
+                kwargs['token_balance'] = Decimal(str(kwargs['token_balance']))
+            else:
+                kwargs['token_balance'] = Decimal('0.0')
                 
-            user = cls(**kwargs)
+            # Create the user first
+            user = cls(**{k: v for k, v in kwargs.items() if k != 'message'})
             db.add(user)
+            await db.flush()  # This assigns the ID to the user
+            
+            # Create initial token balance record
+            token_balance = TokenBalance(
+                user_id=user.id,
+                balance=user.token_balance
+            )
+            db.add(token_balance)
+            
             await db.commit()
             await db.refresh(user)
             logger.info(f"Created new user: {user.email}")
@@ -474,7 +514,10 @@ class User(Base):
         except Exception as e:
             await db.rollback()
             logger.error(f"Failed to create user: {str(e)}")
-            raise ValueError(f"Failed to create user: {str(e)}") from e
+            raise DatabaseError(
+                message=f"Failed to create user: {str(e)}",
+                operation="create"
+            )
 
     @classmethod
     async def get_by_wallet(cls, db, wallet_address: str) -> Optional['User']:
@@ -649,13 +692,16 @@ class User(Base):
 
     @staticmethod
     async def generate_referral_code(db) -> str:
-        """Generate unique referral code"""
+        """Generate a unique referral code."""
         import random
         import string
         
         while True:
             code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-            exists = await db.query(User).filter(User.referral_code == code).first()
+            # Check if code exists using SQLAlchemy 2.0 style
+            stmt = select(User).where(User.referral_code == code)
+            result = await db.execute(stmt)
+            exists = result.scalar_one_or_none()
             if not exists:
                 return code
 

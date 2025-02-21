@@ -5,6 +5,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +44,11 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 class UserResponse(BaseModel):
     id: str
     email: EmailStr
-    name: str
+    name: Optional[str] = None
     token_balance: float = Field(ge=0.0)
     created_at: datetime
     email_verified: bool
+    last_login_at: Optional[datetime] = None
 
 class LoginRequest(BaseModel):
     """Login request model."""
@@ -57,7 +59,7 @@ class LoginRequest(BaseModel):
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
-    name: str
+    name: Optional[str] = None
 
 class ResetPasswordRequest(BaseModel):
     email: EmailStr
@@ -93,7 +95,8 @@ async def register(
     user_data = UserCreate(
         email=user.email,
         password=hashed_password,
-        name=user.name
+        name=user.name,
+        token_balance=Decimal('0.0')  # Initialize with Decimal instead of float
     )
     
     db_user = await User.create(db, **user_data.model_dump())
@@ -112,7 +115,8 @@ async def register(
         name=db_user.name,
         token_balance=db_user.token_balance,
         created_at=db_user.created_at,
-        email_verified=db_user.email_verified
+        email_verified=db_user.email_verified,
+        last_login_at=db_user.last_login_at
     )
 
 @router.post("/login", response_model=Token)
@@ -359,7 +363,8 @@ async def get_user_me(
         name=current_user.name,
         token_balance=current_user.token_balance,
         created_at=current_user.created_at,
-        email_verified=current_user.email_verified
+        email_verified=current_user.email_verified,
+        last_login_at=current_user.last_login_at
     )
 
 @router.post("/logout")
@@ -389,7 +394,8 @@ async def get_user_profile(
         name=current_user.name,
         token_balance=current_user.token_balance,
         created_at=current_user.created_at,
-        email_verified=current_user.email_verified
+        email_verified=current_user.email_verified,
+        last_login_at=current_user.last_login_at
     )
 
 @router.put("/profile")
@@ -409,7 +415,8 @@ async def update_profile(
         name=current_user.name,
         token_balance=current_user.token_balance,
         created_at=current_user.created_at,
-        email_verified=current_user.email_verified
+        email_verified=current_user.email_verified,
+        last_login_at=current_user.last_login_at
     )
 
 class UserPreferencesUpdate(BaseModel):

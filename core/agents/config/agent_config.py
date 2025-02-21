@@ -4,9 +4,12 @@ This module contains all configuration settings for the agent system,
 including LLM settings, processing limits, and performance thresholds.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 from enum import Enum
+import os
+
+from core.exceptions import ConfigurationError
 
 class PriorityLevel(str, Enum):
     HIGH = "high"
@@ -33,6 +36,17 @@ class LLMConfig(BaseModel):
     max_tokens: int = Field(default=4096)
     is_development: bool = Field(default=False)
 
+class AgentConfig(BaseModel):
+    """Configuration for an agent"""
+    priority: PriorityLevel = Field(default=PriorityLevel.MEDIUM)
+    llm_provider: LLMProvider = Field(default=LLMProvider.DEEPSEEK)
+    max_retries: int = Field(default=3)
+    timeout: int = Field(default=30)
+    batch_size: int = Field(default=20)
+    cache_ttl: int = Field(default=3600)
+    memory_limit: int = Field(default=512)  # MB
+    metadata: Optional[Dict[str, Any]] = None
+
 # Priority level configurations
 PRIORITY_CONFIGS: Dict[PriorityLevel, PriorityConfig] = {
     PriorityLevel.HIGH: PriorityConfig(
@@ -53,24 +67,42 @@ PRIORITY_CONFIGS: Dict[PriorityLevel, PriorityConfig] = {
 }
 
 # LLM configurations
-LLM_CONFIGS: Dict[LLMProvider, LLMConfig] = {
-    LLMProvider.GEMINI: LLMConfig(
-        provider=LLMProvider.GEMINI,
-        model="gemini-2.0-flash",
-        api_key="AIzaSyDfOgCtxPOg5ZzwIob6hTDtN7aFtpsiIGQ",
-        is_development=True
-    ),
-    LLMProvider.DEEPSEEK: LLMConfig(
-        provider=LLMProvider.DEEPSEEK,
-        model="deepseek-chat",
-        api_key="${DEEPSEEK_API_KEY}"
-    ),
-    LLMProvider.OPENAI: LLMConfig(
-        provider=LLMProvider.OPENAI,
-        model="gpt-4-turbo",
-        api_key="${OPENAI_API_KEY}"
-    )
-}
+def load_llm_configs() -> Dict[LLMProvider, LLMConfig]:
+    """Load LLM configurations with environment variables."""
+    configs = {
+        LLMProvider.GEMINI: LLMConfig(
+            provider=LLMProvider.GEMINI,
+            model="gemini-2.0-flash",
+            api_key="AIzaSyDfOgCtxPOg5ZzwIob6hTDtN7aFtpsiIGQ",
+            is_development=True
+        ),
+        LLMProvider.DEEPSEEK: LLMConfig(
+            provider=LLMProvider.DEEPSEEK,
+            model="deepseek-coder",
+            api_key=os.getenv("DEEPSEEK_API_KEY", ""),
+            temperature=0.7,
+            max_tokens=4096
+        ),
+        LLMProvider.OPENAI: LLMConfig(
+            provider=LLMProvider.OPENAI,
+            model="gpt-4",
+            api_key=os.getenv("OPENAI_API_KEY", ""),
+            temperature=0.7,
+            max_tokens=4096
+        )
+    }
+    
+    # Validate required API keys
+    for provider, config in configs.items():
+        if not config.api_key and not (provider == LLMProvider.GEMINI and config.is_development):
+            raise ConfigurationError(
+                config_key=f"LLM_API_KEY_{provider.value.upper()}",
+                message=f"Missing API key for provider: {provider}"
+            )
+    
+    return configs
+
+LLM_CONFIGS = load_llm_configs()
 
 # Processing configurations
 PROCESSING_CONFIG = {
@@ -112,7 +144,8 @@ PERFORMANCE_THRESHOLDS = {
     "max_processing_time": 30,  # seconds
     "min_cache_hit_ratio": 0.8,
     "max_error_rate": 0.01,
-    "max_memory_usage": 512  # MB per agent
+    "max_memory_usage": 512,  # MB per agent
+    "cache_ttl": 3600  # 1 hour
 }
 
 # Rate limiting

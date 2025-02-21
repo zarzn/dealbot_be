@@ -259,6 +259,46 @@ class WebSocketError(BaseError):
     """WebSocket error."""
     pass
 
+class AgentInitializationError(BaseError):
+    """Raised when agent initialization fails."""
+    pass
+
+class LLMProviderError(BaseError):
+    """Raised when there is an error with the LLM provider."""
+    pass
+
+class MarketIntegrationError(BaseError):
+    """Raised when there is an error with market integration."""
+    pass
+
+class ProcessingError(BaseError):
+    """Raised when processing fails."""
+    pass
+
+class ResourceNotFoundError(BaseError):
+    """Raised when a resource is not found."""
+    pass
+
+class ResourceExistsError(BaseError):
+    """Raised when a resource already exists."""
+    pass
+
+class ServiceUnavailableError(BaseError):
+    """Raised when a service is unavailable."""
+    pass
+
+class ThirdPartyError(BaseError):
+    """Raised when there is an error with a third party service."""
+    pass
+
+class TokenError(BaseError):
+    """Raised when there is an error with tokens."""
+    pass
+
+class UserError(BaseError):
+    """Raised when there is a user-related error."""
+    pass
+
 __all__ = [
     # Base exceptions
     'BaseError',
@@ -478,5 +518,14 @@ __all__ = [
 
     # New exceptions
     'PriceTrackingError',
-    'WebSocketError'
+    'WebSocketError',
+    'AgentInitializationError',
+    'LLMProviderError',
+    'MarketIntegrationError',
+    'ProcessingError',
+    'ResourceNotFoundError',
+    'ResourceExistsError',
+    'ServiceUnavailableError',
+    'ThirdPartyError',
+    'UserError'
 ]

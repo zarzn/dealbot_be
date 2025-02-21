@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional, List
 from uuid import UUID, uuid4
 import json
 import logging
-from pydantic import BaseModel, Field, validator, HttpUrl, ConfigDict
+from pydantic import BaseModel, Field, validator, HttpUrl, ConfigDict, field_validator, model_validator
 from sqlalchemy import (
     Column, String, DateTime, Boolean, ForeignKey, Text,
     Index, CheckConstraint, Enum as SQLEnum, Integer
@@ -105,19 +105,19 @@ class NotificationBase(BaseModel):
     action_url: Optional[HttpUrl] = None
     expires_at: Optional[datetime] = None
 
-    @validator('channels')
-    def validate_channels(cls, v: List[NotificationChannel]) -> List[NotificationChannel]:
-        """Validate notification channels."""
-        if not v:
+    @model_validator(mode='after')
+    def validate_notification(self) -> 'NotificationBase':
+        """Validate notification fields."""
+        # Validate channels
+        if not self.channels:
             raise ValueError("At least one notification channel is required")
-        return list(set(v))  # Remove duplicates
+        self.channels = list(set(self.channels))  # Remove duplicates
 
-    @validator('expires_at')
-    def validate_expiry(cls, v: Optional[datetime]) -> Optional[datetime]:
-        """Validate expiry date is in the future."""
-        if v is not None and v <= datetime.utcnow():
+        # Validate expiry
+        if self.expires_at is not None and self.expires_at <= datetime.utcnow():
             raise ValueError("Expiry date must be in the future")
-        return v
+
+        return self
 
 class NotificationCreate(BaseModel):
     """Schema for creating a notification."""

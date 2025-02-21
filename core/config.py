@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     POSTGRES_DB: str = "deals"
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: conint(ge=1, le=65535) = 5432
-    DATABASE_URL: str
+    DATABASE_URL: Optional[str] = None
     DB_POOL_SIZE: int = constants.DB_POOL_SIZE
     DB_MAX_OVERFLOW: int = constants.DB_MAX_OVERFLOW
     DB_POOL_TIMEOUT: int = constants.DB_POOL_TIMEOUT
@@ -51,9 +51,27 @@ class Settings(BaseSettings):
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
         """Get database URL with proper credentials escaping"""
+        # In test environment, always build from components
+        if self.TESTING or self.ENVIRONMENT == "development":
+            try:
+                return str(
+                    PostgresDsn.build(
+                        scheme="postgresql+asyncpg",
+                        username=self.POSTGRES_USER,
+                        password=self.POSTGRES_PASSWORD.get_secret_value(),
+                        host=self.POSTGRES_HOST,
+                        port=self.POSTGRES_PORT,
+                        path=self.POSTGRES_DB
+                    )
+                )
+            except Exception as e:
+                raise ValueError(f"Invalid database configuration: {str(e)}")
+        
+        # For other environments, try DATABASE_URL first
         if self.DATABASE_URL:
             return str(self.DATABASE_URL)
         
+        # Fall back to building from components
         try:
             return str(
                 PostgresDsn.build(
@@ -83,7 +101,7 @@ class Settings(BaseSettings):
                     password=self.POSTGRES_PASSWORD.get_secret_value(),
                     host=self.POSTGRES_HOST,
                     port=self.POSTGRES_PORT,
-                    path=self.POSTGRES_DB
+                    path=self.POSTGRES_DB  # Always use main database
                 )
             )
         except Exception as e:
