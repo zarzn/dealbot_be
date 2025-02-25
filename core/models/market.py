@@ -20,8 +20,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
-from sqlalchemy.sql import expression, text
-from sqlalchemy import select, func
+from sqlalchemy.sql import expression, text, func
+from sqlalchemy import select
 
 from core.models.base import Base
 from core.models.enums import MarketType, MarketStatus, MarketCategory
@@ -55,12 +55,20 @@ class Market(Base):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    type: Mapped[str] = mapped_column(String(20), nullable=False)
+    type: Mapped[str] = mapped_column(
+        SQLAlchemyEnum(MarketType, values_callable=lambda x: [e.value.lower() for e in x], name="markettype"),
+        nullable=False
+    )
     description: Mapped[Optional[str]] = mapped_column(Text)
     api_endpoint: Mapped[Optional[str]] = mapped_column(String(255))
     api_key: Mapped[Optional[str]] = mapped_column(String(255))
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default=MarketStatus.ACTIVE.value)
-    config: Mapped[Optional[Dict]] = mapped_column(JSONB)
+    _status: Mapped[str] = mapped_column(
+        'status',
+        SQLAlchemyEnum(MarketStatus, values_callable=lambda x: [e.value.lower() for e in x], name="marketstatus"),
+        nullable=False,
+        default=MarketStatus.ACTIVE.value.lower()
+    )
+    config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     rate_limit: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -80,17 +88,58 @@ class Market(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=text("CURRENT_TIMESTAMP"),
-        onupdate=text("CURRENT_TIMESTAMP")
+        onupdate=func.current_timestamp(),
+        server_default=text("CURRENT_TIMESTAMP")
     )
 
     # Relationships
     deals = relationship("Deal", back_populates="market", cascade="all, delete-orphan")
     price_histories = relationship("PriceHistory", back_populates="market", cascade="all, delete-orphan")
 
+    def __init__(self, **kwargs):
+        """Initialize market with validation."""
+        if 'type' in kwargs:
+            self.validate_type(kwargs['type'])
+        if 'rate_limit' in kwargs:
+            self.validate_rate_limit(kwargs['rate_limit'])
+        if 'status' in kwargs:
+            self.validate_status(kwargs['status'])
+        super().__init__(**kwargs)
+
+    @staticmethod
+    def validate_type(market_type: str) -> None:
+        """Validate market type."""
+        valid_types = [market_type.value.lower() for market_type in MarketType]
+        if isinstance(market_type, str) and market_type.lower() not in valid_types:
+            raise ValueError(f"Invalid market type: {market_type}. Valid types are: {', '.join(valid_types)}")
+
+    @staticmethod
+    def validate_status(status: str) -> None:
+        """Validate market status."""
+        valid_statuses = [status.value.lower() for status in MarketStatus]
+        if isinstance(status, str) and status.lower() not in valid_statuses:
+            raise ValueError(f"Invalid market status: {status}. Valid statuses are: {', '.join(valid_statuses)}")
+
+    @staticmethod
+    def validate_rate_limit(rate_limit: int) -> None:
+        """Validate rate limit."""
+        if rate_limit <= 0:
+            raise ValueError("Rate limit must be greater than 0")
+
     def __repr__(self) -> str:
         """String representation of the market."""
         return f"<Market {self.name} ({self.type})>"
+
+    @property
+    def status(self) -> str:
+        """Get market status."""
+        return self._status
+
+    @status.setter
+    def status(self, value: str) -> None:
+        """Set market status with validation."""
+        self.validate_status(value)
+        self._status = value.lower()
 
     async def check_rate_limit(self, db: AsyncSession) -> bool:
         """Check if market has exceeded rate limit."""

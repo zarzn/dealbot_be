@@ -12,6 +12,7 @@ class MarketType(str, Enum):
     EBAY = "ebay"
     TARGET = "target"
     BESTBUY = "bestbuy"
+    TEST = "test"
 
 class MarketStatus(str, Enum):
     """Market status enum."""
@@ -48,9 +49,12 @@ class GoalStatus(str, Enum):
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     FAILED = "failed"
+    EXPIRED = "expired"
+    ERROR = "error"
 
 class DealStatus(str, Enum):
     """Deal status enum."""
+    PENDING = "pending"
     ACTIVE = "active"
     EXPIRED = "expired"
     SOLD_OUT = "sold_out"
@@ -75,17 +79,25 @@ class NotificationType(str, Enum):
     SYSTEM = "system"
     DEAL = "deal"
     GOAL = "goal"
-    PRICE = "price"
-    EMAIL = "email"
-    PUSH = "push"
-    SMS = "sms"
+    PRICE_ALERT = "price_alert"
+    TOKEN = "token"
+    SECURITY = "security"
+    MARKET = "market"
+
+    def __str__(self) -> str:
+        """Return the value of the enum."""
+        return self.value
 
 class NotificationPriority(str, Enum):
-    """Notification priority enum."""
+    """Notification priority enumeration."""
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
+    def __str__(self) -> str:
+        """Return the value of the enum."""
+        return self.value
 
 class NotificationChannel(str, Enum):
     """Notification channel enum."""
@@ -93,25 +105,42 @@ class NotificationChannel(str, Enum):
     EMAIL = "email"
     PUSH = "push"
     SMS = "sms"
-    WEBSOCKET = "websocket"
+    TELEGRAM = "telegram"
+    DISCORD = "discord"
+
+    def __str__(self) -> str:
+        """Return the value of the enum."""
+        return self.value
 
 class NotificationStatus(str, Enum):
-    """Notification status enum."""
+    """Notification status enumeration."""
     PENDING = "pending"
     SENT = "sent"
     DELIVERED = "delivered"
     READ = "read"
     FAILED = "failed"
 
+    def __str__(self) -> str:
+        """Return the value of the enum."""
+        return self.value
+
 class TaskStatus(str, Enum):
     """Task status enum."""
     PENDING = "pending"
+    RUNNING = "running"
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
     UNKNOWN = "unknown"
     ERROR = "error"
+
+class TaskPriority(str, Enum):
+    """Task priority enum."""
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    BACKGROUND = "background"
 
 class Currency(str, Enum):
     """Currency enum."""
@@ -122,10 +151,78 @@ class Currency(str, Enum):
     AUD = "AUD"
     JPY = "JPY"
 
+class TokenType(str, Enum):
+    """Token type enumeration."""
+    ACCESS = "access"
+    REFRESH = "refresh"
+    RESET = "reset"
+
+class TokenStatus(str, Enum):
+    """Token status enumeration."""
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+
+class TokenScope(str, Enum):
+    """Token scope enumeration."""
+    FULL = "full"
+    LIMITED = "limited"
+    READ = "read"
+    RESET = "reset"
+
+class UserStatus(str, Enum):
+    """User status enumeration."""
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+    SUSPENDED = "suspended"
+    DELETED = "deleted"
+
 class TokenOperation(str, Enum):
     """Token operation enum."""
     DEDUCTION = "deduction"
     REWARD = "reward"
     REFUND = "refund"
     TRANSFER = "transfer"
-    PURCHASE = "purchase" 
+    PURCHASE = "purchase"
+
+class TransactionType(str, Enum):
+    """Transaction type enumeration."""
+    DEDUCTION = "deduction"
+    REWARD = "reward"
+    REFUND = "refund"
+    SEARCH_PAYMENT = "search_payment"
+    SEARCH_REFUND = "search_refund"
+    CREDIT = "credit"
+
+class TransactionStatus(str, Enum):
+    """Transaction status enumeration."""
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+class TokenTransactionType(str, Enum):
+    """Token transaction type enumeration."""
+    REWARD = "reward"
+    DEDUCTION = "deduction"
+    REFUND = "refund"
+    CREDIT = "credit"
+
+class TokenTransactionStatus(str, Enum):
+    """Token transaction status enumeration."""
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+class BalanceChangeType(str, Enum):
+    """Balance change type enumeration."""
+    DEDUCTION = "deduction"
+    REWARD = "reward"
+    REFUND = "refund"
+
+class MessageRole(str, Enum):
+    """Message role enumeration."""
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system" 

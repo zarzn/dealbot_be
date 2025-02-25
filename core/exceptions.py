@@ -473,7 +473,7 @@ class ExternalServiceError(BaseAppException):
         )
 
 class TokenError(BaseAppException):
-    """Base token-related error."""
+    """Token-related error."""
     
     def __init__(
         self,

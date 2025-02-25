@@ -4,67 +4,40 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ title }}</title>
+    <link rel="stylesheet" href="styles.css">
+    <!-- Fallback inline styles for email clients that don't support external CSS -->
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            margin: 0;
-            padding: 0;
-            background-color: #f4f4f4;
-        }
-        .container {
-            max-width: 600px;
-            margin: 20px auto;
-            padding: 20px;
-            background-color: #ffffff;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-        }
-        .header {
-            text-align: center;
-            padding: 20px 0;
-            border-bottom: 1px solid #eee;
-        }
-        .content {
-            padding: 20px 0;
-        }
-        .footer {
-            text-align: center;
-            padding: 20px 0;
-            color: #666;
-            font-size: 12px;
-            border-top: 1px solid #eee;
-        }
-        .button {
-            display: inline-block;
-            padding: 12px 24px;
-            background-color: #007bff;
-            color: #ffffff;
-            text-decoration: none;
-            border-radius: 4px;
-            margin: 20px 0;
-        }
-        .button:hover {
-            background-color: #0056b3;
-        }
+        {% include 'email/styles.css' %}
     </style>
 </head>
 <body>
     <div class="container">
+        <!-- Header Section -->
         <div class="header">
+            {% block header %}
             <h1>{{ title }}</h1>
+            {% endblock %}
         </div>
         
+        <!-- Main Content Section -->
         <div class="content">
             {% block content %}{% endblock %}
         </div>
         
+        <!-- Action Section -->
+        {% block action %}{% endblock %}
+        
+        <!-- Footer Section -->
         <div class="footer">
+            {% block footer %}
             <p>© {{ year }} AI Agentic Deals System. All rights reserved.</p>
-            <p>
+            {% if unsubscribe_url %}
+            <p class="text-small">
                 If you don't want to receive these emails, you can 
                 <a href="{{ unsubscribe_url }}">unsubscribe here</a>.
             </p>
+            {% endif %}
+            {% endblock %}
         </div>
     </div>
 </body>

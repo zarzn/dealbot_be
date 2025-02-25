@@ -25,7 +25,7 @@ def verify_token(token: str) -> Optional[str]:
     try:
         payload = jwt.decode(
             token,
-            settings.SECRET_KEY,
+            settings.JWT_SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM]
         )
         user_id: str = payload.get("sub")
@@ -46,7 +46,7 @@ def verify_token(token: str) -> Optional[str]:
 def create_token(user_id: str, expires_delta: Optional[timedelta] = None) -> str:
     """Create a new JWT token for a user."""
     if expires_delta is None:
-        expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta = timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
     
     expire = datetime.utcnow() + expires_delta
     to_encode = {
@@ -57,7 +57,7 @@ def create_token(user_id: str, expires_delta: Optional[timedelta] = None) -> str
     
     encoded_jwt = jwt.encode(
         to_encode,
-        settings.SECRET_KEY,
+        settings.JWT_SECRET_KEY,
         algorithm=settings.JWT_ALGORITHM
     )
     return encoded_jwt 

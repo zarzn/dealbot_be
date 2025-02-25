@@ -22,11 +22,11 @@ from core.utils.redis import get_redis_pool
 
 logger = logging.getLogger(__name__)
 
-class GoalRepository(BaseRepository):
+class GoalRepository(BaseRepository[Goal]):
     """Repository for managing Goal entities with async operations and caching"""
 
     def __init__(self, db: AsyncSession):
-        super().__init__(db)
+        super().__init__(db, Goal)
         self.redis_pool: Optional[ConnectionPool] = None
 
     async def init_redis(self) -> None:

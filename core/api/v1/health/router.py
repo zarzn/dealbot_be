@@ -6,7 +6,7 @@ from typing import Dict
 
 from core.database import get_async_db_session as get_db
 from core.integrations.market_factory import MarketIntegrationFactory
-from core.utils.redis import RedisClient
+from core.services.redis import get_redis_service
 from core.exceptions.market_exceptions import MarketIntegrationError
 
 router = APIRouter()
@@ -45,7 +45,7 @@ async def get_scraper_api_usage():
 async def check_redis():
     """Check Redis connection."""
     try:
-        redis = RedisClient()
+        redis = get_redis_service()
         await redis.ping()
         return {
             "status": "healthy",

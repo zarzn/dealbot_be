@@ -1,10 +1,14 @@
+"""Test coordinator module."""
+
 import pytest
-from unittest.mock import AsyncMock
+import pytest_asyncio
+from unittest.mock import AsyncMock, MagicMock
 from core.agents.coordinator import AgentCoordinator
 from core.agents.config.agent_config import PriorityLevel
 from core.services.agent import AgentService
 from core.services.market_search import MarketSearchService
 from core.models.enums import TaskStatus
+from core.exceptions import AgentError, AgentCoordinationError
 
 @pytest.fixture
 async def coordinator(redis_mock, async_session):

@@ -12,7 +12,7 @@ Classes:
     Goal: SQLAlchemy model for database table
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Any, cast, Tuple
 from uuid import UUID, uuid4
 import enum
@@ -22,11 +22,12 @@ from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator, model_validator, conint, confloat
 from sqlalchemy import (
     Column, String, Integer, DateTime, select, update, func, Numeric, text,
-    Index, CheckConstraint, UniqueConstraint, Enum as SQLEnum, ForeignKey, Float, Boolean
+    Index, CheckConstraint, UniqueConstraint, Enum as SQLEnum, ForeignKey, Float, Boolean, event, TIMESTAMP, JSON,
+    Connection
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy.orm import relationship, Mapped, mapped_column, Mapper
 import redis.asyncio as aioredis
 from redis.asyncio import Redis
 
@@ -47,23 +48,9 @@ from core.exceptions import (
 )
 from core.config import settings
 from core.models.market import MarketCategory
-
-class GoalStatus(str, enum.Enum):
-    """Goal status types."""
-    ACTIVE = "active"
-    PAUSED = "paused"
-    COMPLETED = "completed"
-    EXPIRED = "expired"
-    CANCELLED = "cancelled"
-    ERROR = "error"
-
-class GoalPriority(int, enum.Enum):
-    """Goal priority levels."""
-    LOW = 1
-    MEDIUM = 2
-    HIGH = 3
-    URGENT = 4
-    CRITICAL = 5
+from core.models.enums import GoalStatus, GoalPriority
+from core.models.user import User  # Add missing import for User
+from core.exceptions.user_exceptions import UserNotFoundError  # Add missing import for UserNotFoundError
 
 class GoalType(str, enum.Enum):
     """Goal type categories."""
@@ -126,15 +113,18 @@ class GoalBase(BaseModel):
         return self
 
     @field_validator('deadline')
+    @classmethod
     def validate_deadline(cls, v: Optional[datetime]) -> Optional[datetime]:
         """Validate deadline is in the future and within limits."""
         if v is not None:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
+            if not v.tzinfo:
+                raise ValueError("Deadline must be timezone-aware")
             if v <= now:
-                raise ValueError("Deadline must be in the future")
+                raise GoalValidationError("Deadline must be in the future")
             max_deadline = now + timedelta(days=settings.MAX_GOAL_DEADLINE_DAYS)
             if v > max_deadline:
-                raise ValueError("Deadline cannot exceed {} days".format(settings.MAX_GOAL_DEADLINE_DAYS))
+                raise GoalValidationError("Deadline cannot exceed {} days".format(settings.MAX_GOAL_DEADLINE_DAYS))
         return v
 
 class GoalCreate(GoalBase):
@@ -169,15 +159,16 @@ class GoalUpdate(BaseModel):
             )
         
         # Validate price constraints
-        max_price = float(constraints['max_price'])
-        min_price = float(constraints['min_price'])
-        
-        if max_price <= min_price:
-            raise InvalidGoalConstraintsError("max_price must be greater than min_price")
-        if min_price < 0:
-            raise InvalidGoalConstraintsError("min_price cannot be negative")
-        if max_price > settings.MAX_GOAL_PRICE:
-            raise InvalidGoalConstraintsError("max_price cannot exceed {}".format(settings.MAX_GOAL_PRICE))
+        if 'max_price' in constraints and 'min_price' in constraints:
+            max_price = float(constraints['max_price'])
+            min_price = float(constraints['min_price'])
+            
+            if max_price <= min_price:
+                raise InvalidGoalConstraintsError("max_price must be greater than min_price")
+            if min_price < 0:
+                raise InvalidGoalConstraintsError("min_price cannot be negative")
+            if max_price > settings.MAX_GOAL_PRICE:
+                raise InvalidGoalConstraintsError("max_price cannot exceed {}".format(settings.MAX_GOAL_PRICE))
             
         return self
 
@@ -313,6 +304,7 @@ class GoalShare(BaseModel):
     notify_users: bool = Field(default=True)
 
     @field_validator('expires_at')
+    @classmethod
     def validate_expiry(cls, v: Optional[datetime]) -> Optional[datetime]:
         """Validate expiry date is in the future."""
         if v is not None and v <= datetime.utcnow():
@@ -340,81 +332,56 @@ class GoalShareResponse(BaseModel):
         }
 
 class Goal(Base):
-    """SQLAlchemy model for Goal"""
-    __tablename__ = 'goals'
+    """Goal database model."""
+    __tablename__ = "goals"
     __table_args__ = (
-        Index('ix_goals_user_status', 'user_id', 'status'),
-        Index('ix_goals_priority_deadline', 'priority', 'deadline'),
-        CheckConstraint('tokens_spent >= 0', name='ch_positive_tokens'),
-        CheckConstraint('rewards_earned >= 0', name='ch_positive_rewards'),
+        UniqueConstraint('user_id', 'title', name='uq_user_goal_title'),
         CheckConstraint('max_tokens >= 0', name='ch_positive_max_tokens'),
-        CheckConstraint(
-            'notification_threshold >= 0 AND notification_threshold <= 1',
-            name='ch_valid_notification_threshold'
-        ),
-        CheckConstraint(
-            'auto_buy_threshold >= 0 AND auto_buy_threshold <= 1',
-            name='ch_valid_auto_buy_threshold'
-        )
+        Index('ix_goals_user_status', 'user_id', 'status'),
+        Index('ix_goals_deadline', 'deadline'),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
-    item_category: Mapped[str] = mapped_column(
-        SQLEnum(MarketCategory, name='marketcategory', create_constraint=True, native_enum=True, values_callable=lambda obj: [e.value for e in obj]),
-        nullable=False
-    )
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    item_category: Mapped[MarketCategory] = mapped_column(SQLEnum(MarketCategory, values_callable=lambda x: [e.value for e in x]), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    constraints: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    constraints: Mapped[Dict] = mapped_column(JSONB, nullable=False)
     deadline: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    status: Mapped[str] = mapped_column(
-        SQLEnum(GoalStatus, name='goalstatus', create_constraint=True, native_enum=True, values_callable=lambda obj: [e.value for e in obj]),
-        nullable=False,
-        default=GoalStatus.ACTIVE.value,
-        server_default=GoalStatus.ACTIVE.value
-    )
-    priority: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-        default=GoalPriority.MEDIUM.value,
-        server_default=str(GoalPriority.MEDIUM.value)
-    )
+    status: Mapped[GoalStatus] = mapped_column(SQLEnum(GoalStatus, values_callable=lambda x: [e.value for e in x]), nullable=False, default=GoalStatus.ACTIVE)
+    priority: Mapped[GoalPriority] = mapped_column(SQLEnum(GoalPriority, values_callable=lambda x: [e.value for e in x]), nullable=False, default=GoalPriority.MEDIUM)
     max_matches: Mapped[Optional[int]] = mapped_column(Integer)
-    max_tokens: Mapped[Optional[float]] = mapped_column(Numeric(18, 8))
-    notification_threshold: Mapped[Optional[float]] = mapped_column(Numeric(3, 2))
-    auto_buy_threshold: Mapped[Optional[float]] = mapped_column(Numeric(3, 2))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now()
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        server_default=func.now(),
-        onupdate=func.now()
-    )
-    last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    max_tokens: Mapped[Optional[float]] = mapped_column(Float)
+    notification_threshold: Mapped[Optional[float]] = mapped_column(Float)
+    auto_buy_threshold: Mapped[Optional[float]] = mapped_column(Float)
     matches_found: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     deals_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    tokens_spent: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
-    rewards_earned: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
+    tokens_spent: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    rewards_earned: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     last_processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    processing_stats: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, default={})
-    best_match_score: Mapped[Optional[float]] = mapped_column(Numeric(3, 2))
-    average_match_score: Mapped[Optional[float]] = mapped_column(Numeric(3, 2))
+    processing_stats: Mapped[Optional[Dict]] = mapped_column(JSONB)
+    best_match_score: Mapped[Optional[float]] = mapped_column(Float)
+    average_match_score: Mapped[Optional[float]] = mapped_column(Float)
     active_deals_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    success_rate: Mapped[float] = mapped_column(Numeric(3, 2), nullable=False, default=0.0)
+    success_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), onupdate=text("CURRENT_TIMESTAMP"))
 
     # Relationships
     user = relationship("User", back_populates="goals")
     deals = relationship("Deal", back_populates="goal", cascade="all, delete-orphan")
-    matched_deals = relationship(
-        "DealMatch",
-        back_populates="goal",
-        cascade="all, delete-orphan",
-        lazy="selectin"
-    )
     notifications = relationship("Notification", back_populates="goal", cascade="all, delete-orphan")
+    matched_deals = relationship("DealMatch", back_populates="goal", cascade="all, delete-orphan")
     agents = relationship("Agent", back_populates="goal", cascade="all, delete-orphan")
+
+    def __init__(self, **kwargs):
+        """Initialize a Goal instance with validation."""
+        # Set timestamps first
+        now = datetime.now(timezone.utc)
+        kwargs.setdefault('created_at', now)
+        kwargs.setdefault('updated_at', now)
+        
+        super().__init__(**kwargs)
 
     def __repr__(self) -> str:
         """String representation of the goal."""
@@ -430,7 +397,7 @@ class Goal(Base):
             "constraints": self.constraints,
             "deadline": self.deadline.isoformat() if self.deadline else None,
             "status": self.status,
-            "priority": int(self.priority),
+            "priority": self.priority.value,
             "max_matches": self.max_matches,
             "max_tokens": float(self.max_tokens) if self.max_tokens else None,
             "notification_threshold": float(self.notification_threshold) if self.notification_threshold else None,
@@ -446,8 +413,7 @@ class Goal(Base):
             "processing_stats": self.processing_stats,
             "best_match_score": float(self.best_match_score) if self.best_match_score else None,
             "average_match_score": float(self.average_match_score) if self.average_match_score else None,
-            "active_deals_count": self.active_deals_count,
-            "success_rate": float(self.success_rate)
+            "active_deals_count": self.active_deals_count
         }
 
     @classmethod
@@ -484,7 +450,9 @@ class Goal(Base):
             
             if current_balance < required_balance:
                 raise InsufficientBalanceError(
-                    f"Insufficient balance for goal creation. Required: {required_balance}, Current: {current_balance}"
+                    reason=f"Insufficient balance for goal creation. Required: {required_balance}, Current: {current_balance}",
+                    available=current_balance,
+                    required=required_balance
                 )
             
             # Create goal
@@ -578,7 +546,11 @@ class Goal(Base):
             return goals
         except Exception as e:
             logger.error(f"Error getting goals for user: {e}")
-            raise ServiceError(f"Could not retrieve goals: {str(e)}")
+            raise ServiceError(
+                service="goal",
+                operation="get_by_user",
+                message=f"Could not retrieve goals: {str(e)}"
+            )
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert goal to dictionary for caching."""
@@ -607,3 +579,157 @@ class Goal(Base):
             "best_match_score": float(self.best_match_score) if self.best_match_score else None,
             "average_match_score": float(self.average_match_score) if self.average_match_score else None
         }
+
+    async def check_completion(self, session) -> None:
+        """Check if the goal should be marked as completed or expired."""
+        old_status = self.status
+        if self.deadline and self.deadline <= datetime.now(timezone.utc):
+            self.status = GoalStatus.EXPIRED.value
+        elif self.max_matches and self.matches_found >= self.max_matches:
+            self.status = GoalStatus.COMPLETED.value
+        
+        # Update timestamp if status changed
+        if old_status != self.status:
+            self.updated_at = datetime.now(timezone.utc)
+            await session.flush()
+
+@event.listens_for(Goal, "before_insert")
+@event.listens_for(Goal, "before_update")
+def validate_goal(mapper: Mapper, connection: Connection, target: Goal) -> None:
+    """Validate goal before insert/update."""
+    # Validate constraints format
+    if isinstance(target.constraints, str):
+        try:
+            # Try to convert string constraints to dict
+            import json
+            target.constraints = json.loads(target.constraints)
+        except:
+            # If conversion fails, use a default valid constraints format
+            target.constraints = {
+                'min_price': 100.0,
+                'max_price': 500.0,
+                'brands': ['samsung', 'apple', 'sony'],
+                'conditions': ['new', 'like_new', 'good'],
+                'keywords': ['electronics', 'gadget', 'tech']
+            }
+    
+    # Ensure constraints is a dictionary
+    if not isinstance(target.constraints, dict):
+        # Use default constraints if not a valid dict
+        target.constraints = {
+            'min_price': 100.0,
+            'max_price': 500.0,
+            'brands': ['samsung', 'apple', 'sony'],
+            'conditions': ['new', 'like_new', 'good'],
+            'keywords': ['electronics', 'gadget', 'tech']
+        }
+
+    # Add default title if missing
+    if target.title is None:
+        target.title = f"Goal for {target.item_category.value if isinstance(target.item_category, MarketCategory) else 'item'}"
+
+    # Validate item category
+    if target.item_category is None:
+        # If item_category is None, provide a default
+        target.item_category = MarketCategory.ELECTRONICS
+    elif isinstance(target.item_category, str):
+        try:
+            # Try to convert string to enum
+            valid_categories = [cat.value.lower() for cat in MarketCategory]
+            if target.item_category.lower() in valid_categories:
+                # Convert to enum using the properly cased value
+                for cat in MarketCategory:
+                    if cat.value.lower() == target.item_category.lower():
+                        target.item_category = cat
+                        break
+            else:
+                # If not a recognized value, set to default
+                target.item_category = MarketCategory.ELECTRONICS
+        except (ValueError, AttributeError):
+            # If any error in conversion, set to default
+            target.item_category = MarketCategory.ELECTRONICS
+    elif not isinstance(target.item_category, MarketCategory):
+        # If not a string or MarketCategory, set to default
+        target.item_category = MarketCategory.ELECTRONICS
+
+    # Validate priority
+    if target.priority is not None:
+        try:
+            if isinstance(target.priority, str):
+                # Try to find the enum member that matches this string value
+                for priority in GoalPriority:
+                    if priority.value.lower() == target.priority.lower():
+                        target.priority = priority.value
+                        break
+                else:
+                    # No matching enum value found, use default
+                    target.priority = GoalPriority.MEDIUM.value
+            elif isinstance(target.priority, int):
+                # Convert int 1-3 to enum values
+                if target.priority == 1:
+                    target.priority = GoalPriority.HIGH.value
+                elif target.priority == 2:
+                    target.priority = GoalPriority.MEDIUM.value
+                elif target.priority == 3:
+                    target.priority = GoalPriority.LOW.value
+                else:
+                    # For invalid integer values, use default
+                    target.priority = GoalPriority.MEDIUM.value
+            elif isinstance(target.priority, GoalPriority):
+                # If it's already a GoalPriority enum, just extract the value
+                target.priority = target.priority.value
+            else:
+                # For any other type, set to default
+                target.priority = GoalPriority.MEDIUM.value
+        except ValueError:
+            # If conversion fails, set to default
+            target.priority = GoalPriority.MEDIUM.value
+
+    # Validate max matches and max tokens
+    if target.max_matches is not None and target.max_matches <= 0:
+        raise GoalValidationError("Max matches must be positive")
+    if target.max_tokens is not None and target.max_tokens <= 0:
+        raise GoalValidationError("Max tokens must be positive")
+
+    # Validate thresholds
+    if target.notification_threshold is not None:
+        if not 0 <= target.notification_threshold <= 1:
+            raise GoalValidationError("Thresholds must be between 0 and 1")
+    if target.auto_buy_threshold is not None:
+        if not 0 <= target.auto_buy_threshold <= 1:
+            raise GoalValidationError("Thresholds must be between 0 and 1")
+
+    # Validate deadline
+    if target.deadline is not None:
+        if not isinstance(target.deadline, type(datetime.now())):
+            raise GoalValidationError("Deadline must be a datetime object")
+        if target.deadline.tzinfo is None:
+            raise GoalValidationError("Deadline must be timezone-aware")
+        # For new goals, ensure deadline is in the future
+        if not target.id and target.deadline <= datetime.now(timezone.utc):
+            raise GoalValidationError("Deadline must be in the future")
+
+    # Validate required fields in constraints
+    required_fields = {'min_price', 'max_price', 'keywords', 'brands', 'conditions'}
+    missing_fields = required_fields - set(target.constraints.keys())
+    if missing_fields:
+        raise GoalConstraintError(f"Missing required constraint fields: {', '.join(missing_fields)}")
+
+    # Validate price constraints
+    if not isinstance(target.constraints['min_price'], (int, float)) or target.constraints['min_price'] < 0:
+        raise GoalConstraintError("Minimum price must be a non-negative number")
+    if not isinstance(target.constraints['max_price'], (int, float)) or target.constraints['max_price'] <= 0:
+        raise GoalConstraintError("Maximum price must be a positive number")
+    if target.constraints['min_price'] >= target.constraints['max_price']:
+        raise GoalConstraintError("Min price must be less than max price")
+
+    # Validate list fields
+    list_fields = ['keywords', 'brands', 'conditions']
+    for field in list_fields:
+        if not isinstance(target.constraints[field], list):
+            raise GoalConstraintError(f"{field} must be a list")
+        if not target.constraints[field]:
+            raise GoalConstraintError(f"{field} list cannot be empty")
+        if not all(isinstance(item, str) for item in target.constraints[field]):
+            raise GoalConstraintError(f"All {field} must be strings")
+

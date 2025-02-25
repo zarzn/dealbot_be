@@ -15,16 +15,16 @@ Classes:
 
 from uuid import UUID, uuid4
 from datetime import datetime
-from decimal import Decimal
-from enum import Enum
+from decimal import Decimal, ROUND_DOWN
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text, DECIMAL, ForeignKey, JSON, Index, CheckConstraint, Integer, Text
+from sqlalchemy import Column, String, DateTime, Numeric, Enum as SQLEnum, text, DECIMAL, ForeignKey, JSON, Index, CheckConstraint, Integer, Text, select
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.sql import func, expression
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.ext.asyncio import AsyncSession
 from core.models.base import Base
-#from core.exceptions import InvalidTransactionError DO NOT DELETE THIS COMMENT
+from core.models.enums import TransactionType, TransactionStatus, TokenTransactionType, TokenTransactionStatus
 
 __all__ = [
     'TokenTransaction',
@@ -36,21 +36,6 @@ __all__ = [
     'TransactionResponse',
     'TransactionHistoryResponse'
 ]
-
-class TransactionType(str, Enum):
-    """Transaction type enumeration."""
-    PAYMENT = "payment"
-    REFUND = "refund"
-    REWARD = "reward"
-    SEARCH_PAYMENT = "search_payment"
-    SEARCH_REFUND = "search_refund"
-
-class TransactionStatus(str, Enum):
-    """Transaction status enumeration."""
-    PENDING = "pending"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
 
 class TokenTransactionBase(BaseModel):
     user_id: UUID
@@ -109,17 +94,20 @@ class TokenTransaction(Base):
     """Token transaction database model."""
     __tablename__ = "token_transactions"
     __table_args__ = (
-        Index('ix_token_transactions_user', 'user_id'),
-        Index('ix_token_transactions_status', 'status'),
-        Index('ix_token_transactions_type', 'type'),
+        Index('ix_token_transactions_user_status', 'user_id', 'status'),
         CheckConstraint('amount > 0', name='ch_positive_amount'),
+        {'extend_existing': True}
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    type: Mapped[TransactionType] = mapped_column(SQLEnum(TransactionType), nullable=False)
-    amount: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
-    status: Mapped[TransactionStatus] = mapped_column(SQLEnum(TransactionStatus), default=TransactionStatus.PENDING)
+    type: Mapped[str] = mapped_column(SQLEnum(TokenTransactionType, values_callable=lambda x: [e.value.lower() for e in x], name='transactiontype'), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(
+        Numeric(18, 8), 
+        nullable=False,
+        default=Decimal('0').quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
+    )
+    status: Mapped[str] = mapped_column(SQLEnum(TokenTransactionStatus, values_callable=lambda x: [e.value.lower() for e in x], name='transactionstatus'), nullable=False, default=TokenTransactionStatus.PENDING.value)
     tx_hash: Mapped[Optional[str]] = mapped_column(String(66))
     block_number: Mapped[Optional[int]] = mapped_column(Integer)
     gas_used: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(18, 8))
@@ -135,9 +123,76 @@ class TokenTransaction(Base):
 
     # Relationships
     user = relationship("User", back_populates="token_transactions")
+    balance_history = relationship("TokenBalanceHistory", back_populates="transaction")
 
     def __repr__(self) -> str:
-        return "<TokenTransaction(id={}, type={}, amount={})>".format(self.id, self.type, self.amount)
+        return f"<TokenTransaction(id={self.id}, type={self.type}, amount={self.amount})>"
+
+    @property
+    def quantized_amount(self) -> Decimal:
+        """Get amount with proper precision."""
+        return Decimal(str(self.amount)).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
+
+    @quantized_amount.setter
+    def quantized_amount(self, value: Decimal) -> None:
+        """Set amount with proper precision."""
+        self.amount = Decimal(str(value)).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
+
+    def validate_amount(self) -> None:
+        """Validate transaction amount."""
+        if self.amount <= 0:
+            raise ValueError("Transaction amount must be positive")
+        self.quantized_amount = self.amount
+
+    def validate_type(self) -> None:
+        """Validate transaction type."""
+        if self.type not in [t.value for t in TokenTransactionType]:
+            raise ValueError(f"Invalid transaction type: {self.type}")
+
+    def validate_status(self) -> None:
+        """Validate transaction status."""
+        if self.status not in [s.value for s in TokenTransactionStatus]:
+            raise ValueError(f"Invalid transaction status: {self.status}")
+
+    async def process(self, db: AsyncSession) -> None:
+        """Process the transaction and update user balance."""
+        from core.models.token_balance import TokenBalance
+        
+        # Validate transaction
+        self.validate_amount()
+        self.validate_type()
+        self.validate_status()
+
+        if self.status == TokenTransactionStatus.COMPLETED.value:
+            # Get or create token balance
+            stmt = select(TokenBalance).where(TokenBalance.user_id == self.user_id)
+            result = await db.execute(stmt)
+            token_balance = result.scalar_one_or_none()
+
+            if not token_balance:
+                # Ensure we have a valid user_id
+                if not self.user_id and self.user:
+                    self.user_id = self.user.id
+                
+                if not self.user_id:
+                    raise ValueError("Cannot create token balance without user_id")
+
+                token_balance = TokenBalance(
+                    user_id=self.user_id,
+                    balance=Decimal('0').quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
+                )
+                db.add(token_balance)
+                await db.flush()
+
+            # Update balance
+            await token_balance.update_balance(
+                db=db,
+                amount=self.quantized_amount,
+                operation=self.type,
+                reason=f"{self.type.capitalize()} transaction",
+                transaction_id=self.id,
+                transaction_data=self.meta_data
+            )
 
     @classmethod
     async def create(cls, db, **kwargs) -> 'TokenTransaction':

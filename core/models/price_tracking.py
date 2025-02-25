@@ -1,6 +1,6 @@
 """Price tracking models."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 from uuid import UUID
 from decimal import Decimal
@@ -24,7 +24,7 @@ class PricePoint(Base):
     price: Mapped[Decimal] = mapped_column(Numeric(precision=10, scale=2))
     currency: Mapped[str] = mapped_column(String, server_default="USD")
     source: Mapped[str] = mapped_column(String)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, server_default=text("NOW()"))
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("NOW()"))
     meta_data: Mapped[Optional[Dict]] = mapped_column(JSONB)
 
     # Relationships - use string reference to avoid circular import

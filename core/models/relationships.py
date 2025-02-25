@@ -51,7 +51,18 @@ def setup_relationships():
     User.token_balance_history = relationship("TokenBalanceHistory", back_populates="user", cascade="all, delete-orphan")
     User.token_wallet = relationship("TokenWallet", back_populates="user", uselist=False, cascade="all, delete-orphan")
     User.token_balance = relationship("TokenBalance", back_populates="user", uselist=False, cascade="all, delete-orphan")
-    User.referrals = relationship("User", backref=backref("referred_by_user", remote_side=[User.id]))
+    User.referrals = relationship(
+        "User",
+        primaryjoin="User.id==User.referred_by",
+        remote_side="User.referred_by",
+        back_populates="referred_by_user"
+    )
+    User.referred_by_user = relationship(
+        "User",
+        primaryjoin="User.referred_by==User.id",
+        remote_side="User.id",
+        back_populates="referrals"
+    )
     User.price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
     User.price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
     User.tracked_deals = relationship("TrackedDeal", back_populates="user", cascade="all, delete-orphan")

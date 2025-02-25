@@ -17,7 +17,6 @@ class PriorityLevel(str, Enum):
     LOW = "low"
 
 class LLMProvider(str, Enum):
-    GEMINI = "gemini"  # Development only
     DEEPSEEK = "deepseek"  # Primary
     OPENAI = "openai"  # Fallback
 
@@ -70,12 +69,6 @@ PRIORITY_CONFIGS: Dict[PriorityLevel, PriorityConfig] = {
 def load_llm_configs() -> Dict[LLMProvider, LLMConfig]:
     """Load LLM configurations with environment variables."""
     configs = {
-        LLMProvider.GEMINI: LLMConfig(
-            provider=LLMProvider.GEMINI,
-            model="gemini-2.0-flash",
-            api_key="AIzaSyDfOgCtxPOg5ZzwIob6hTDtN7aFtpsiIGQ",
-            is_development=True
-        ),
         LLMProvider.DEEPSEEK: LLMConfig(
             provider=LLMProvider.DEEPSEEK,
             model="deepseek-coder",
@@ -94,7 +87,7 @@ def load_llm_configs() -> Dict[LLMProvider, LLMConfig]:
     
     # Validate required API keys
     for provider, config in configs.items():
-        if not config.api_key and not (provider == LLMProvider.GEMINI and config.is_development):
+        if not config.api_key:
             raise ConfigurationError(
                 config_key=f"LLM_API_KEY_{provider.value.upper()}",
                 message=f"Missing API key for provider: {provider}"

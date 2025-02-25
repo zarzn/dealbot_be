@@ -1,3 +1,47 @@
+"""Core exceptions module."""
+
+from typing import Optional, Dict, Any, List
+from decimal import Decimal
+
+class BaseError(Exception):
+    """Base error class for all custom exceptions."""
+    def __init__(self, message: str, error_code: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
+        self.message = message
+        self.error_code = error_code
+        self.details = details or {}
+        super().__init__(self.message)
+
+class RedisError(BaseError):
+    """Exception raised for Redis-related errors."""
+    def __init__(self, message: str, error_code: Optional[str] = None, details: Optional[Dict[str, Any]] = None):
+        super().__init__(
+            message=message,
+            error_code=error_code or "redis_error",
+            details=details
+        )
+
+class CacheError(BaseError):
+    """Exception raised for cache-related errors."""
+    def __init__(
+        self,
+        message: str,
+        cache_key: Optional[str] = None,
+        operation: Optional[str] = None,
+        error_code: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        error_details = details or {}
+        if cache_key:
+            error_details["cache_key"] = cache_key
+        if operation:
+            error_details["operation"] = operation
+        
+        super().__init__(
+            message=message,
+            error_code=error_code or "cache_error",
+            details=error_details
+        )
+
 """Core exceptions initialization."""
 
 # Import base exceptions first since they're used by other modules
@@ -18,6 +62,16 @@ from .base_exceptions import (
     RateLimitError,
     RateLimitExceededError,
     RepositoryError
+)
+
+# Import task exceptions
+from .task_exceptions import (
+    TaskError,
+    TaskNotFoundError,
+    TaskValidationError,
+    TaskExecutionError,
+    TaskTimeoutError,
+    TaskCancellationError
 )
 
 # Import repository exceptions
@@ -216,7 +270,8 @@ from .auth_exceptions import (
     InvalidTwoFactorCodeError,
     TokenRefreshError,
     AccountLockedError,
-    EmailNotVerifiedError
+    EmailNotVerifiedError,
+    SocialAuthError
 )
 
 # Import agent exceptions
@@ -267,10 +322,6 @@ class LLMProviderError(BaseError):
     """Raised when there is an error with the LLM provider."""
     pass
 
-class MarketIntegrationError(BaseError):
-    """Raised when there is an error with market integration."""
-    pass
-
 class ProcessingError(BaseError):
     """Raised when processing fails."""
     pass
@@ -289,14 +340,6 @@ class ServiceUnavailableError(BaseError):
 
 class ThirdPartyError(BaseError):
     """Raised when there is an error with a third party service."""
-    pass
-
-class TokenError(BaseError):
-    """Raised when there is an error with tokens."""
-    pass
-
-class UserError(BaseError):
-    """Raised when there is a user-related error."""
     pass
 
 __all__ = [
@@ -319,6 +362,14 @@ __all__ = [
     'RepositoryError',
     'AccountLockedError',
     'EmailNotVerifiedError',
+
+    # Task exceptions
+    'TaskError',
+    'TaskNotFoundError',
+    'TaskValidationError',
+    'TaskExecutionError',
+    'TaskTimeoutError',
+    'TaskCancellationError',
 
     # Repository exceptions
     'EntityNotFoundError',
@@ -488,6 +539,7 @@ __all__ = [
     'TokenRefreshError',
     'AccountLockedError',
     'EmailNotVerifiedError',
+    'SocialAuthError',
 
     # Agent exceptions
     'AgentError',
@@ -521,11 +573,10 @@ __all__ = [
     'WebSocketError',
     'AgentInitializationError',
     'LLMProviderError',
-    'MarketIntegrationError',
     'ProcessingError',
     'ResourceNotFoundError',
     'ResourceExistsError',
     'ServiceUnavailableError',
     'ThirdPartyError',
-    'UserError'
+    'RedisError'
 ]

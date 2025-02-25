@@ -18,7 +18,7 @@ from core.tasks.price_monitor import (
 )
 from core.models.deal import Deal
 from core.models.goal import Goal
-from core.models.price_point import PricePoint
+from core.models.price_tracking import PricePoint
 from core.models.notification import Notification
 
 @pytest.mark.asyncio

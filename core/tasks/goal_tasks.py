@@ -1,41 +1,56 @@
-"""Goal-related tasks."""
+"""Goal processing tasks."""
 
 from typing import Optional, List
 from uuid import UUID
 import logging
 from datetime import datetime, timedelta
-from sqlalchemy.ext.asyncio import AsyncSession
-from core.database import get_db
+from sqlalchemy import create_engine, select, update, and_
+from sqlalchemy.orm import Session, sessionmaker
+from core.config import get_settings
 from core.models.goal_types import GoalStatus
 from core.services.token_service import TokenService
 from core.exceptions.base_exceptions import BaseError as CoreBaseError
 from core.exceptions.goal_exceptions import GoalProcessingError
 from core.models.database import Goal as GoalModel
-from sqlalchemy.future import select
-from sqlalchemy import update
+from core.celery import celery_app
 
 logger = logging.getLogger(__name__)
 
-async def process_goals(
-    user_id: UUID,
-    goals: List[GoalModel],
-    db: Optional[AsyncSession] = None
-) -> None:
-    """Process goals for a user."""
-    db_to_close: Optional[AsyncSession] = None
+# Create synchronous engine and session factory
+settings = get_settings()
+engine = create_engine(str(settings.sync_database_url))
+SessionLocal = sessionmaker(bind=engine)
+
+def get_db() -> Session:
+    """Get synchronous database session."""
+    db = SessionLocal()
     try:
-        if db is None:
-            db_to_close = await get_db()
-            db = db_to_close
+        return db
+    except Exception as e:
+        db.close()
+        raise e
+
+@celery_app.task(bind=True)
+def process_goals(self, user_id: str, goal_ids: List[str]) -> None:
+    """Process goals for a user."""
+    db = get_db()
+    try:
+        # Get goals from database
+        goals = db.query(GoalModel).filter(
+            and_(
+                GoalModel.id.in_([UUID(gid) for gid in goal_ids]),
+                GoalModel.user_id == UUID(user_id)
+            )
+        ).all()
 
         # Process each goal
         for goal in goals:
             try:
                 # Update goal status
-                await update_goal_analytics(goal.id, user_id, db)
+                update_goal_analytics(goal.id, user_id)
                 
                 # Process notifications
-                await process_goal_notifications(goal.id, user_id, db)
+                process_goal_notifications(goal.id, user_id)
                 
             except Exception as e:
                 logger.error(f"Error processing goal {goal.id}: {str(e)}")
@@ -43,31 +58,22 @@ async def process_goals(
                 
     except Exception as e:
         logger.error(f"Error in process_goals: {str(e)}")
-        if db:
-            await db.rollback()
+        db.rollback()
     finally:
-        if db_to_close:
-            await db_to_close.close()
+        db.close()
 
-async def update_goal_analytics(
-    goal_id: UUID,
-    user_id: UUID,
-    db: Optional[AsyncSession] = None
-) -> None:
+@celery_app.task(bind=True)
+def update_goal_analytics(self, goal_id: str, user_id: str) -> None:
     """Update goal analytics."""
-    db_to_close: Optional[AsyncSession] = None
+    db = get_db()
     try:
-        if db is None:
-            db_to_close = await get_db()
-            db = db_to_close
-            
         # Get the goal
-        result = await db.execute(
-            select(GoalModel)
-            .where(GoalModel.id == goal_id)
-            .where(GoalModel.user_id == user_id)
-        )
-        goal = result.scalar_one_or_none()
+        goal = db.query(GoalModel).filter(
+            and_(
+                GoalModel.id == UUID(goal_id),
+                GoalModel.user_id == UUID(user_id)
+            )
+        ).first()
         
         if not goal:
             logger.warning(f"Goal {goal_id} not found for analytics update")
@@ -76,70 +82,55 @@ async def update_goal_analytics(
         # Update analytics
         # TODO: Implement analytics update logic
         
+        db.commit()
+        
     except Exception as e:
         logger.error(f"Error updating goal analytics: {str(e)}")
-        if db:
-            await db.rollback()
+        db.rollback()
     finally:
-        if db_to_close:
-            await db_to_close.close()
+        db.close()
 
-async def cleanup_completed_goals(
-    days_old: int = 60,
-    db: Optional[AsyncSession] = None
-) -> None:
+@celery_app.task(bind=True)
+def cleanup_completed_goals(self, days_old: int = 60) -> None:
     """Clean up old completed goals."""
-    db_to_close: Optional[AsyncSession] = None
+    db = get_db()
     try:
-        if db is None:
-            db_to_close = await get_db()
-            db = db_to_close
-            
         cutoff_date = datetime.utcnow() - timedelta(days=days_old)
         
         # Get old completed goals
-        result = await db.execute(
-            select(GoalModel)
-            .where(GoalModel.status == GoalStatus.COMPLETED.value)
-            .where(GoalModel.updated_at <= cutoff_date)
-        )
-        goals = result.scalars().all()
+        goals = db.query(GoalModel).filter(
+            and_(
+                GoalModel.status == GoalStatus.COMPLETED.value,
+                GoalModel.updated_at <= cutoff_date
+            )
+        ).all()
         
         # Archive goals
         for goal in goals:
             goal.is_archived = True
             goal.archived_at = datetime.utcnow()
             
-        await db.commit()
+        db.commit()
         logger.info(f"Archived {len(goals)} old completed goals")
         
     except Exception as e:
         logger.error(f"Error cleaning up completed goals: {str(e)}")
-        if db:
-            await db.rollback()
+        db.rollback()
     finally:
-        if db_to_close:
-            await db_to_close.close()
+        db.close()
 
-async def process_goal_notifications(
-    goal_id: UUID,
-    user_id: UUID,
-    db: Optional[AsyncSession] = None
-) -> None:
+@celery_app.task(bind=True)
+def process_goal_notifications(self, goal_id: str, user_id: str) -> None:
     """Process notifications for a goal."""
-    db_to_close: Optional[AsyncSession] = None
+    db = get_db()
     try:
-        if db is None:
-            db_to_close = await get_db()
-            db = db_to_close
-            
         # Get the goal
-        result = await db.execute(
-            select(GoalModel)
-            .where(GoalModel.id == goal_id)
-            .where(GoalModel.user_id == user_id)
-        )
-        goal = result.scalar_one_or_none()
+        goal = db.query(GoalModel).filter(
+            and_(
+                GoalModel.id == UUID(goal_id),
+                GoalModel.user_id == UUID(user_id)
+            )
+        ).first()
         
         if not goal:
             logger.warning(f"Goal {goal_id} not found for notification processing")
@@ -148,10 +139,10 @@ async def process_goal_notifications(
         # Process notifications
         # TODO: Implement notification processing logic
         
+        db.commit()
+        
     except Exception as e:
         logger.error(f"Error processing goal notifications: {str(e)}")
-        if db:
-            await db.rollback()
+        db.rollback()
     finally:
-        if db_to_close:
-            await db_to_close.close()
+        db.close()

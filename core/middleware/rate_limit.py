@@ -1,143 +1,211 @@
-"""Rate limiting middleware."""
+"""Rate limiting middleware.
 
-from typing import Optional, Callable
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp
+This module provides rate limiting functionality using Redis as a backend.
+"""
+
+from typing import Optional, Callable, List
+from fastapi import Request, HTTPException, status
+import time
+from datetime import datetime
+import logging
+from redis.asyncio import Redis
+from core.services.redis import get_redis_service
 
 from core.config import settings
-from core.utils.logger import get_logger
-from core.utils.redis import RateLimit
-from core.exceptions.base_exceptions import RateLimitError
+from core.exceptions import RateLimitError
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
-class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Middleware for rate limiting requests."""
+class RateLimitMiddleware:
+    """Rate limiter middleware implementation."""
 
     def __init__(
         self,
-        app: ASGIApp,
-        redis_client,
-        limit: int = settings.RATE_LIMIT_PER_MINUTE,
-        window: int = 60,
-        exclude_paths: Optional[list[str]] = None,
-        key_func: Optional[Callable] = None
+        app: Optional[Callable] = None,
+        rate_per_second: Optional[int] = None,
+        rate_per_minute: Optional[int] = None,
+        exclude_paths: Optional[List[str]] = None
     ):
-        """Initialize rate limit middleware.
+        """Initialize rate limiter middleware.
         
         Args:
             app: ASGI application
-            redis_client: Redis client instance
-            limit: Maximum number of requests per window
-            window: Time window in seconds
-            exclude_paths: List of paths to exclude from rate limiting
-            key_func: Optional function to generate rate limit key
+            rate_per_second: Maximum requests per second
+            rate_per_minute: Maximum requests per minute
+            exclude_paths: Paths to exclude from rate limiting
         """
-        super().__init__(app)
-        self.redis_client = redis_client
-        self.limit = limit
-        self.window = window
-        self.exclude_paths = exclude_paths or []
-        self.key_func = key_func or self._default_key_func
+        self.app = app
+        self.rate_per_second = rate_per_second or int(settings.RATE_LIMIT_PER_SECOND)
+        self.rate_per_minute = rate_per_minute or int(settings.RATE_LIMIT_PER_MINUTE)
+        self.exclude_paths = exclude_paths or [
+            "/docs",
+            "/redoc",
+            "/openapi.json",
+            "/api/v1/health",
+            "/api/v1/metrics"
+        ]
 
-    async def dispatch(
-        self,
-        request: Request,
-        call_next: Callable
-    ) -> Response:
-        """Process the request through rate limiting.
-        
-        Args:
-            request: FastAPI request
-            call_next: Next middleware/handler
-            
-        Returns:
-            Response from next middleware/handler
-            
-        Raises:
-            RateLimitError: If rate limit is exceeded
-        """
-        if await self._should_skip(request):
-            return await call_next(request)
-
-        key = await self.key_func(request)
-        rate_limiter = RateLimit(
-            redis=self.redis_client,
-            key=key,
-            limit=self.limit,
-            window=self.window
-        )
-
-        try:
-            await rate_limiter.check_limit()
-            response = await call_next(request)
-            
-            # Increment after successful request
-            current = await rate_limiter.increment()
-            remaining = max(0, self.limit - current)
-            
-            # Add rate limit headers
-            response.headers["X-RateLimit-Limit"] = str(self.limit)
-            response.headers["X-RateLimit-Remaining"] = str(remaining)
-            response.headers["X-RateLimit-Reset"] = str(
-                int((await rate_limiter.get_reset_time()).timestamp())
-            )
-            
-            return response
-
-        except RateLimitError as e:
-            logger.warning(
-                f"Rate limit exceeded for {key}",
-                extra={
-                    "key": key,
-                    "limit": self.limit,
-                    "window": self.window
-                }
-            )
-            raise e
-
-        except Exception as e:
-            logger.error(
-                f"Error in rate limit middleware: {str(e)}",
-                extra={
-                    "key": key,
-                    "limit": self.limit,
-                    "window": self.window
-                }
-            )
-            # Continue processing on error
-            return await call_next(request)
-
-    async def _should_skip(self, request: Request) -> bool:
-        """Check if rate limiting should be skipped.
+    async def should_check_rate_limit(self, request: Request) -> bool:
+        """Check if request should be rate limited.
         
         Args:
             request: FastAPI request
             
         Returns:
-            True if rate limiting should be skipped
+            bool: True if request should be rate limited
         """
         path = request.url.path
-        return any(
-            path.startswith(exclude_path)
-            for exclude_path in self.exclude_paths
-        )
+        return not any(path.startswith(excluded) for excluded in self.exclude_paths)
 
-    async def _default_key_func(self, request: Request) -> str:
-        """Generate default rate limit key from request.
+    async def _get_rate_limit_key(self, request: Request) -> str:
+        """Get rate limit key for request."""
+        # Use client IP or user ID if authenticated
+        identifier = request.client.host
+        if hasattr(request.state, "user") and request.state.user:
+            identifier = str(request.state.user.id)
+        return f"rate_limit:{identifier}"
+
+    async def _check_rate_limit(
+        self,
+        redis: Redis,
+        key: str,
+        limit: int,
+        window: int
+    ) -> bool:
+        """Check if request is within rate limit.
         
         Args:
-            request: FastAPI request
+            redis: Redis client
+            key: Redis key
+            limit: Maximum requests
+            window: Time window in seconds
             
         Returns:
-            Rate limit key string
-        """
-        # Get client IP, falling back to a default if not found
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            ip = forwarded.split(",")[0].strip()
-        else:
-            ip = request.client.host if request.client else "unknown"
+            bool: True if within limit, False otherwise
             
-        return f"{ip}:{request.url.path}" 
+        Raises:
+            RateLimitError: If rate limit is exceeded or Redis fails
+        """
+        try:
+            async with redis.pipeline() as pipe:
+                now = time.time()
+                # Remove old entries
+                await pipe.zremrangebyscore(key, 0, now - window)
+                # Count current requests
+                await pipe.zcard(key)
+                # Add new request
+                await pipe.zadd(key, {str(now): now})
+                # Set expiration
+                await pipe.expire(key, window)
+                # Execute pipeline
+                results = await pipe.execute()
+                
+                # Get count from results
+                count = results[1] if results else 0
+                if count >= limit:
+                    raise RateLimitError(
+                        message=f"Rate limit exceeded: {limit} requests per {window} seconds",
+                        limit=limit,
+                        reset_at=datetime.fromtimestamp(now + window)
+                    )
+                return True
+        except RateLimitError:
+            raise
+        except Exception as e:
+            logger.error(f"Error checking rate limit: {str(e)}")
+            # On Redis error, enforce rate limit to be safe
+            raise RateLimitError(
+                message="Rate limit check failed",
+                limit=limit,
+                reset_at=datetime.fromtimestamp(time.time() + window)
+            )
+
+    async def __call__(self, scope, receive, send):
+        """Rate limiting middleware."""
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        request = Request(scope)
+        
+        # Skip rate limiting for excluded paths
+        if not await self.should_check_rate_limit(request):
+            return await self.app(scope, receive, send)
+
+        try:
+            redis = await get_redis_service()
+            key = await self._get_rate_limit_key(request)
+            
+            # Check per-second rate limit
+            await self._check_rate_limit(redis, f"{key}:second", self.rate_per_second, 1)
+                
+            # Check per-minute rate limit
+            await self._check_rate_limit(redis, f"{key}:minute", self.rate_per_minute, 60)
+
+            return await self.app(scope, receive, send)
+
+        except RateLimitError as e:
+            # Convert RateLimitError to HTTP response
+            status_code = status.HTTP_429_TOO_MANY_REQUESTS
+            content = {
+                "detail": {
+                    "message": str(e),
+                    "limit": e.limit,
+                    "reset_at": e.reset_at.isoformat() if e.reset_at else None
+                }
+            }
+            
+            async def send_error_response(message):
+                if message["type"] == "http.response.start":
+                    await send({
+                        "type": "http.response.start",
+                        "status": status_code,
+                        "headers": [
+                            (b"content-type", b"application/json")
+                        ]
+                    })
+                elif message["type"] == "http.response.body":
+                    import json
+                    body = json.dumps(content).encode("utf-8")
+                    await send({
+                        "type": "http.response.body",
+                        "body": body,
+                        "more_body": False
+                    })
+            
+            await send_error_response({"type": "http.response.start"})
+            await send_error_response({"type": "http.response.body"})
+            return
+            
+        except Exception as e:
+            logger.error(f"Rate limiting error: {str(e)}")
+            # On any error, enforce rate limit to be safe
+            status_code = status.HTTP_429_TOO_MANY_REQUESTS
+            content = {
+                "detail": {
+                    "message": "Rate limit check failed",
+                    "limit": self.rate_per_second,  # Use per-second limit as default
+                    "reset_at": datetime.fromtimestamp(time.time() + 1).isoformat()
+                }
+            }
+            
+            async def send_error_response(message):
+                if message["type"] == "http.response.start":
+                    await send({
+                        "type": "http.response.start",
+                        "status": status_code,
+                        "headers": [
+                            (b"content-type", b"application/json")
+                        ]
+                    })
+                elif message["type"] == "http.response.body":
+                    import json
+                    body = json.dumps(content).encode("utf-8")
+                    await send({
+                        "type": "http.response.body",
+                        "body": body,
+                        "more_body": False
+                    })
+            
+            await send_error_response({"type": "http.response.start"})
+            await send_error_response({"type": "http.response.body"})
+            return 

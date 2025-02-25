@@ -5,6 +5,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, WebSocket, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
+import logging
+import traceback
 
 from core.models.notification import (
     NotificationResponse,
@@ -13,7 +15,8 @@ from core.models.notification import (
     NotificationType,
     NotificationPriority,
     NotificationFilter,
-    NotificationAnalytics
+    NotificationAnalytics,
+    NotificationChannel
 )
 from core.models.user_preferences import (
     UserPreferencesResponse,
@@ -21,7 +24,7 @@ from core.models.user_preferences import (
     NotificationFrequency,
     NotificationTimeWindow
 )
-from core.services.notifications import NotificationService
+from core.services.notification import NotificationService
 from core.database import get_async_db_session as get_db
 from core.dependencies import get_current_user
 from core.models.user import User, UserInDB
@@ -32,6 +35,15 @@ from core.api.v1.dependencies import (
     get_token_service,
     get_analytics_service
 )
+from core.exceptions import (
+    NotificationError,
+    NotificationNotFoundError,
+    NotificationDeliveryError,
+    NotificationRateLimitError,
+    InvalidNotificationTemplateError
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["notifications"])
 
@@ -56,17 +68,24 @@ async def get_notifications(
     """Get user notifications with filtering."""
     try:
         notification_service = NotificationService(db)
-        return await notification_service.get_user_notifications(
+        notifications = await notification_service.get_notifications(
             user_id=current_user.id,
             limit=limit,
             offset=offset,
-            unread_only=unread_only,
-            notification_type=notification_type
+            unread_only=unread_only
+        )
+        return notifications
+    except NotificationError as e:
+        logger.error(f"Notification error in get_notifications: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
         )
     except Exception as e:
+        logger.error(f"Unexpected error in get_notifications: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get notifications: {str(e)}"
+            detail=str(e)
         )
 
 @router.get(
@@ -79,8 +98,21 @@ async def get_unread_count(
     db: AsyncSession = Depends(get_db)
 ) -> int:
     """Get count of unread notifications."""
-    notification_service = NotificationService(db)
-    return await notification_service.get_unread_count(current_user.id)
+    try:
+        notification_service = NotificationService(db)
+        return await notification_service.get_unread_count(current_user.id)
+    except NotificationError as e:
+        logger.error(f"Notification error: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to get unread count: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
 
 @router.post(
     "",
@@ -99,20 +131,26 @@ async def create_notification(
         if background_tasks:
             notification_service.set_background_tasks(background_tasks)
         
-        result = await notification_service.create_notification(
+        return await notification_service.create_notification(
             user_id=current_user.id,
             title=notification.title,
             message=notification.message,
-            type=notification.type,
+            notification_type=notification.type,
             priority=notification.priority,
-            metadata=notification.metadata
+            notification_metadata=notification.notification_metadata,
+            channels=[NotificationChannel.IN_APP]
         )
-        
-        return result
+    except NotificationError as e:
+        logger.error(f"Notification error: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
     except Exception as e:
+        logger.error(f"Failed to create notification: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create notification: {str(e)}"
+            detail="Internal server error"
         )
 
 @router.put(
@@ -126,17 +164,32 @@ async def mark_notification_read(
     db: AsyncSession = Depends(get_db)
 ) -> NotificationResponse:
     """Mark a notification as read."""
-    notification_service = NotificationService(db)
-    notifications = await notification_service.mark_as_read(
-        [str(notification_id)],
-        str(current_user.id)
-    )
-    if not notifications:
+    try:
+        notification_service = NotificationService(db)
+        notifications = await notification_service.mark_as_read(
+            [notification_id],
+            current_user.id
+        )
+        if not notifications:
+            raise NotificationNotFoundError("Notification not found")
+        return notifications[0]
+    except NotificationNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Notification not found"
+            detail=str(e)
         )
-    return notifications[0]
+    except NotificationError as e:
+        logger.error(f"Notification error: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to mark notification as read: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
 
 @router.put(
     "/read",
@@ -149,11 +202,24 @@ async def mark_notifications_read(
     db: AsyncSession = Depends(get_db)
 ) -> List[NotificationResponse]:
     """Mark multiple notifications as read."""
-    notification_service = NotificationService(db)
-    return await notification_service.mark_as_read(
-        [str(nid) for nid in notification_ids],
-        str(current_user.id)
-    )
+    try:
+        notification_service = NotificationService(db)
+        return await notification_service.mark_as_read(
+            notification_ids,
+            current_user.id
+        )
+    except NotificationError as e:
+        logger.error(f"Notification error: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to mark notifications as read: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
 
 @router.delete(
     "",
@@ -161,7 +227,7 @@ async def mark_notifications_read(
     summary="Delete notifications"
 )
 async def delete_notifications(
-    notification_ids: List[UUID],
+    notification_ids: List[UUID] = Query(...),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -169,12 +235,19 @@ async def delete_notifications(
     try:
         notification_service = NotificationService(db)
         await notification_service.delete_notifications(
-            [str(nid) for nid in notification_ids],
-            current_user.id
+            notification_ids=notification_ids,
+            user_id=current_user.id
         )
-    except Exception as e:
+    except NotificationError as e:
+        logger.error(f"Notification error in delete_notifications: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in delete_notifications: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
 
@@ -191,24 +264,45 @@ async def clear_all_notifications(
     try:
         notification_service = NotificationService(db)
         await notification_service.clear_all_notifications(current_user.id)
-    except Exception as e:
+    except NotificationError as e:
+        logger.error(f"Notification error: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to clear notifications: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
         )
 
 @router.get(
     "/preferences",
     response_model=UserPreferencesResponse,
-    summary="Get notification preferences"
+    summary="Get user notification preferences"
 )
 async def get_notification_preferences(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> UserPreferencesResponse:
-    """Get notification preferences for the current user."""
-    notification_service = NotificationService(db)
-    return await notification_service.get_user_preferences(current_user.id)
+    """Get user notification preferences."""
+    try:
+        notification_service = NotificationService(db)
+        preferences = await notification_service.get_user_preferences(current_user.id)
+        return preferences
+    except NotificationError as e:
+        logger.error(f"Notification error in get_notification_preferences: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error in get_notification_preferences: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 @router.put(
     "/preferences",
@@ -220,9 +314,22 @@ async def update_notification_preferences(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ) -> UserPreferencesResponse:
-    """Update notification preferences for the current user."""
-    notification_service = NotificationService(db)
-    return await notification_service.update_preferences(
-        current_user.id,
-        preferences.dict(exclude_unset=True)
-    ) 
+    """Update user notification preferences."""
+    try:
+        notification_service = NotificationService(db)
+        return await notification_service.update_preferences(
+            current_user.id,
+            preferences.dict(exclude_unset=True)
+        )
+    except NotificationError as e:
+        logger.error(f"Notification error: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to update notification preferences: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        ) 

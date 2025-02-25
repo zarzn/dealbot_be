@@ -92,25 +92,54 @@ def receive_checkin(dbapi_connection, connection_record):
     """Monitor connection checkins for metrics."""
     metrics.connection_checkins.inc()
 
-@asynccontextmanager
-async def get_async_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Context manager for async database sessions with monitoring."""
-    session: Optional[AsyncSession] = None
-    start_time = time.time()
-    
+@event.listens_for(async_engine.sync_engine, "connect")
+def set_async_search_path(dbapi_connection, connection_record):
+    """Set the search path and connection settings for async connections."""
     try:
-        session = AsyncSessionLocal()
-        yield session
-        await session.commit()
-    except SQLAlchemyError as e:
-        if session:
-            await session.rollback()
-        metrics.connection_failures.inc()
-        logger.error(f"Database transaction failed: {str(e)}")
+        cursor = dbapi_connection.cursor()
+        cursor.execute("SET search_path TO public")
+        cursor.execute("SET timezone TO 'UTC'")
+        cursor.execute(f"SET idle_in_transaction_session_timeout TO '{settings.DB_IDLE_TIMEOUT * 1000}'")  # Convert to milliseconds
+        cursor.close()
+    except Exception as e:
+        logger.error(f"Failed to set async database connection parameters: {str(e)}")
         raise
-    finally:
-        if session:
+
+class AsyncDatabaseSession:
+    """Async database session context manager."""
+    
+    def __init__(self):
+        self.session = None
+    
+    async def __aenter__(self) -> AsyncSession:
+        self.session = AsyncSessionLocal()
+        return self.session
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            await self.session.rollback()
+        await self.session.close()
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """Get database session."""
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
             await session.close()
+
+async def get_async_db_session() -> AsyncSession:
+    """Get async database session."""
+    session = AsyncSessionLocal()
+    try:
+        return session
+    except Exception as e:
+        await session.close()
+        raise e
 
 @contextmanager
 def get_sync_db_session() -> Generator[Session, None, None]:
@@ -131,44 +160,6 @@ def get_sync_db_session() -> Generator[Session, None, None]:
     finally:
         if session:
             session.close()
-
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Dependency that provides an async database session with retry logic."""
-    max_retries = settings.DB_MAX_RETRIES
-    retry_delay = settings.DB_RETRY_DELAY
-    
-    for attempt in range(max_retries):
-        try:
-            async with get_async_db_session() as session:
-                yield session
-                break
-        except OperationalError as e:
-            if attempt == max_retries - 1:
-                metrics.connection_failures.inc()
-                logger.error(f"Database connection failed after {max_retries} attempts: {str(e)}")
-                raise
-            logger.warning(f"Database connection failed (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay} seconds...")
-            await asyncio.sleep(retry_delay)
-            retry_delay *= 2
-
-def get_sync_db() -> Generator[Session, None, None]:
-    """Dependency that provides a sync database session with retry logic."""
-    max_retries = settings.DB_MAX_RETRIES
-    retry_delay = settings.DB_RETRY_DELAY
-    
-    for attempt in range(max_retries):
-        try:
-            with get_sync_db_session() as session:
-                yield session
-                break
-        except OperationalError as e:
-            if attempt == max_retries - 1:
-                metrics.connection_failures.inc()
-                logger.error(f"Database connection failed after {max_retries} attempts: {str(e)}")
-                raise
-            logger.warning(f"Database connection failed (attempt {attempt + 1}/{max_retries}), retrying in {retry_delay} seconds...")
-            time.sleep(retry_delay)
-            retry_delay *= 2
 
 async def init_db() -> None:
     """Initialize database tables and verify connection."""
@@ -192,3 +183,17 @@ async def check_db_connection() -> bool:
     except SQLAlchemyError as e:
         logger.error(f"Database health check failed: {str(e)}")
         return False
+
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """Get a database session.
+    
+    Yields:
+        AsyncSession: Database session
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+
+__all__ = ['Base', 'async_engine', 'get_session']

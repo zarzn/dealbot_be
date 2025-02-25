@@ -19,7 +19,7 @@ from core.models.goal import Goal
 from core.repositories.market import MarketRepository
 from core.repositories.deal import DealRepository
 from core.integrations.factory import MarketIntegrationFactory
-from core.utils.redis import get_redis_client, set_cache, get_cache, RedisClient
+from core.services.redis import get_redis_service
 from core.utils.logger import get_logger
 from core.utils.metrics import MetricsCollector
 from core.exceptions import (
@@ -36,6 +36,85 @@ from core.config import settings
 
 logger = get_logger(__name__)
 
+def _extract_market_type(url: str) -> Optional[MarketType]:
+    """Extract market type from URL."""
+    try:
+        if 'amazon' in url:
+            return MarketType.AMAZON
+        elif 'walmart' in url:
+            return MarketType.WALMART
+        elif 'ebay' in url:
+            return MarketType.EBAY
+        elif 'bestbuy' in url:
+            return MarketType.BESTBUY
+        return None
+    except Exception:
+        return None
+
+def _extract_product_id(url: str) -> Optional[str]:
+    """Extract product ID from URL."""
+    try:
+        # Amazon: /dp/XXXXXXXXXX or /gp/product/XXXXXXXXXX
+        if 'amazon' in url:
+            if '/dp/' in url:
+                return url.split('/dp/')[1].split('/')[0]
+            elif '/product/' in url:
+                return url.split('/product/')[1].split('/')[0]
+        # Walmart: /ip/XXXXX
+        elif 'walmart' in url:
+            return url.split('/ip/')[1].split('/')[0]
+        # eBay: /itm/XXXXX
+        elif 'ebay' in url:
+            return url.split('/itm/')[1].split('/')[0]
+        # Best Buy: /site/XXXXX.p
+        elif 'bestbuy' in url:
+            return url.split('/')[-1].split('.p')[0]
+        return None
+    except Exception:
+        return None
+
+async def get_current_price(url: str) -> float:
+    """
+    Get the current price for a product URL.
+
+    Args:
+        url: Product URL
+
+    Returns:
+        Current price as float
+
+    Raises:
+        MarketError: If price retrieval fails
+    """
+    try:
+        # Extract market type and product ID from URL
+        market_type = _extract_market_type(url)
+        product_id = _extract_product_id(url)
+
+        if not market_type or not product_id:
+            raise ValidationError("Invalid product URL")
+
+        # Create service instance
+        market_repository = MarketRepository()
+        service = MarketSearchService(market_repository)
+
+        # Get product details with short cache time
+        details = await service.get_product_details(
+            product_id=product_id,
+            market_type=market_type,
+            use_cache=True,
+            cache_ttl=60  # 1 minute cache for current price
+        )
+
+        if not details or 'price' not in details:
+            raise MarketError("Price not available")
+
+        return float(details['price'])
+
+    except Exception as e:
+        logger.error(f"Error getting current price for {url}: {str(e)}")
+        raise MarketError(f"Failed to get current price: {str(e)}")
+
 @dataclass
 class SearchResult:
     """Data class for search results."""
@@ -51,7 +130,7 @@ class MarketSearchService:
 
     def __init__(self, market_repository: MarketRepository):
         self.market_repository = market_repository
-        self.redis_client = RedisClient()  # Use singleton RedisClient instance
+        self.redis_client = get_redis_service()  # Use singleton RedisClient instance
 
     async def _check_rate_limit(self, key: str, limit: int) -> bool:
         """Check rate limit using Redis."""
@@ -112,7 +191,7 @@ class MarketSearchService:
                 cache_key = self._generate_cache_key(
                     query, market_types, category, min_price, max_price, limit
                 )
-                cached_result = await get_cache(cache_key)
+                cached_result = await get_redis_service().get(cache_key)
                 if cached_result:
                     logger.info(f"Cache hit for query: {query}")
                     MetricsCollector.track_search_cache_hit()
@@ -203,10 +282,10 @@ class MarketSearchService:
 
             # Cache result if successful
             if use_cache and sorted_products:
-                await set_cache(
+                await get_redis_service().set(
                     cache_key,
                     result.__dict__,
-                    expire=cache_ttl
+                    ex=cache_ttl
                 )
 
             # Track metrics
@@ -254,7 +333,7 @@ class MarketSearchService:
             # Check cache first
             if use_cache:
                 cache_key = f"product_details:{market_type}:{product_id}"
-                cached_result = await get_cache(cache_key)
+                cached_result = await get_redis_service().get(cache_key)
                 if cached_result:
                     logger.info(f"Cache hit for product details: {product_id}")
                     MetricsCollector.track_product_details_cache_hit()
@@ -276,10 +355,10 @@ class MarketSearchService:
 
                 # Cache result
                 if use_cache:
-                    await set_cache(
+                    await get_redis_service().set(
                         cache_key,
                         details,
-                        expire=cache_ttl
+                        ex=cache_ttl
                     )
 
                 # Track metrics
@@ -333,7 +412,7 @@ class MarketSearchService:
             # Check cache first
             if use_cache:
                 cache_key = f"product_availability:{market_type}:{product_id}"
-                cached_result = await get_cache(cache_key)
+                cached_result = await get_redis_service().get(cache_key)
                 if cached_result:
                     logger.info(f"Cache hit for availability check: {product_id}")
                     return cached_result
@@ -358,10 +437,10 @@ class MarketSearchService:
 
                 # Cache result
                 if use_cache:
-                    await set_cache(
+                    await get_redis_service().set(
                         cache_key,
                         availability_data,
-                        expire=cache_ttl
+                        ex=cache_ttl
                     )
 
                 # Track metrics
@@ -421,7 +500,7 @@ class MarketSearchService:
             # Check cache first
             if use_cache:
                 cache_key = f"price_history:{market_type}:{product_id}:{days}"
-                cached_result = await get_cache(cache_key)
+                cached_result = await get_redis_service().get(cache_key)
                 if cached_result:
                     logger.info(f"Cache hit for price history: {product_id}")
                     return cached_result
@@ -446,10 +525,10 @@ class MarketSearchService:
 
                 # Cache result
                 if use_cache and processed_history:
-                    await set_cache(
+                    await get_redis_service().set(
                         cache_key,
                         processed_history,
-                        expire=cache_ttl
+                        ex=cache_ttl
                     )
 
                 # Track metrics

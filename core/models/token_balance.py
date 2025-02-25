@@ -4,54 +4,42 @@ This module defines the TokenBalance model and related Pydantic schemas for trac
 user token balances in the AI Agentic Deals System.
 """
 
-from datetime import datetime
-from decimal import Decimal
-from typing import Optional
+from datetime import datetime, timezone
+from decimal import Decimal, ROUND_DOWN
+from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
 import logging
 
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import Column, DECIMAL, DateTime, ForeignKey, Boolean, Index, CheckConstraint, Numeric, text
+import sqlalchemy as sa
+from sqlalchemy import (
+    Column, DECIMAL, DateTime, ForeignKey, Boolean, Index, 
+    CheckConstraint, Numeric, text, select, and_
+)
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy.sql import func, expression
 
 from core.models.base import Base
-from core.models.token_balance_history import TokenBalanceHistory, BalanceChangeType
+from core.models.enums import TransactionType
+from core.models.token_balance_history import TokenBalanceHistory
+from core.exceptions import InsufficientBalanceError
 
 logger = logging.getLogger(__name__)
-
-# Custom exception classes
-class TokenBalanceError(Exception):
-    """Base class for token balance-related errors."""
-    def __init__(self, message: str):
-        self.message = message
-        super().__init__(self.message)
-
-class InsufficientBalanceError(TokenBalanceError):
-    """Raised when attempting to deduct more tokens than available."""
-    def __init__(self, required: Decimal, available: Decimal):
-        self.required = required
-        self.available = available
-        message = f"Insufficient balance for deduction. Required: {required}, Available: {available}"
-        super().__init__(message)
-
-class InvalidBalanceError(TokenBalanceError):
-    """Raised when attempting an invalid balance operation."""
-    pass
 
 class TokenBalanceBase(BaseModel):
     """Base schema for token balance."""
     user_id: UUID
-    balance: float = Field(ge=0)
+    balance: Decimal = Field(ge=0)
 
     @field_validator('balance')
     @classmethod
-    def validate_balance(cls, v: float) -> float:
+    def validate_balance(cls, v: Decimal) -> Decimal:
         """Validate balance is non-negative."""
         if v < 0:
-            raise InvalidBalanceError("Balance cannot be negative")
-        return v
+            raise ValueError("Balance cannot be negative")
+        return Decimal(str(v)).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
 
 class TokenBalanceCreate(TokenBalanceBase):
     """Schema for creating a token balance."""
@@ -67,115 +55,114 @@ class TokenBalanceResponse(TokenBalanceBase):
         from_attributes = True
 
 class TokenBalance(Base):
-    """SQLAlchemy model for token_balances table"""
-    __tablename__ = 'token_balances'
+    """Token balance model for tracking user token balances."""
+    __tablename__ = "token_balances"
     __table_args__ = (
-        Index('ix_token_balances_user_id', 'user_id'),
         CheckConstraint('balance >= 0', name='ch_positive_balance'),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
-    balance: Mapped[float] = mapped_column(Numeric(18, 8), nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True)
+    balance: Mapped[Decimal] = mapped_column(
+        DECIMAL(18, 8),
+        nullable=False,
+        default=Decimal('0').quantize(Decimal('0.00000000'), rounding=ROUND_DOWN),
+        server_default=text("0.00000000")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"), onupdate=text("now()"))
 
     # Relationships
-    user: Mapped["User"] = relationship(
-        "User",
-        back_populates="token_balance_record",
-        lazy="selectin"
-    )
-    history: Mapped[list["TokenBalanceHistory"]] = relationship(
-        "TokenBalanceHistory",
-        back_populates="token_balance",
-        cascade="all, delete-orphan",
-        lazy="selectin"
-    )
+    user = relationship("User", back_populates="token_balances")
+    history = relationship("TokenBalanceHistory", back_populates="token_balance")
 
     def __repr__(self) -> str:
-        """String representation of the token balance."""
-        return "<TokenBalance(user_id={}, balance={})>".format(self.user_id, self.balance)
+        return f"<TokenBalance(id={self.id}, balance={self.balance})>"
+
+    @property
+    def quantized_balance(self) -> Decimal:
+        """Get balance with proper precision."""
+        return Decimal(str(self.balance)).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
+
+    @quantized_balance.setter
+    def quantized_balance(self, value: Decimal) -> None:
+        """Set balance with proper precision."""
+        self.balance = Decimal(str(value)).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
 
     async def update_balance(
         self,
         db: AsyncSession,
         amount: Decimal,
-        operation: str = 'deduction',
-        reason: str = None
-    ) -> None:
-        """Update token balance with validation and history tracking.
+        operation: str,
+        reason: str,
+        transaction_id: Optional[UUID] = None,
+        transaction_data: Optional[Dict[str, Any]] = None
+    ) -> 'TokenBalance':
+        """Update token balance with proper validation and history tracking.
         
         Args:
-            db: Database session for transaction management
-            amount: Amount to update
-            operation: Type of operation ('deduction', 'reward', or 'refund')
-            reason: Description of the balance change reason
+            db: Database session
+            amount: Amount to add/subtract
+            operation: Operation type (deduction, reward, refund)
+            reason: Reason for the balance change
+            transaction_id: Optional related transaction ID
+            transaction_data: Optional transaction metadata
+            
+        Returns:
+            Updated token balance
             
         Raises:
-            InvalidBalanceError: If operation type is invalid
-            InsufficientBalanceError: If balance is insufficient for deduction
-            TokenBalanceError: If update fails
+            InsufficientBalanceError: If balance would become negative
+            ValueError: If operation type is invalid
         """
+        # Validate operation type
+        if operation not in [e.value for e in TransactionType] and operation != 'credit':
+            raise ValueError(f"Invalid operation type: {operation}")
+
+        # Record old balance
+        old_balance = self.quantized_balance
+
+        # Ensure amount has proper precision
+        amount = Decimal(str(amount)).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
+
+        # Calculate new balance based on operation
+        if operation == TransactionType.DEDUCTION.value:
+            if old_balance < amount:
+                raise InsufficientBalanceError(
+                    reason="Insufficient balance for deduction",
+                    message=f"Insufficient balance. Required: {amount}, Available: {old_balance}",
+                    available=old_balance
+                )
+            new_balance = (old_balance - amount).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
+        elif operation in [TransactionType.REWARD.value, TransactionType.REFUND.value, 'credit']:
+            new_balance = (old_balance + amount).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
+        else:
+            raise ValueError(f"Invalid operation type: {operation}")
+
+        # Update balance
+        self.quantized_balance = new_balance
+
+        # Create history record
+        history = TokenBalanceHistory(
+            user_id=self.user_id,
+            token_balance_id=self.id,
+            balance_before=old_balance,
+            balance_after=new_balance,
+            change_amount=amount,
+            change_type=operation,
+            reason=reason,
+            transaction_id=transaction_id,
+            transaction_data=transaction_data
+        )
+        db.add(history)
+
         try:
-            # Convert operation to lowercase and validate
-            operation = operation.lower()
-            if operation not in [op.value for op in BalanceChangeType]:
-                raise InvalidBalanceError("Invalid operation type")
-
-            # Store current balance for history
-            balance_before = self.balance
-
-            # Update balance based on operation
-            if operation == BalanceChangeType.DEDUCTION.value:
-                if self.balance < amount:
-                    raise InsufficientBalanceError(required=amount, available=self.balance)
-                self.balance -= amount
-            else:
-                self.balance += amount
-
-            # Create balance history record
-            history_record = TokenBalanceHistory(
-                user_id=self.user_id,
-                token_balance_id=self.id,
-                balance_before=balance_before,
-                balance_after=self.balance,
-                change_amount=amount,
-                change_type=operation,
-                reason=reason or f"Token {operation}"
-            )
-            db.add(history_record)
-
-            # Update timestamp
-            self.updated_at = datetime.utcnow()
-
-            # Commit changes
             await db.commit()
             await db.refresh(self)
-            await db.refresh(history_record)
-
-            logger.info(
-                "Balance updated successfully",
-                extra={
-                    'user_id': str(self.user_id),
-                    'operation': operation,
-                    'amount': str(amount),
-                    'balance_before': str(balance_before),
-                    'balance_after': str(self.balance)
-                }
-            )
-
+            # Ensure balance is properly quantized after refresh
+            self.quantized_balance = self.balance
+            await db.flush()
+            return self
         except Exception as e:
             await db.rollback()
-            logger.error(
-                "Failed to update balance",
-                extra={
-                    'user_id': str(self.user_id),
-                    'operation': operation,
-                    'amount': str(amount),
-                    'error': str(e)
-                }
-            )
-            if isinstance(e, (InvalidBalanceError, InsufficientBalanceError)):
-                raise
-            raise TokenBalanceError(f"Failed to update balance: {str(e)}") from e
+            raise ValueError(f"Failed to update balance: {str(e)}") from e

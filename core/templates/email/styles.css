@@ -1,0 +1,122 @@
+/* Email Template Styles */
+
+/* Base Styles */
+body {
+    font-family: Arial, sans-serif;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0;
+    background-color: #f4f4f4;
+    color: #333;
+}
+
+.container {
+    max-width: 600px;
+    margin: 20px auto;
+    padding: 20px;
+    background-color: #ffffff;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Header Styles */
+.header {
+    text-align: center;
+    padding: 20px 0;
+    border-bottom: 1px solid #eee;
+}
+
+.header h1 {
+    color: #333;
+    margin: 0;
+    font-size: 24px;
+}
+
+/* Content Styles */
+.content {
+    padding: 20px 0;
+}
+
+/* Footer Styles */
+.footer {
+    text-align: center;
+    padding: 20px 0;
+    color: #666;
+    font-size: 12px;
+    border-top: 1px solid #eee;
+}
+
+/* Button Styles */
+.button {
+    display: inline-block;
+    padding: 12px 24px;
+    background-color: #007bff;
+    color: #ffffff;
+    text-decoration: none;
+    border-radius: 4px;
+    margin: 20px 0;
+    font-weight: bold;
+}
+
+.button:hover {
+    background-color: #0056b3;
+}
+
+/* Deal Card Styles */
+.deal-card {
+    background-color: #f8f9fa;
+    padding: 20px;
+    border-radius: 4px;
+    margin: 20px 0;
+}
+
+.deal-card .original-price {
+    color: #666;
+    text-decoration: line-through;
+}
+
+.deal-card .deal-price {
+    color: #28a745;
+    font-size: 24px;
+    font-weight: bold;
+}
+
+.deal-card .savings {
+    color: #dc3545;
+    font-weight: bold;
+}
+
+.deal-card .description {
+    color: #333;
+    margin-top: 15px;
+}
+
+/* Alert Styles */
+.alert {
+    padding: 15px;
+    border-radius: 4px;
+    margin: 15px 0;
+}
+
+.alert-info {
+    background-color: #e3f2fd;
+    color: #0d47a1;
+}
+
+.alert-success {
+    background-color: #e8f5e9;
+    color: #1b5e20;
+}
+
+.alert-warning {
+    background-color: #fff3e0;
+    color: #e65100;
+}
+
+/* Typography */
+.text-center { text-align: center; }
+.text-muted { color: #666; }
+.text-small { font-size: 14px; }
+.text-large { font-size: 18px; }
+.mt-20 { margin-top: 20px; }
+.mb-20 { margin-bottom: 20px; } 

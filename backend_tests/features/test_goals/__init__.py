@@ -1,0 +1,2 @@
+"""Goal feature tests package."""
+

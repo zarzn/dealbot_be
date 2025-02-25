@@ -21,6 +21,7 @@ from sqlalchemy.sql import expression
 import sqlalchemy
 
 from core.models.base import Base
+from core.models.enums import NotificationType
 from core.exceptions import (
     ValidationError,
     NotificationError,
@@ -31,16 +32,6 @@ from core.exceptions import (
 )
 
 logger = logging.getLogger(__name__)
-
-class NotificationType(str, Enum):
-    """Notification type enumeration."""
-    SYSTEM = "system"
-    DEAL = "deal"
-    GOAL = "goal"
-    PRICE_ALERT = "price_alert"
-    TOKEN = "token"
-    SECURITY = "security"
-    MARKET = "market"
 
 class NotificationChannel(str, Enum):
     """Notification delivery channels"""
@@ -53,10 +44,14 @@ class NotificationChannel(str, Enum):
 
 class NotificationPriority(str, Enum):
     """Notification priority enumeration."""
-    LOW = "low"
-    MEDIUM = "medium"
+    CRITICAL = "critical"
     HIGH = "high"
-    URGENT = "urgent"
+    MEDIUM = "medium"
+    LOW = "low"
+
+    def __str__(self) -> str:
+        """Return the value of the enum."""
+        return self.value
 
 class NotificationStatus(str, Enum):
     """Notification status types"""
@@ -66,6 +61,10 @@ class NotificationStatus(str, Enum):
     READ = "read"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+    def __str__(self) -> str:
+        """Return the value of the enum."""
+        return self.value
 
 class NotificationFilter(BaseModel):
     """Filter parameters for notification queries."""
@@ -191,9 +190,9 @@ class Notification(Base):
     deal_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="SET NULL"))
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
-    type: Mapped[NotificationType] = mapped_column(SQLEnum(NotificationType), nullable=False)
-    priority: Mapped[NotificationPriority] = mapped_column(SQLEnum(NotificationPriority), default=NotificationPriority.MEDIUM)
-    status: Mapped[NotificationStatus] = mapped_column(SQLEnum(NotificationStatus), default=NotificationStatus.PENDING)
+    type: Mapped[str] = mapped_column(SQLEnum(NotificationType, values_callable=lambda obj: [e.value for e in obj]), nullable=False)
+    priority: Mapped[str] = mapped_column(SQLEnum(NotificationPriority, values_callable=lambda obj: [e.value for e in obj]), default=NotificationPriority.MEDIUM)
+    status: Mapped[str] = mapped_column(SQLEnum(NotificationStatus, values_callable=lambda obj: [e.value for e in obj]), default=NotificationStatus.PENDING)
     channels: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=[NotificationChannel.IN_APP.value])
     notification_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     action_url: Mapped[Optional[str]] = mapped_column(String(2048))
@@ -215,7 +214,7 @@ class Notification(Base):
 
     def __repr__(self) -> str:
         """String representation of the notification."""
-        return f"<Notification {self.type.value}: {self.title}>"
+        return f"<Notification {self.type}: {self.title}>"
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert notification to dictionary."""
@@ -243,15 +242,12 @@ class Notification(Base):
         """Convert notification to JSON string."""
         data = self.to_dict()
         # Convert enum values to strings
-        data['type'] = self.type.value
-        data['channels'] = [ch.value for ch in self.channels]
-        data['priority'] = self.priority.value
-        data['status'] = self.status.value
+        data['type'] = self.type
+        data['channels'] = self.channels
+        data['priority'] = self.priority
+        data['status'] = self.status
         # Convert URLs to strings
         data['action_url'] = str(self.action_url) if self.action_url else None
-        # Add optional IDs
-        data['goal_id'] = str(self.goal_id) if self.goal_id else None
-        data['deal_id'] = str(self.deal_id) if self.deal_id else None
         return json.dumps(data)
 
     async def mark_sent(self, error: Optional[str] = None) -> None:

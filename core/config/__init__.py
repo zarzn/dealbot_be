@@ -1,26 +1,23 @@
-"""Configuration module for the AI Agentic Deals System."""
+"""Configuration module.
+
+This module provides configuration settings for the application.
+"""
 
 from functools import lru_cache
-from typing import Union
+from typing import Dict, Any
 
-from .base import BaseConfig
-from .development import DevelopmentConfig
-from .production import ProductionConfig
-from .test import TestSettings
+from .settings import Settings
+
+__all__ = ['Settings', 'get_settings', 'settings']
 
 @lru_cache()
-def get_settings() -> Union[BaseConfig, TestSettings]:
-    """Get configuration settings based on environment."""
-    import os
-    env = os.getenv("ENVIRONMENT", "development")
+def get_settings() -> Settings:
+    """Get cached settings instance.
     
-    if env == "production":
-        return ProductionConfig()
-    elif env == "test":
-        return TestSettings()
-    
-    return DevelopmentConfig()
+    Returns:
+        Settings: Application settings
+    """
+    return Settings()
 
+# Create a global settings instance
 settings = get_settings()
-
-__all__ = ['settings', 'get_settings', 'BaseConfig']

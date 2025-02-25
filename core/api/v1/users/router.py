@@ -167,7 +167,25 @@ async def get_user_me(
     db: AsyncSession = Depends(get_db)
 ) -> Any:
     """Get current user info"""
-    return current_user
+    return UserResponse(
+        id=str(current_user.id),
+        email=current_user.email,
+        name=current_user.name,
+        sol_address=current_user.sol_address,
+        referral_code=current_user.referral_code,
+        token_balance=float(current_user.total_tokens_spent),
+        preferences=current_user.preferences,
+        notification_channels=current_user.notification_channels,
+        status=current_user.status,
+        created_at=current_user.created_at,
+        updated_at=current_user.updated_at,
+        last_payment_at=current_user.last_payment_at,
+        active_goals_count=current_user.active_goals_count,
+        total_deals_found=current_user.total_deals_found,
+        success_rate=float(current_user.success_rate),
+        total_tokens_spent=float(current_user.total_tokens_spent),
+        total_rewards_earned=float(current_user.total_rewards_earned)
+    )
 
 @router.post("/logout")
 async def logout(

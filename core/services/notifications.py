@@ -88,6 +88,10 @@ class NotificationService:
             "endpoint": settings.FCM_ENDPOINT,
             "api_key": settings.FCM_API_KEY
         }
+        self._email_config = {
+            "from_email": settings.EMAIL_FROM,
+            "template_dir": "templates/email"
+        }
 
     async def __aenter__(self):
         """Async context manager enter."""
@@ -625,6 +629,43 @@ class NotificationService:
             logger.error(f"Failed to schedule notification: {str(e)}")
             # Fall back to immediate processing
             await self._process_notification_delivery(notification, preferences)
+
+    async def send_verification_email(self, email: str, token: str) -> None:
+        """Send email verification link to user.
+        
+        Args:
+            email: User's email address
+            token: Verification token
+            
+        Raises:
+            NotificationError: If sending verification email fails
+        """
+        try:
+            verification_url = f"{settings.FRONTEND_URL}/auth/verify-email?token={token}"
+            
+            # Prepare email context
+            context = {
+                "verification_url": verification_url,
+                "year": datetime.utcnow().year
+            }
+            
+            # Send email using email service
+            success = await email_service.send_email(
+                to_email=email,
+                subject="Verify Your Email Address",
+                template_name="verification.html",
+                template_data=context,
+                from_email=self._email_config["from_email"]
+            )
+
+            if not success:
+                raise NotificationError("Failed to send verification email")
+
+            logger.info(f"Verification email sent to {email}")
+            
+        except Exception as e:
+            logger.error(f"Error sending verification email: {str(e)}")
+            raise NotificationError(f"Failed to send verification email: {str(e)}")
 
 # Create a global instance of the notification service
 notification_service = NotificationService(None)  # Session will be injected per request 

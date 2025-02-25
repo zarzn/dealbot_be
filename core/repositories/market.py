@@ -44,7 +44,10 @@ class MarketRepository:
             return result.scalar_one_or_none()
         except SQLAlchemyError as e:
             logger.error(f"Failed to get market: {str(e)}")
-            raise DatabaseError(f"Database error: {str(e)}")
+            raise DatabaseError(
+                operation="get_by_id",
+                message=f"Database error: {str(e)}"
+            )
 
     async def get_by_type(self, market_type: MarketType) -> Optional[Market]:
         result = await self.db.execute(
@@ -81,6 +84,48 @@ class MarketRepository:
             logger.error(f"Failed to get markets: {str(e)}")
             raise DatabaseError(f"Database error: {str(e)}")
 
+    async def get_all_filtered(self, **filters) -> List[Market]:
+        """Get filtered list of markets
+        
+        Args:
+            **filters: Optional filters to apply, such as:
+                - is_active: Filter by active status
+                - type: Filter by market type
+                - status: Filter by market status
+                - name: Filter by name (contains)
+                - category: Filter by category
+        
+        Returns:
+            List[Market]: List of markets matching the filters
+        """
+        try:
+            query = select(Market)
+            conditions = []
+            
+            if "is_active" in filters:
+                conditions.append(Market.is_active == filters["is_active"])
+                
+            if "type" in filters:
+                conditions.append(Market.type == filters["type"])
+                
+            if "status" in filters:
+                conditions.append(Market.status == filters["status"])
+                
+            if "name" in filters and filters["name"]:
+                conditions.append(Market.name.ilike(f"%{filters['name']}%"))
+                
+            if "category" in filters:
+                conditions.append(Market.category == filters["category"])
+                
+            if conditions:
+                query = query.where(and_(*conditions))
+                
+            result = await self.db.execute(query)
+            return list(result.scalars().all())
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get filtered markets: {str(e)}")
+            raise DatabaseError(f"Database error: {str(e)}")
+
     async def get_by_category(self, category: MarketCategory) -> List[Market]:
         """Get markets by category"""
         try:
@@ -92,14 +137,26 @@ class MarketRepository:
             logger.error(f"Failed to get markets by category: {str(e)}")
             raise DatabaseError(f"Database error: {str(e)}")
 
-    async def update(self, market_id: str, market_data: Dict) -> Market:
-        """Update market data"""
+    async def update(self, market_id: str, **kwargs) -> Market:
+        """Update market data with keyword arguments
+        
+        Args:
+            market_id: The ID of the market to update
+            **kwargs: The market attributes to update
+            
+        Returns:
+            Market: The updated market
+            
+        Raises:
+            MarketNotFoundError: If the market doesn't exist
+            InvalidMarketDataError: If the data is invalid
+        """
         market = await self.get_by_id(market_id)
         if not market:
             raise MarketNotFoundError(f"Market {market_id} not found")
         
         try:
-            for key, value in market_data.items():
+            for key, value in kwargs.items():
                 setattr(market, key, value)
             await self.db.commit()
             await self.db.refresh(market)

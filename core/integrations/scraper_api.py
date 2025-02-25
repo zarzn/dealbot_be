@@ -229,6 +229,21 @@ class ScraperAPIService:
             pipe.incrby(f'scraper_api:credits:{date_key}', credits)
             pipe.expire(f'scraper_api:credits:{date_key}', 60 * 60 * 24 * 35)  # 35 days
             await pipe.execute()
+
+    async def get_credit_usage(self, date_key: Optional[str] = None) -> Optional[int]:
+        """Get API credit usage for a given month.
+        
+        Args:
+            date_key: Month to get usage for in YYYY-MM format. Defaults to current month.
+            
+        Returns:
+            Number of credits used or None if no data found.
+        """
+        if date_key is None:
+            date_key = datetime.utcnow().strftime('%Y-%m')
+            
+        credits = await self.redis_client.get(f'scraper_api:credits:{date_key}')
+        return int(credits) if credits is not None else None
     
     async def search_amazon(
         self,
@@ -668,16 +683,6 @@ class ScraperAPIService:
                 reason=str(e)
             )
     
-    async def get_credit_usage(self) -> Dict[str, int]:
-        """Get current month's credit usage."""
-        date_key = datetime.utcnow().strftime('%Y-%m')
-        credits_used = await self.redis_client.get(f'scraper_api:credits:{date_key}')
-        
-        return {
-            'credits_used': int(credits_used or 0),
-            'credits_remaining': self.monthly_limit - int(credits_used or 0)
-        }
-
     def _normalize_walmart_product(self, product: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize Walmart product data."""
         if not isinstance(product, dict):

@@ -46,13 +46,13 @@ class NotificationPreferencesBase(BaseModel):
     )
     notification_frequency: Dict[NotificationType, NotificationFrequency] = Field(
         default_factory=lambda: {
-            NotificationType.DEAL_MATCH: NotificationFrequency.IMMEDIATE,
-            NotificationType.GOAL_COMPLETED: NotificationFrequency.IMMEDIATE,
-            NotificationType.GOAL_EXPIRED: NotificationFrequency.DAILY,
-            NotificationType.PRICE_DROP: NotificationFrequency.IMMEDIATE,
-            NotificationType.TOKEN_LOW: NotificationFrequency.DAILY,
-            NotificationType.SYSTEM: NotificationFrequency.IMMEDIATE,
-            NotificationType.CUSTOM: NotificationFrequency.IMMEDIATE
+            NotificationType.DEAL: NotificationFrequency.IMMEDIATE,
+            NotificationType.GOAL: NotificationFrequency.IMMEDIATE,
+            NotificationType.PRICE_ALERT: NotificationFrequency.IMMEDIATE,
+            NotificationType.TOKEN: NotificationFrequency.DAILY,
+            NotificationType.SECURITY: NotificationFrequency.IMMEDIATE,
+            NotificationType.MARKET: NotificationFrequency.DAILY,
+            NotificationType.SYSTEM: NotificationFrequency.IMMEDIATE
         }
     )
     time_windows: Dict[NotificationChannel, NotificationTimeWindow] = Field(
@@ -94,13 +94,15 @@ class UserPreferences(Base):
         JSONB,
         nullable=False,
         server_default=text("""
-            '{"deal_match": "immediate", 
-              "goal_completed": "immediate", 
-              "goal_expired": "daily", 
-              "price_drop": "immediate", 
-              "token_low": "daily", 
-              "system": "immediate", 
-              "custom": "immediate"}'::jsonb
+            '{
+                "deal": {"type": "deal", "frequency": "immediate"},
+                "goal": {"type": "goal", "frequency": "immediate"},
+                "price_alert": {"type": "price_alert", "frequency": "immediate"},
+                "token": {"type": "token", "frequency": "daily"},
+                "security": {"type": "security", "frequency": "immediate"},
+                "market": {"type": "market", "frequency": "daily"},
+                "system": {"type": "system", "frequency": "immediate"}
+            }'::jsonb
         """)
     )
     time_windows: Mapped[Dict] = mapped_column(
@@ -137,7 +139,7 @@ class UserPreferences(Base):
     )
 
     # Relationships
-    user = relationship("User", back_populates="notification_preferences")
+    user = relationship("User", back_populates="user_preferences")
 
     def to_dict(self) -> Dict:
         """Convert preferences to dictionary"""

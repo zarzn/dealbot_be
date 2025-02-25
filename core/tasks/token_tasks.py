@@ -1,23 +1,148 @@
-from typing import Dict, Any, Optional
+"""Token processing tasks."""
+
+from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import asyncio
-from celery import shared_task
-from sqlalchemy import select
+from sqlalchemy import create_engine, select, update
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.ext.asyncio import AsyncSession
+import logging
 
-from core.database import get_db
-from core.models.token import TokenTransaction, TokenPrice
+from core.config import get_settings
+from core.models.token import TokenTransaction, TokenPrice, TokenBalanceHistory
 from core.models.user import User
 from core.utils.logger import get_logger
-from core.utils.metrics import track_token_transaction
+from core.utils.metrics import MetricsCollector
 from core.utils.redis import RedisClient
 from core.exceptions.token_exceptions import TokenError
-from core.exceptions.base_exceptions import BaseException
+from core.exceptions.base_exceptions import BaseError
 from core.config import settings
+from core.celery import celery_app
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
+metrics = MetricsCollector()
 
-@shared_task(
+# Create synchronous engine and session factory
+settings = get_settings()
+engine = create_engine(str(settings.sync_database_url))
+SessionLocal = sessionmaker(bind=engine)
+
+def get_db() -> Session:
+    """Get synchronous database session."""
+    db = SessionLocal()
+    try:
+        return db
+    except Exception as e:
+        db.close()
+        raise e
+
+@celery_app.task(
+    name="update_token_balances",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+    rate_limit="10/m"
+)
+def update_token_balances(
+    self,
+    user_ids: Optional[List[str]] = None
+) -> Dict[str, Any]:
+    """Update token balances for users."""
+    db = get_db()
+    try:
+        # Build query for users
+        query = db.query(User)
+        if user_ids:
+            query = query.filter(User.id.in_(user_ids))
+        
+        # Get users to update
+        users = query.all()
+        
+        # Update each user's balance
+        results = {
+            "successful": [],
+            "failed": []
+        }
+        
+        for user in users:
+            try:
+                # Calculate new balance from transactions
+                new_balance = _calculate_user_balance(user.id, db)
+                
+                # Update user balance
+                user.token_balance = new_balance
+                
+                # Record balance history
+                history = TokenBalanceHistory(
+                    user_id=user.id,
+                    balance_before=user.token_balance,
+                    balance_after=new_balance,
+                    change_amount=new_balance - user.token_balance,
+                    change_type="recalculation",
+                    reason="Periodic balance update"
+                )
+                db.add(history)
+                
+                results["successful"].append({
+                    "user_id": str(user.id),
+                    "old_balance": float(user.token_balance),
+                    "new_balance": float(new_balance)
+                })
+                
+            except Exception as e:
+                logger.error(f"Error updating balance for user {user.id}: {str(e)}")
+                results["failed"].append({
+                    "user_id": str(user.id),
+                    "error": str(e)
+                })
+        
+        db.commit()
+        
+        # Track metrics
+        metrics.track_token_transaction("balance_update", "success")
+        if results["failed"]:
+            metrics.track_token_transaction("balance_update", "failed")
+        
+        return {
+            "status": "completed",
+            "message": "Balance updates completed",
+            "results": results
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error in balance update task: {str(e)}")
+        self.retry(exc=e)
+    finally:
+        db.close()
+
+def _calculate_user_balance(
+    user_id: str,
+    session: Session
+) -> float:
+    """Calculate user's token balance from transactions"""
+    try:
+        # Get all completed transactions for user
+        transactions = session.query(TokenTransaction).filter(
+            TokenTransaction.user_id == user_id,
+            TokenTransaction.status == "completed"
+        ).all()
+        
+        # Calculate balance
+        balance = 0.0
+        for tx in transactions:
+            if tx.type == "credit":
+                balance += tx.amount
+            elif tx.type == "debit":
+                balance -= tx.amount
+        
+        return balance
+        
+    except Exception as e:
+        logger.error(f"Error calculating balance for user {user_id}: {str(e)}")
+        raise TokenError(f"Balance calculation failed: {str(e)}")
+
+@celery_app.task(
     name="update_token_prices",
     bind=True,
     max_retries=3,
@@ -26,22 +151,10 @@ logger = get_logger(__name__)
 )
 def update_token_prices(self) -> Dict[str, Any]:
     """Update token prices from external sources"""
+    db = get_db()
     try:
-        # Run async task
-        return asyncio.run(_update_token_prices_async())
-    except BaseException as e:
-        logger.error(f"Error updating token prices: {str(e)}")
-        self.retry(exc=e)
-
-async def _update_token_prices_async() -> Dict[str, Any]:
-    """Async implementation of token price update"""
-    db_to_close = None
-    try:
-        session = await get_db()
-        db_to_close = session
-
         # Get token price from external source
-        current_price = await _get_token_price_from_source()
+        current_price = _get_token_price_from_source()
         
         # Create price record
         price_record = TokenPrice(
@@ -49,13 +162,13 @@ async def _update_token_prices_async() -> Dict[str, Any]:
             timestamp=datetime.utcnow()
         )
         
-        session.add(price_record)
-        await session.commit()
-        await session.refresh(price_record)
+        db.add(price_record)
+        db.commit()
+        db.refresh(price_record)
         
         # Update cache
-        cache = RedisClient("token_price")
-        await cache.set(
+        cache = RedisClient()
+        cache.set(
             "current_price",
             {
                 "price": current_price,
@@ -65,10 +178,7 @@ async def _update_token_prices_async() -> Dict[str, Any]:
         )
         
         # Track metric
-        track_token_transaction(
-            transaction_type="price_update",
-            status="success"
-        )
+        metrics.track_token_transaction("price_update", "success")
         
         return {
             "status": "success",
@@ -77,212 +187,142 @@ async def _update_token_prices_async() -> Dict[str, Any]:
             "timestamp": price_record.timestamp.isoformat()
         }
         
-    except BaseException as e:
-        if session:
-            await session.rollback()
+    except BaseError as e:
+        db.rollback()
         logger.error(f"Error in token price update task: {str(e)}")
-        
-        # Track metric
-        track_token_transaction(
-            transaction_type="price_update",
-            status="error"
-        )
-        
-        raise TokenError(f"Failed to update token price: {str(e)}")
+        metrics.track_token_transaction("price_update", "error")
+        self.retry(exc=e)
     finally:
-        if db_to_close:
-            await db_to_close.close()
+        db.close()
 
-async def _get_token_price_from_source() -> float:
-    """Get token price from external source"""
-    # This is a placeholder - implement your price fetching logic
-    # You should integrate with your chosen price oracle or API
-    return 1.0
+def _get_token_price_from_source() -> float:
+    """Get token price from external source."""
+    # TODO: Implement external price source integration
+    return 1.0  # Default price for testing
 
-@shared_task(
-    name="process_token_transaction",
+@celery_app.task(
+    name="process_token_transactions",
     bind=True,
     max_retries=3,
-    default_retry_delay=60
+    default_retry_delay=60,
+    rate_limit="10/m"
 )
-def process_token_transaction(
+def process_token_transactions(
     self,
     transaction_id: str
 ) -> Dict[str, Any]:
     """Process token transaction"""
+    db = get_db()
     try:
-        # Run async task
-        return asyncio.run(_process_token_transaction_async(transaction_id))
-    except BaseException as e:
-        logger.error(f"Error processing token transaction: {str(e)}")
-        self.retry(exc=e)
-
-async def _process_token_transaction_async(
-    transaction_id: str,
-    session: Optional[AsyncSession] = None
-) -> Dict[str, Any]:
-    """Async implementation of token transaction processing"""
-    db_to_close = None
-    try:
-        if session is None:
-            db_to_close = await get_db()
-            session = db_to_close
-
         # Get transaction
-        result = await session.execute(
-            select(TokenTransaction).where(
-                TokenTransaction.id == transaction_id
-            )
-        )
-        transaction = result.scalar_one_or_none()
-        
+        transaction = db.query(TokenTransaction).get(transaction_id)
         if not transaction:
             raise TokenError(f"Transaction {transaction_id} not found")
-        
-        # Process transaction based on type
+            
+        # Process based on type
         if transaction.type == "payment":
-            await _process_payment_transaction(transaction, session)
+            _process_payment_transaction(transaction, db)
         elif transaction.type == "refund":
-            await _process_refund_transaction(transaction, session)
+            _process_refund_transaction(transaction, db)
+            
+        db.commit()
         
-        # Update transaction status
-        transaction.processed_at = datetime.utcnow()
-        transaction.status = "completed"
-        
-        await session.commit()
-        await session.refresh(transaction)
-        
-        # Track metric
-        track_token_transaction(
-            transaction_type=transaction.type,
-            status="success"
-        )
+        metrics.track_token_transaction(transaction.type, "success")
         
         return {
             "status": "success",
             "message": "Transaction processed successfully",
-            "transaction_id": transaction_id,
-            "processed_at": transaction.processed_at.isoformat()
+            "transaction_id": transaction_id
         }
-        
-    except BaseException as e:
-        if session:
-            await session.rollback()
-        logger.error(f"Error processing transaction {transaction_id}: {str(e)}")
-        
-        if transaction:
-            transaction.status = "failed"
-            transaction.error = str(e)
-            await session.commit()
-        
-        # Track metric
-        track_token_transaction(
-            transaction_type=transaction.type if transaction else "unknown",
-            status="error"
-        )
-        
-        raise TokenError(f"Failed to process transaction: {str(e)}")
+            
+    except BaseError as e:
+        db.rollback()
+        logger.error(f"Error processing token transaction: {str(e)}")
+        metrics.track_token_transaction("transaction", "error")
+        self.retry(exc=e)
     finally:
-        if db_to_close:
-            await db_to_close.close()
+        db.close()
 
-async def _process_payment_transaction(
+def _process_payment_transaction(
     transaction: TokenTransaction,
-    session: AsyncSession
+    session: Session
 ) -> None:
     """Process payment transaction"""
     try:
-        # Verify user has sufficient balance
-        if not await _verify_user_balance(
-            transaction.user_id,
-            transaction.amount,
-            session
-        ):
+        # Verify balance
+        if not _verify_user_balance(transaction.user_id, transaction.amount, session):
             raise TokenError("Insufficient balance")
+            
+        # Update balance
+        _update_user_balance(transaction.user_id, -transaction.amount, session)
         
-        # Deduct tokens from user's balance
-        await _update_user_balance(
-            transaction.user_id,
-            -transaction.amount,
-            session
-        )
+        # Update transaction status
+        transaction.status = "completed"
+        transaction.completed_at = datetime.utcnow()
         
-    except BaseException as e:
-        logger.error(f"Error processing payment: {str(e)}")
+    except Exception as e:
         raise TokenError(f"Payment processing failed: {str(e)}")
 
-async def _process_refund_transaction(
+def _process_refund_transaction(
     transaction: TokenTransaction,
-    session: AsyncSession
+    session: Session
 ) -> None:
     """Process refund transaction"""
     try:
-        # Add tokens to user's balance
-        await _update_user_balance(
-            transaction.user_id,
-            transaction.amount,
-            session
-        )
+        # Update balance
+        _update_user_balance(transaction.user_id, transaction.amount, session)
         
-    except BaseException as e:
-        logger.error(f"Error processing refund: {str(e)}")
+        # Update transaction status
+        transaction.status = "completed"
+        transaction.completed_at = datetime.utcnow()
+        
+    except Exception as e:
         raise TokenError(f"Refund processing failed: {str(e)}")
 
-async def _verify_user_balance(
+def _verify_user_balance(
     user_id: str,
     amount: float,
-    session: Optional[AsyncSession] = None
+    session: Session
 ) -> bool:
     """Verify user has sufficient balance"""
-    db_to_close = None
     try:
-        if session is None:
-            db_to_close = await get_db()
-            session = db_to_close
-
-        # Get user's current balance
-        result = await session.execute(
-            select(User).where(User.id == user_id)
-        )
-        user = result.scalar_one_or_none()
-        
+        user = session.query(User).get(user_id)
         if not user:
             raise TokenError(f"User {user_id} not found")
-        
-        return user.token_balance >= amount
             
-    except BaseException as e:
-        logger.error(f"Error verifying user balance: {str(e)}")
+        return user.token_balance >= amount
+        
+    except Exception as e:
         raise TokenError(f"Balance verification failed: {str(e)}")
-    finally:
-        if db_to_close:
-            await db_to_close.close()
 
-async def _update_user_balance(
+def _update_user_balance(
     user_id: str,
     amount: float,
-    session: AsyncSession
+    session: Session
 ) -> None:
     """Update user's token balance"""
     try:
-        result = await session.execute(
-            select(User).where(User.id == user_id)
-        )
-        user = result.scalar_one_or_none()
-        
+        user = session.query(User).get(user_id)
         if not user:
             raise TokenError(f"User {user_id} not found")
-        
+            
         user.token_balance += amount
         
-        if user.token_balance < 0:
-            raise TokenError("Balance cannot be negative")
+        # Record balance history
+        history = TokenBalanceHistory(
+            user_id=user_id,
+            balance_before=user.token_balance - amount,
+            balance_after=user.token_balance,
+            change_amount=amount,
+            change_type="transaction",
+            reason="Token transaction"
+        )
+        session.add(history)
         
-    except BaseException as e:
-        logger.error(f"Error updating user balance: {str(e)}")
+    except Exception as e:
         raise TokenError(f"Balance update failed: {str(e)}")
 
-@shared_task(
+@celery_app.task(
     name="cleanup_old_transactions",
     bind=True,
     max_retries=3,
@@ -292,35 +332,16 @@ def cleanup_old_transactions(
     self,
     days: int = 30
 ) -> Dict[str, Any]:
-    """Clean up old token transactions"""
+    """Clean up old transactions"""
+    db = get_db()
     try:
-        # Run async task
-        return asyncio.run(_cleanup_old_transactions_async(days))
-    except BaseException as e:
-        logger.error(f"Error cleaning up transactions: {str(e)}")
-        self.retry(exc=e)
-
-async def _cleanup_old_transactions_async(
-    days: int,
-    session: Optional[AsyncSession] = None
-) -> Dict[str, Any]:
-    """Async implementation of transaction cleanup"""
-    db_to_close = None
-    try:
-        if session is None:
-            db_to_close = await get_db()
-            session = db_to_close
-
         cutoff_date = datetime.utcnow() - timedelta(days=days)
         
         # Get old transactions
-        result = await session.execute(
-            select(TokenTransaction).where(
-                TokenTransaction.created_at < cutoff_date,
-                TokenTransaction.status.in_(["completed", "failed"])
-            )
-        )
-        transactions = list(result.scalars().all())
+        transactions = db.query(TokenTransaction).filter(
+            TokenTransaction.created_at < cutoff_date,
+            TokenTransaction.status.in_(["completed", "failed"])
+        ).all()
         
         if not transactions:
             return {
@@ -328,24 +349,23 @@ async def _cleanup_old_transactions_async(
                 "message": "No old transactions to clean up",
                 "deleted": 0
             }
-        
-        # Delete transactions
-        for transaction in transactions:
-            await session.delete(transaction)
-        
-        await session.commit()
+            
+        # Archive transactions
+        for tx in transactions:
+            tx.is_archived = True
+            tx.archived_at = datetime.utcnow()
+            
+        db.commit()
         
         return {
             "status": "success",
             "message": "Old transactions cleaned up successfully",
-            "deleted": len(transactions)
+            "archived": len(transactions)
         }
         
-    except BaseException as e:
-        if session:
-            await session.rollback()
-        logger.error(f"Error in transaction cleanup task: {str(e)}")
-        raise TokenError(f"Transaction cleanup failed: {str(e)}")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error cleaning up transactions: {str(e)}")
+        self.retry(exc=e)
     finally:
-        if db_to_close:
-            await db_to_close.close()
+        db.close()

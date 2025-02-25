@@ -9,11 +9,13 @@ from sqlalchemy.future import select
 from sqlalchemy import update
 
 from core.database import get_db
+from core.models.database import Goal
 from core.models.goal_types import GoalStatus
-from core.models.database import Goal as GoalModel
+from core.celery import celery_app
 
 logger = logging.getLogger(__name__)
 
+@celery_app.task
 async def update_goal_status_task(
     goal_id: UUID,
     user_id: UUID,
@@ -28,9 +30,9 @@ async def update_goal_status_task(
             
         # Get the goal directly from database
         result = await db.execute(
-            select(GoalModel)
-            .where(GoalModel.id == goal_id)
-            .where(GoalModel.user_id == user_id)
+            select(Goal)
+            .where(Goal.id == goal_id)
+            .where(Goal.user_id == user_id)
         )
         goal = result.scalar_one_or_none()
         
@@ -41,8 +43,8 @@ async def update_goal_status_task(
         # Check if goal has expired
         if goal.deadline and datetime.utcnow() > goal.deadline:
             await db.execute(
-                update(GoalModel)
-                .where(GoalModel.id == goal_id)
+                update(Goal)
+                .where(Goal.id == goal_id)
                 .values(status=GoalStatus.EXPIRED.value, updated_at=datetime.utcnow())
             )
             await db.commit()

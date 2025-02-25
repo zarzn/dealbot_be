@@ -44,14 +44,16 @@ async def get_market_service(db: AsyncSession = Depends(get_db)) -> MarketServic
 
 async def get_deal_service(db: AsyncSession = Depends(get_db)) -> DealService:
     """Get deal service instance."""
-    return DealService(DealRepository(db))
+    service = DealService(session=db)
+    await service.initialize()
+    return service
 
 async def get_goal_service(
     db: AsyncSession = Depends(get_db),
     token_service: TokenService = Depends(get_token_service)
 ) -> GoalService:
     """Get goal service instance."""
-    return GoalService(db=db, token_service=token_service)
+    return GoalService(session=db)
 
 async def get_market_search_service(
     db: AsyncSession = Depends(get_db)

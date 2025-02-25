@@ -1,6 +1,11 @@
-from typing import Any, Generic, TypeVar
-from pydantic import BaseModel
+"""Base service module."""
+
+from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
+from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
+from redis.asyncio import Redis
+
+from core.models.base import Base
 from core.repositories.base import BaseRepository
 from core.exceptions import (
     ServiceError,
@@ -11,16 +16,30 @@ from core.exceptions import (
     BaseError
 )
 
-ModelType = TypeVar('ModelType')
-CreateSchemaType = TypeVar('CreateSchemaType', bound=BaseModel)
-UpdateSchemaType = TypeVar('UpdateSchemaType', bound=BaseModel)
+ModelType = TypeVar("ModelType", bound=Base)
+CreateSchemaType = TypeVar("CreateSchemaType")
+UpdateSchemaType = TypeVar("UpdateSchemaType")
 
 class BaseService(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
-    """Base service class providing common CRUD operations."""
+    """Base class for all services."""
     
-    def __init__(self, repository: BaseRepository[ModelType], session: AsyncSession):
-        self.repository = repository
-        self.session = session
+    model: Type[ModelType]
+    
+    def __init__(self, session: AsyncSession, redis_service: Optional[Redis] = None):
+        """Initialize service.
+        
+        Args:
+            session: Database session
+            redis_service: Optional Redis service for caching
+        """
+        self.db = session
+        self._redis = redis_service
+        
+        # Check if model is defined in the subclass
+        if not hasattr(self, 'model'):
+            raise TypeError("Service class must define 'model' attribute")
+        
+        self.repository = BaseRepository[ModelType](session, self.model)
 
     async def create(self, db: AsyncSession, obj_in: CreateSchemaType) -> ModelType:
         """Create a new record."""

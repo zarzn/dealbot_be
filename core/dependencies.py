@@ -102,29 +102,26 @@ async def get_current_user(
         # Decode JWT token
         payload = jwt.decode(
             token,
-            settings.SECRET_KEY.get_secret_value(),
+            settings.JWT_SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM]
         )
         user_id: str = payload.get("sub")
         if user_id is None:
             raise credentials_exception
             
-        # Get user from database
-        auth_service = AuthService(db)
-        user = await auth_service.get_user_by_id(user_id)
+        # Get user directly from database
+        from sqlalchemy import select
+        from uuid import UUID
+        stmt = select(User).where(User.id == UUID(user_id))
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+        
         if user is None:
-            raise credentials_exception
-            
-        # Check if token is blacklisted
-        is_blacklisted = await auth_service.is_token_blacklisted(token)
-        if is_blacklisted:
             raise credentials_exception
             
         return user
         
     except JWTError:
-        raise credentials_exception
-    except AuthenticationError:
         raise credentials_exception
     except Exception as e:
         raise HTTPException(

@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Sign in to AI Deals</title>
+    <title>Login Link</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -11,6 +11,12 @@
             max-width: 600px;
             margin: 0 auto;
             padding: 20px;
+        }
+        .container {
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            padding: 20px;
+            margin-top: 20px;
         }
         .button {
             display: inline-block;
@@ -29,21 +35,20 @@
     </style>
 </head>
 <body>
-    <h2>Sign in to AI Deals</h2>
-    <p>Hello,</p>
-    <p>Click the button below to sign in to your AI Deals account:</p>
-    
-    <a href="{{ login_url }}" class="button">Sign In</a>
-    
-    <p>If the button doesn't work, you can also copy and paste this link into your browser:</p>
-    <p>{{ login_url }}</p>
-    
-    <p>This link will expire in 15 minutes for security reasons.</p>
-    <p>If you did not request this sign-in link, please ignore this email.</p>
-    
-    <div class="footer">
-        <p>This is an automated message, please do not reply to this email.</p>
-        <p>&copy; 2024 AI Agentic Deals System. All rights reserved.</p>
+    <div class="container">
+        <h2>Login to AI Agentic Deals</h2>
+        <p>Click the button below to log in to your account:</p>
+        
+        <a href="{{ login_link }}" class="button">Log In</a>
+        
+        <p>This login link will expire in {{ expiry_minutes }} minutes.</p>
+        
+        <p>If you did not request this login link, please ignore this email.</p>
+        
+        <div class="footer">
+            <p>This email was sent by AI Agentic Deals. Please do not reply to this email.</p>
+            <p>If you have any questions, please contact our support team at {{ support_email }}</p>
+        </div>
     </div>
 </body>
 </html> 

@@ -63,6 +63,7 @@ from core.api.v1.price_prediction.router import router as price_prediction_route
 from core.api.v1.notifications.websocket import handle_websocket
 
 from core.config import settings
+from core.utils.redis import get_redis_client, close_redis_client
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -78,6 +79,11 @@ async def lifespan(app: FastAPI):
         configure_mappers()
         logger.info("SQLAlchemy mappers configured")
         
+        # Initialize Redis client
+        logger.info("Initializing Redis client...")
+        get_redis_client()  # Synchronous call
+        logger.info("Redis client initialized")
+        
         yield
     except Exception as e:
         logger.error(f"Error during startup: {str(e)}")
@@ -85,6 +91,8 @@ async def lifespan(app: FastAPI):
     finally:
         # Cleanup
         logger.info("Shutting down application...")
+        close_redis_client()  # Synchronous call
+        logger.info("Redis client closed")
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""

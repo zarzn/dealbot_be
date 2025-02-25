@@ -1,114 +1,5 @@
 """Agent service module."""
 
-from typing import Optional, Dict, Any, List
-from uuid import UUID
-import logging
-from fastapi import BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from core.models.agent import AgentResponse
-from core.exceptions import AgentError
-from core.config import settings
-
-logger = logging.getLogger(__name__)
-
-class AgentService:
-    """Service for managing AI agents in the system."""
-    
-    def __init__(self, db: AsyncSession):
-        """Initialize the agent service.
-        
-        Args:
-            db: Database session
-        """
-        self.db = db
-        self._background_tasks = None
-
-    def set_background_tasks(self, background_tasks: Optional[BackgroundTasks]) -> None:
-        """Set the background tasks instance.
-        
-        Args:
-            background_tasks: FastAPI BackgroundTasks instance
-        """
-        self._background_tasks = background_tasks
-
-    def add_background_task(self, func: Any, *args: Any, **kwargs: Any) -> None:
-        """Add a task to be executed in the background.
-        
-        Args:
-            func: The function to execute
-            *args: Positional arguments for the function
-            **kwargs: Keyword arguments for the function
-            
-        Raises:
-            ValueError: If background_tasks is not initialized
-        """
-        if self._background_tasks is None:
-            raise ValueError("Background tasks not initialized")
-        self._background_tasks.add_task(func, *args, **kwargs)
-
-    async def create_goal_analyst(self, user_id: UUID) -> AgentResponse:
-        """Create a goal analysis agent.
-        
-        Args:
-            user_id: User ID
-            
-        Returns:
-            AgentResponse: Created agent details
-        """
-        # Implementation
-        pass
-
-    async def create_deal_finder(self, user_id: UUID) -> AgentResponse:
-        """Create a deal finding agent.
-        
-        Args:
-            user_id: User ID
-            
-        Returns:
-            AgentResponse: Created agent details
-        """
-        # Implementation
-        pass
-
-    async def create_price_analyst(self, user_id: UUID) -> AgentResponse:
-        """Create a price analysis agent.
-        
-        Args:
-            user_id: User ID
-            
-        Returns:
-            AgentResponse: Created agent details
-        """
-        # Implementation
-        pass
-
-    async def create_notifier(self, user_id: UUID) -> AgentResponse:
-        """Create a notification agent.
-        
-        Args:
-            user_id: User ID
-            
-        Returns:
-            AgentResponse: Created agent details
-        """
-        # Implementation
-        pass
-
-    async def process_goal(self, user_id: UUID, goal_id: UUID) -> None:
-        """Process a goal through the agent system.
-        
-        Args:
-            user_id: User ID
-            goal_id: Goal ID to process
-        """
-        # Implementation
-        pass
-
-    class Config:
-        """Pydantic config."""
-"""Agent service module."""
-
 from typing import List, Dict, Any, Optional, Type
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -117,7 +8,7 @@ from fastapi import BackgroundTasks
 from core.models.agent import Agent, AgentCreate, AgentUpdate, AgentType, AgentStatus
 from core.repositories.agent import AgentRepository
 from core.services.base import BaseService
-from core.utils.redis import get_redis_client
+from core.services.redis import get_redis_service
 from core.exceptions import (
     AgentError,
     AgentNotFoundError,
@@ -144,7 +35,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         super().__init__(self.repository)
         self.db = db
         self._background_tasks = background_tasks
-        self.redis = get_redis_client()
+        self.redis = get_redis_service()
 
     @property
     def background_tasks(self) -> Optional[BackgroundTasks]:
@@ -155,6 +46,21 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
     def background_tasks(self, value: Optional[BackgroundTasks]) -> None:
         """Set background tasks."""
         self._background_tasks = value
+
+    def add_background_task(self, func: Any, *args: Any, **kwargs: Any) -> None:
+        """Add a task to be executed in the background.
+        
+        Args:
+            func: The function to execute
+            *args: Positional arguments for the function
+            **kwargs: Keyword arguments for the function
+            
+        Raises:
+            ValueError: If background_tasks is not initialized
+        """
+        if self._background_tasks is None:
+            raise ValueError("Background tasks not initialized")
+        self._background_tasks.add_task(func, *args, **kwargs)
 
     async def create_goal_analyst(self, user_id: UUID, goal_id: UUID) -> Agent:
         """Create a goal analysis agent."""
@@ -168,7 +74,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
                 backstory="I am an AI agent specialized in understanding and analyzing user goals.",
                 agent_metadata={"specialization": "goal_analysis"}
             )
-            return await self.create(self.db, agent_data)
+            return await self.create(agent_data)
         except Exception as e:
             raise AgentCreationError(f"Failed to create goal analyst: {str(e)}") from e
 
@@ -184,7 +90,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
                 backstory="I am an AI agent specialized in finding the best deals that match user goals.",
                 agent_metadata={"specialization": "deal_search"}
             )
-            return await self.create(self.db, agent_data)
+            return await self.create(agent_data)
         except Exception as e:
             raise AgentCreationError(f"Failed to create deal finder: {str(e)}") from e
 
@@ -200,7 +106,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
                 backstory="I am an AI agent specialized in analyzing prices and market trends.",
                 agent_metadata={"specialization": "price_analysis"}
             )
-            return await self.create(self.db, agent_data)
+            return await self.create(agent_data)
         except Exception as e:
             raise AgentCreationError(f"Failed to create price analyst: {str(e)}") from e
 
@@ -216,7 +122,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
                 backstory="I am an AI agent specialized in managing notifications and user communication.",
                 agent_metadata={"specialization": "notifications"}
             )
-            return await self.create(self.db, agent_data)
+            return await self.create(agent_data)
         except Exception as e:
             raise AgentCreationError(f"Failed to create notifier: {str(e)}") from e
 
@@ -249,21 +155,19 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
                 price_analyst = next(a for a in agents if a.type == AgentType.PRICE_ANALYST)
                 notifier = next(a for a in agents if a.type == AgentType.NOTIFIER)
                 
-                # Add goal processing to background tasks
-                if self.background_tasks:
-                    self.background_tasks.add_task(
-                        self._process_goal_async,
-                        goal_analyst,
-                        deal_finder,
-                        price_analyst,
-                        notifier
-                    )
-            except Exception as e:
-                # Reset agent statuses on error
-                for agent in agents:
-                    await self.repository.update_status(agent.id, AgentStatus.ERROR)
-                raise AgentProcessingError(f"Error during goal processing: {str(e)}") from e
+                # Process goal asynchronously
+                await self._process_goal_async(
+                    goal_analyst,
+                    deal_finder,
+                    price_analyst,
+                    notifier
+                )
                 
+            finally:
+                # Reset agent statuses to IDLE
+                for agent in agents:
+                    await self.repository.update_status(agent.id, AgentStatus.IDLE)
+                    
         except Exception as e:
             raise AgentProcessingError(f"Failed to process goal: {str(e)}") from e
 
@@ -274,58 +178,39 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         price_analyst: Agent,
         notifier: Agent
     ) -> None:
-        """Process a goal asynchronously through the agent system."""
+        """Process goal asynchronously through all agents."""
         try:
-            # Goal analysis phase
+            # Step 1: Goal Analysis
             await self._analyze_goal(goal_analyst)
             
-            # Deal finding phase
+            # Step 2: Deal Finding
             await self._find_deals(deal_finder)
             
-            # Price analysis phase
+            # Step 3: Price Analysis
             await self._analyze_prices(price_analyst)
             
-            # Notification phase
+            # Step 4: Notifications
             await self._send_notifications(notifier)
             
-            # Update all agents to ACTIVE status
-            for agent in [goal_analyst, deal_finder, price_analyst, notifier]:
-                await self.repository.update_status(agent.id, AgentStatus.ACTIVE)
-                
         except Exception as e:
-            # Update all agents to ERROR status
-            for agent in [goal_analyst, deal_finder, price_analyst, notifier]:
-                await self.repository.update_status(agent.id, AgentStatus.ERROR)
-            raise AgentProcessingError(f"Error in async goal processing: {str(e)}") from e
+            raise AgentProcessingError(f"Error in goal processing pipeline: {str(e)}") from e
 
     async def _analyze_goal(self, agent: Agent) -> None:
-        """Analyze a goal using the goal analyst agent."""
-        try:
-            # TODO: Implement goal analysis logic using LangChain
-            pass
-        except Exception as e:
-            raise AgentProcessingError(f"Goal analysis failed: {str(e)}") from e
+        """Analyze goal using goal analyst agent."""
+        # Implementation
+        pass
 
     async def _find_deals(self, agent: Agent) -> None:
-        """Find deals using the deal finder agent."""
-        try:
-            # TODO: Implement deal finding logic using LangChain
-            pass
-        except Exception as e:
-            raise AgentProcessingError(f"Deal finding failed: {str(e)}") from e
+        """Find deals using deal finder agent."""
+        # Implementation
+        pass
 
     async def _analyze_prices(self, agent: Agent) -> None:
-        """Analyze prices using the price analyst agent."""
-        try:
-            # TODO: Implement price analysis logic using LangChain
-            pass
-        except Exception as e:
-            raise AgentProcessingError(f"Price analysis failed: {str(e)}") from e
+        """Analyze prices using price analyst agent."""
+        # Implementation
+        pass
 
     async def _send_notifications(self, agent: Agent) -> None:
-        """Send notifications using the notifier agent."""
-        try:
-            # TODO: Implement notification logic using LangChain
-            pass
-        except Exception as e:
-            raise AgentProcessingError(f"Notification sending failed: {str(e)}") from e
+        """Send notifications using notifier agent."""
+        # Implementation
+        pass

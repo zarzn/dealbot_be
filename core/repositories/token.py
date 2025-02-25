@@ -58,9 +58,10 @@ class TokenRepository:
     async def create_transaction(
         self,
         user_id: str,
-        transaction_type: TransactionType,
+        transaction_type: str,
         amount: float,
-        data: Optional[Dict[str, Any]] = None
+        status: Optional[str] = None,
+        meta_data: Optional[Dict[str, Any]] = None
     ) -> TokenTransaction:
         """Create a new transaction.
         
@@ -68,7 +69,8 @@ class TokenRepository:
             user_id: The ID of the user creating the transaction
             transaction_type: The type of transaction (e.g. payment, refund)
             amount: The transaction amount
-            data: Optional additional transaction data
+            status: The transaction status (defaults to PENDING)
+            meta_data: Optional additional transaction data
             
         Returns:
             The created transaction record
@@ -77,12 +79,16 @@ class TokenRepository:
             DatabaseError: If there is an error creating the transaction
         """
         try:
+            # Set default status if not provided
+            if not status:
+                status = TransactionStatus.PENDING.value
+                
             transaction = TokenTransaction(
                 user_id=user_id,
                 type=transaction_type,
                 amount=amount,
-                status=TransactionStatus.PENDING,
-                data=data,
+                status=status,
+                meta_data=meta_data,
                 created_at=datetime.now(timezone.utc)
             )
             
@@ -95,7 +101,10 @@ class TokenRepository:
         except SQLAlchemyError as e:
             await self.session.rollback()
             logger.error(f"Error creating transaction: {str(e)}")
-            raise DatabaseError(f"Failed to create transaction: {str(e)}")
+            raise DatabaseError(
+                operation="create_transaction",
+                message=f"Failed to create transaction: {str(e)}"
+            )
 
     async def get_transaction(
         self,
@@ -222,7 +231,7 @@ class TokenRepository:
             user_id: The ID of the user
             
         Returns:
-            The user's balance record if found, None otherwise
+            The user's balance record or None if not found
             
         Raises:
             DatabaseError: If there is an error retrieving the balance
@@ -234,7 +243,6 @@ class TokenRepository:
                 )
             )
             return result.scalar_one_or_none()
-            
         except SQLAlchemyError as e:
             logger.error(f"Error getting user balance: {str(e)}")
             raise DatabaseError(f"Failed to get user balance: {str(e)}")
@@ -288,6 +296,301 @@ class TokenRepository:
             await self.session.rollback()
             logger.error(f"Error updating user balance: {str(e)}")
             raise DatabaseError(f"Failed to update user balance: {str(e)}")
+
+    async def add_reward(
+        self,
+        user_id: str,
+        amount: float,
+        reason: str
+    ) -> TokenTransaction:
+        """Add reward tokens to user's balance.
+        
+        Args:
+            user_id: The ID of the user
+            amount: The reward amount
+            reason: The reason for the reward
+            
+        Returns:
+            The created transaction record
+            
+        Raises:
+            DatabaseError: If there is an error processing the reward
+        """
+        try:
+            # Create transaction record
+            transaction = TokenTransaction(
+                user_id=user_id,
+                type=TransactionType.REWARD.value,
+                amount=amount,
+                status=TransactionStatus.PENDING.value,
+                meta_data={"reason": reason}
+            )
+            self.session.add(transaction)
+
+            # Get or create user balance
+            balance = await self.get_user_balance(user_id)
+            if not balance:
+                balance = TokenBalance(user_id=user_id, balance=0)
+                self.session.add(balance)
+
+            # Update balance
+            old_balance = balance.balance
+            balance.balance += amount
+
+            # Record balance history
+            history = TokenBalanceHistory(
+                user_id=user_id,
+                token_balance_id=balance.id,
+                balance_before=old_balance,
+                balance_after=balance.balance,
+                change_amount=amount,
+                change_type=TransactionType.REWARD.value,
+                reason=reason,
+                transaction_id=transaction.id
+            )
+            self.session.add(history)
+
+            # Commit changes
+            await self.session.commit()
+            await self.session.refresh(transaction)
+            
+            return transaction
+
+        except SQLAlchemyError as e:
+            await self.session.rollback()
+            logger.error(f"Error adding reward: {str(e)}")
+            raise DatabaseError(
+                operation="add_reward",
+                message=f"Failed to add reward: {str(e)}"
+            )
+
+    async def transfer_tokens(
+        self,
+        from_user_id: str,
+        to_user_id: str,
+        amount: float,
+        reason: str
+    ) -> TokenTransaction:
+        """Transfer tokens between users.
+        
+        Args:
+            from_user_id: Source user ID
+            to_user_id: Destination user ID
+            amount: Amount to transfer
+            reason: Reason for transfer
+            
+        Returns:
+            The created transaction record
+            
+        Raises:
+            InsufficientBalanceError: If source has insufficient balance
+            DatabaseError: If there is an error processing the transfer
+        """
+        try:
+            # Get source user balance
+            from_balance = await self.get_user_balance(from_user_id)
+            if not from_balance or from_balance.balance < amount:
+                raise InsufficientBalanceError(
+                    required=amount,
+                    available=from_balance.balance if from_balance else 0
+                )
+                
+            # Get or create destination user balance
+            to_balance = await self.get_user_balance(to_user_id)
+            if not to_balance:
+                to_balance = TokenBalance(
+                    user_id=to_user_id, 
+                    balance=0
+                )
+                self.session.add(to_balance)
+                # Flush the session to generate IDs for the new balance
+                await self.session.flush()
+                logger.debug(f"Created new balance for user {to_user_id} with ID {to_balance.id}")
+                
+            # Create transaction record with UUIDs converted to strings in meta_data
+            transaction = TokenTransaction(
+                user_id=from_user_id,
+                type=TransactionType.CREDIT.value,
+                amount=amount,
+                status=TransactionStatus.PENDING.value,
+                meta_data={
+                    "reason": reason,
+                    "to_user_id": str(to_user_id)  # Convert UUID to string
+                }
+            )
+            self.session.add(transaction)
+            # Flush to generate ID for the transaction
+            await self.session.flush()
+            logger.debug(f"Created transaction with ID {transaction.id}")
+            
+            # Update source balance
+            old_from_balance = from_balance.balance
+            from_balance.balance -= amount
+            
+            # Record source balance history - ensure from_balance.id is set
+            from_history = TokenBalanceHistory(
+                user_id=from_user_id,
+                token_balance_id=from_balance.id,
+                balance_before=old_from_balance,
+                balance_after=from_balance.balance,
+                change_amount=-amount,
+                change_type=TransactionType.DEDUCTION.value,
+                reason=f"Transfer to {to_user_id}: {reason}",
+                transaction_id=transaction.id
+            )
+            self.session.add(from_history)
+            
+            # Update destination balance
+            old_to_balance = to_balance.balance
+            to_balance.balance += amount
+            
+            # Record destination balance history - ensure to_balance.id is set
+            to_history = TokenBalanceHistory(
+                user_id=to_user_id,
+                token_balance_id=to_balance.id,
+                balance_before=old_to_balance,
+                balance_after=to_balance.balance,
+                change_amount=amount,
+                change_type=TransactionType.CREDIT.value,
+                reason=f"Transfer from {from_user_id}: {reason}",
+                transaction_id=transaction.id
+            )
+            self.session.add(to_history)
+            
+            # Update transaction status
+            transaction.status = TransactionStatus.COMPLETED.value
+            transaction.processed_at = datetime.now(timezone.utc)
+            
+            # Commit changes
+            await self.session.commit()
+            await self.session.refresh(transaction)
+            
+            return transaction
+            
+        except InsufficientBalanceError:
+            await self.session.rollback()
+            raise
+        except SQLAlchemyError as e:
+            await self.session.rollback()
+            logger.error(f"Error transferring tokens: {str(e)}")
+            raise DatabaseError(
+                operation="transfer_tokens",
+                message=f"Failed to transfer tokens: {str(e)}"
+            )
+            
+    async def deduct_tokens(
+        self,
+        user_id: str,
+        amount: float,
+        reason: str
+    ) -> TokenTransaction:
+        """Deduct tokens from user's balance.
+        
+        Args:
+            user_id: User ID
+            amount: Amount to deduct
+            reason: Reason for deduction
+            
+        Returns:
+            The created transaction record
+            
+        Raises:
+            InsufficientBalanceError: If user has insufficient balance
+            DatabaseError: If there is an error processing the deduction
+        """
+        try:
+            # Get user balance
+            balance = await self.get_user_balance(user_id)
+            if not balance or balance.balance < amount:
+                raise InsufficientBalanceError(
+                    required=amount,
+                    available=balance.balance if balance else 0
+                )
+                
+            # Create transaction record
+            transaction = TokenTransaction(
+                user_id=user_id,
+                type=TransactionType.DEDUCTION.value,
+                amount=amount,
+                status=TransactionStatus.PENDING.value,
+                meta_data={"reason": reason}
+            )
+            self.session.add(transaction)
+            
+            # Update balance
+            old_balance = balance.balance
+            balance.balance -= amount
+            balance.last_updated = datetime.now(timezone.utc)
+            
+            # Record balance history
+            history = TokenBalanceHistory(
+                user_id=user_id,
+                token_balance_id=balance.id,
+                balance_before=old_balance,
+                balance_after=balance.balance,
+                change_amount=-amount,
+                change_type=TransactionType.DEDUCTION.value,
+                reason=reason,
+                transaction_id=transaction.id
+            )
+            self.session.add(history)
+            
+            # Update transaction status
+            transaction.status = TransactionStatus.COMPLETED.value
+            transaction.processed_at = datetime.now(timezone.utc)
+            
+            # Commit changes
+            await self.session.commit()
+            await self.session.refresh(transaction)
+            
+            return transaction
+            
+        except InsufficientBalanceError:
+            await self.session.rollback()
+            raise
+        except SQLAlchemyError as e:
+            await self.session.rollback()
+            logger.error(f"Error deducting tokens: {str(e)}")
+            raise DatabaseError(
+                operation="deduct_tokens",
+                message=f"Failed to deduct tokens: {str(e)}"
+            )
+            
+    async def get_transaction_history(
+        self,
+        user_id: str,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[TokenTransaction]:
+        """Get user's transaction history.
+        
+        Args:
+            user_id: User ID
+            limit: Maximum number of transactions to return
+            offset: Offset for pagination
+            
+        Returns:
+            List of transaction records
+            
+        Raises:
+            DatabaseError: If there is an error retrieving the history
+        """
+        try:
+            result = await self.session.execute(
+                select(TokenTransaction)
+                .where(TokenTransaction.user_id == user_id)
+                .order_by(desc(TokenTransaction.created_at))
+                .offset(offset)
+                .limit(limit)
+            )
+            return list(result.scalars().all())
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Error getting transaction history: {str(e)}")
+            raise DatabaseError(
+                operation="get_transaction_history",
+                message=f"Failed to get transaction history: {str(e)}"
+            )
 
     async def create_wallet(
         self,
@@ -482,24 +785,53 @@ class TokenRepository:
             logger.error(f"Error getting pricing info: {str(e)}")
             raise DatabaseError(f"Failed to get pricing info: {str(e)}")
 
-    async def cleanup_old_transactions(
-        self,
-        days: int = 30
-    ) -> int:
-        """Clean up old transactions.
+    async def get_pricing_by_service(self, service_type: str) -> Optional[TokenPricing]:
+        """Get token pricing for a specific service type.
         
         Args:
-            days: Number of days of history to keep
+            service_type: The type of service to get pricing for
             
         Returns:
-            Number of transactions cleaned up
+            The pricing record if found, None otherwise
+            
+        Raises:
+            DatabaseError: If there is an error retrieving pricing info
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            async with self.session.begin() as session:
+                stmt = select(TokenPricing).where(
+                    and_(
+                        TokenPricing.service_type == service_type,
+                        TokenPricing.is_active.is_(True),
+                        TokenPricing.valid_from <= now,
+                        or_(
+                            TokenPricing.valid_to.is_(None),
+                            TokenPricing.valid_to >= now
+                        )
+                    )
+                ).order_by(desc(TokenPricing.valid_from))
+                
+                result = await session.execute(stmt)
+                return result.scalar_one_or_none()
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Error getting pricing info for service {service_type}: {str(e)}")
+            raise DatabaseError(f"Failed to get pricing info: {str(e)}")
+
+    async def clean_up_transactions(self, cutoff_date: datetime) -> int:
+        """Clean up transactions older than a specified date.
+        
+        Args:
+            cutoff_date: The date to use as the cutoff for cleaning up transactions
+            
+        Returns:
+            The number of transactions cleaned up
             
         Raises:
             DatabaseError: If there is an error cleaning up transactions
         """
         try:
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
-            
             result = await self.session.execute(
                 select(TokenTransaction).where(
                     and_(
@@ -524,3 +856,164 @@ class TokenRepository:
             await self.session.rollback()
             logger.error(f"Error cleaning up transactions: {str(e)}")
             raise DatabaseError(f"Failed to clean up transactions: {str(e)}")
+
+    async def connect_wallet(
+        self,
+        user_id: str,
+        wallet_address: str
+    ) -> bool:
+        """Connect a wallet to a user.
+        
+        Args:
+            user_id: The ID of the user
+            wallet_address: The wallet address to connect
+            
+        Returns:
+            True if successful
+            
+        Raises:
+            DatabaseError: If there is an error connecting the wallet
+        """
+        try:
+            # Check if wallet already exists
+            result = await self.session.execute(
+                select(TokenWallet).where(
+                    TokenWallet.address == wallet_address
+                )
+            )
+            existing_wallet = result.scalar_one_or_none()
+            
+            if existing_wallet:
+                if existing_wallet.user_id != user_id:
+                    raise WalletConnectionError(
+                        address=wallet_address,
+                        reason="Wallet already connected to another user"
+                    )
+                # Wallet already belongs to this user
+                return True
+                
+            # Create new wallet
+            wallet = TokenWallet(
+                user_id=user_id,
+                address=wallet_address,
+                is_active=True,
+                connected_at=datetime.now(timezone.utc)
+            )
+            
+            self.session.add(wallet)
+            await self.session.commit()
+            
+            return True
+            
+        except SQLAlchemyError as e:
+            await self.session.rollback()
+            logger.error(f"Error connecting wallet: {str(e)}")
+            raise DatabaseError(f"Failed to connect wallet: {str(e)}")
+
+    async def disconnect_wallet(
+        self,
+        user_id: str
+    ) -> bool:
+        """Disconnect all wallets for a user.
+        
+        Args:
+            user_id: The ID of the user
+            
+        Returns:
+            True if successful
+            
+        Raises:
+            DatabaseError: If there is an error disconnecting the wallets
+        """
+        try:
+            # Update all user's wallets to inactive
+            await self.session.execute(
+                update(TokenWallet)
+                .where(TokenWallet.user_id == user_id)
+                .values(
+                    is_active=False,
+                    disconnected_at=datetime.now(timezone.utc)
+                )
+            )
+            
+            await self.session.commit()
+            return True
+            
+        except SQLAlchemyError as e:
+            await self.session.rollback()
+            logger.error(f"Error disconnecting wallets: {str(e)}")
+            raise DatabaseError(
+                operation="disconnect_wallet",
+                message=f"Failed to disconnect wallets: {str(e)}"
+            )
+    
+    async def rollback_transaction(
+        self,
+        tx_id: str
+    ) -> bool:
+        """Rollback a transaction.
+        
+        Args:
+            tx_id: Transaction ID to rollback
+            
+        Returns:
+            True if successful
+            
+        Raises:
+            DatabaseError: If there is an error rolling back the transaction
+        """
+        try:
+            # Get the transaction
+            result = await self.session.execute(
+                select(TokenTransaction).where(
+                    TokenTransaction.id == tx_id
+                )
+            )
+            transaction = result.scalar_one_or_none()
+            
+            if not transaction:
+                logger.warning(f"Transaction not found for rollback: {tx_id}")
+                return False
+                
+            # Only completed or pending transactions can be rolled back
+            if transaction.status not in [
+                TransactionStatus.COMPLETED.value,
+                TransactionStatus.PENDING.value
+            ]:
+                logger.warning(
+                    f"Transaction {tx_id} in status {transaction.status} cannot be rolled back"
+                )
+                return False
+                
+            # Reverse the transaction
+            if transaction.type == TransactionType.DEDUCTION.value:
+                # For deductions, add the amount back
+                await self.update_user_balance(transaction.user_id, transaction.amount)
+            elif transaction.type in [
+                TransactionType.REWARD.value,
+                TransactionType.CREDIT.value,
+                TransactionType.REFUND.value
+            ]:
+                # For additions, subtract the amount
+                await self.update_user_balance(transaction.user_id, -transaction.amount)
+                
+            # Update transaction status
+            transaction.status = TransactionStatus.ROLLED_BACK.value
+            transaction.processed_at = datetime.now(timezone.utc)
+            
+            # Add rollback reason to metadata
+            if not transaction.meta_data:
+                transaction.meta_data = {}
+            transaction.meta_data["rollback_reason"] = "Manual rollback"
+            transaction.meta_data["rollback_time"] = datetime.now(timezone.utc).isoformat()
+            
+            await self.session.commit()
+            return True
+            
+        except SQLAlchemyError as e:
+            await self.session.rollback()
+            logger.error(f"Error rolling back transaction: {str(e)}")
+            raise DatabaseError(
+                operation="rollback_transaction",
+                message=f"Failed to rollback transaction: {str(e)}"
+            )

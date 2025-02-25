@@ -84,7 +84,7 @@ class InsufficientBalanceError(TokenError):
     def __init__(self, required: float, available: float):
         self.required = required
         self.available = available
-        message = f"Insufficient balance: required {required}, available {available}"
+        message = "Insufficient balance for deduction"
         details = {"required": required, "available": available}
         super().__init__(message, details)
 

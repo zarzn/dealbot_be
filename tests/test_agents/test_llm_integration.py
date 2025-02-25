@@ -147,36 +147,29 @@ async def test_fallback_mechanism(llm_manager, mock_deepseek_response, mock_open
             mock_openai.assert_called_once()
 
 @pytest.mark.asyncio
-async def test_development_mode(llm_manager, mock_gemini_response):
-    """Test development mode with Gemini."""
-    with patch('google.generativeai.GenerativeModel.generate_content',
-              new_callable=AsyncMock) as mock_generate:
-        mock_generate.return_value = mock_gemini_response
-        
-        # Force development mode
-        llm_manager.is_development = True
-        
-        response = await llm_manager.generate(
-            LLMRequest(
-                prompt="Test prompt",
-                provider=LLMProvider.DEEPSEEK,  # Should use Gemini instead
-                temperature=0.7
-            )
+async def test_development_mode(llm_manager):
+    """Test development mode with DeepSeek."""
+    # Force development mode
+    llm_manager.is_development = True
+    
+    response = await llm_manager.generate(
+        LLMRequest(
+            prompt="Test prompt",
+            provider=LLMProvider.DEEPSEEK,
+            temperature=0.7
         )
-        
-        assert response.text == f"Development response from {LLMProvider.GEMINI.value.title()}"
-        assert response.provider == LLMProvider.GEMINI
-        mock_generate.assert_not_called()  # Should not call in development mode
+    )
+    
+    assert response.text == f"Development response from {LLMProvider.DEEPSEEK.value.title()}"
+    assert response.provider == LLMProvider.DEEPSEEK
 
 @pytest.mark.asyncio
 async def test_error_handling(llm_manager):
     """Test error handling for all providers."""
-    with patch('google.generativeai.GenerativeModel.generate_content',
-              side_effect=Exception("Gemini error")), \
-         patch('httpx.AsyncClient.post',
-               side_effect=Exception("DeepSeek error")), \
+    with patch('httpx.AsyncClient.post',
+              side_effect=Exception("DeepSeek error")), \
          patch('openai.resources.chat.completions.AsyncCompletions.create',
-               side_effect=Exception("OpenAI error")):
+              side_effect=Exception("OpenAI error")):
         
         # Disable development mode for this test
         llm_manager.is_development = False

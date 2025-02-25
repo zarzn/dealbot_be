@@ -1,0 +1,43 @@
+"""Main application module."""
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from core.config import settings
+from core.api.v1.router import router as api_router
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    version=settings.APP_VERSION,
+    description=settings.API_DESCRIPTION,
+    docs_url="/docs" if not settings.TESTING else None,
+    redoc_url="/redoc" if not settings.TESTING else None,
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add API router
+app.include_router(api_router, prefix=settings.API_PREFIX)
+
+# Add health check endpoint
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "ok"}
+
+# Add startup and shutdown events
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup."""
+    pass
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up services on shutdown.""" 

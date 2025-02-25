@@ -3,6 +3,7 @@
 from typing import List
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from .auth import AuthMiddleware
 from .rate_limit import RateLimitMiddleware
@@ -69,9 +70,8 @@ async def setup_middleware(app: FastAPI) -> None:
     # Rate Limiting Middleware
     app.add_middleware(
         RateLimitMiddleware,
-        redis_client=redis_client,
-        limit=settings.RATE_LIMIT_PER_MINUTE,
-        window=60,  # 1 minute window
+        rate_per_second=int(settings.RATE_LIMIT_PER_SECOND),
+        rate_per_minute=int(settings.RATE_LIMIT_PER_MINUTE),
         exclude_paths=settings.AUTH_EXCLUDE_PATHS
     )
     
@@ -79,4 +79,10 @@ async def setup_middleware(app: FastAPI) -> None:
     app.add_middleware(
         AuthMiddleware,
         exclude_paths=settings.AUTH_EXCLUDE_PATHS
+    )
+
+    # Add compression middleware
+    app.add_middleware(
+        GZipMiddleware,
+        minimum_size=settings.COMPRESSION_MINIMUM_SIZE
     ) 

@@ -188,13 +188,6 @@ class CrewAIAdapter(IAgent):
 
     def _get_llm_config(self) -> Dict[str, Any]:
         """Get LLM configuration"""
-        # Use Gemini for development
-        if LLM_CONFIGS[LLMProvider.GEMINI].is_development:
-            return {
-                "model": "gemini-2.0-flash",
-                "api_key": LLM_CONFIGS[LLMProvider.GEMINI].api_key,
-                "temperature": 0.7
-            }
         # Use DeepSeek for production
         return {
             "model": LLM_CONFIGS[LLMProvider.DEEPSEEK].model,

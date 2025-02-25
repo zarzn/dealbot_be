@@ -15,17 +15,26 @@ from core.websockets.price_updates import PriceUpdateManager
 from core.models.price_tracking import PriceTrackerCreate, PricePointCreate
 from core.models.price_prediction import PricePredictionCreate
 from core.models.deal import Deal
+from core.models.enums import DealSource, MarketCategory, DealStatus
+
+TEST_USER_ID = UUID('00000000-0000-0000-0000-000000000001')
+TEST_MARKET_ID = UUID('00000000-0000-0000-0000-000000000002')
 
 @pytest.fixture
 async def test_deal(async_session):
     """Create a test deal."""
     deal = Deal(
         id=UUID('12345678-1234-5678-1234-567812345678'),
+        user_id=TEST_USER_ID,
+        market_id=TEST_MARKET_ID,
         title="Test Deal",
         price=Decimal('100.00'),
         currency="USD",
         url="https://test.com/deal",
-        source="test_source"
+        source=DealSource.API,
+        category=MarketCategory.ELECTRONICS,
+        status=DealStatus.ACTIVE,
+        is_active=True
     )
     async_session.add(deal)
     await async_session.commit()
@@ -94,7 +103,7 @@ async def test_price_point_addition(
         deal_id=test_deal.id,
         price=Decimal('95.00'),
         currency="USD",
-        source="test"
+        source=DealSource.API
     )
     
     point_response = await price_tracking_service.add_price_point(
@@ -131,7 +140,7 @@ async def test_price_prediction_integration(
             deal_id=test_deal.id,
             price=base_price + Decimal(str(i % 10)),  # Create some pattern
             currency="USD",
-            source="test"
+            source=DealSource.API
         )
         await price_tracking_service.add_price_point(
             tracker_id=tracker.id,
@@ -189,7 +198,7 @@ async def test_websocket_integration(
             deal_id=test_deal.id,
             price=Decimal('85.00'),
             currency="USD",
-            source="test"
+            source=DealSource.API
         )
         
         await price_tracking_service.add_price_point(
@@ -225,7 +234,7 @@ async def test_threshold_notifications(
         deal_id=test_deal.id,
         price=Decimal('93.00'),
         currency="USD",
-        source="test"
+        source=DealSource.API
     )
     
     point_response = await price_tracking_service.add_price_point(
@@ -279,7 +288,7 @@ async def test_full_integration_flow(
                 deal_id=test_deal.id,
                 price=base_price - Decimal(str(i * 0.5)),
                 currency="USD",
-                source="test"
+                source=DealSource.API
             )
             await price_tracking_service.add_price_point(
                 tracker_id=tracker.id,
@@ -311,7 +320,7 @@ async def test_full_integration_flow(
             deal_id=test_deal.id,
             price=Decimal('85.00'),  # Below threshold
             currency="USD",
-            source="test"
+            source=DealSource.API
         )
         
         await price_tracking_service.add_price_point(

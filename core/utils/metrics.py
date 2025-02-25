@@ -22,6 +22,13 @@ REQUEST_COUNT = Counter(
     ["method", "endpoint", "status"]
 )
 
+# Custom metrics
+CUSTOM_METRICS = Counter(
+    "custom_metrics_total",
+    "Custom metrics counter",
+    ["metric_name", "category"]
+)
+
 # Database metrics
 DB_QUERY_LATENCY = Histogram(
     "db_query_latency_seconds",
@@ -117,6 +124,21 @@ CPU_USAGE = Gauge(
     "CPU usage percentage",
     ["type"]
 )
+
+def track_metric(metric_name: str, category: str = "default") -> None:
+    """Track a custom metric.
+    
+    Args:
+        metric_name: Name of the metric to track
+        category: Category of the metric (default: "default")
+    """
+    try:
+        CUSTOM_METRICS.labels(
+            metric_name=metric_name,
+            category=category
+        ).inc()
+    except Exception as e:
+        logger.error(f"Error tracking custom metric {metric_name}: {str(e)}")
 
 class MetricsCollector:
     """Metrics collection utility"""

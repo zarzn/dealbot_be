@@ -1,7 +1,7 @@
 """Authentication-related exceptions module."""
 
 from typing import Dict, Any, Optional, List
-from .base_exceptions import BaseError, ValidationError
+from .base_exceptions import BaseError, ValidationError, AuthenticationError, AuthorizationError
 
 class AuthError(BaseError):
     """Base class for authentication-related errors."""
@@ -16,43 +16,6 @@ class AuthError(BaseError):
             message=message,
             error_code=error_code or "auth_error",
             details=details
-        )
-
-class AuthenticationError(AuthError):
-    """Raised when authentication fails."""
-    
-    def __init__(
-        self,
-        message: str = "Authentication failed",
-        reason: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None
-    ):
-        error_details = details or {}
-        if reason:
-            error_details["reason"] = reason
-        super().__init__(
-            message=message,
-            details=error_details
-        )
-
-class AuthorizationError(AuthError):
-    """Raised when authorization fails."""
-    
-    def __init__(
-        self,
-        message: str = "Authorization failed",
-        resource: Optional[str] = None,
-        action: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None
-    ):
-        error_details = details or {}
-        if resource:
-            error_details["resource"] = resource
-        if action:
-            error_details["action"] = action
-        super().__init__(
-            message=message,
-            details=error_details
         )
 
 class InvalidCredentialsError(AuthError):
@@ -77,13 +40,15 @@ class TokenError(AuthError):
         self,
         token_type: str,
         error_type: str,
+        reason: str,
         message: str = "Token error",
         details: Optional[Dict[str, Any]] = None
     ):
         error_details = details or {}
         error_details.update({
             "token_type": token_type,
-            "error_type": error_type
+            "error_type": error_type,
+            "reason": reason
         })
         super().__init__(
             message=message,
@@ -212,6 +177,12 @@ class EmailNotVerifiedError(AuthError):
             }
         )
 
+class SocialAuthError(AuthenticationError):
+    """Raised when social authentication fails."""
+    def __init__(self, message: str, provider: str = None):
+        super().__init__(message)
+        self.provider = provider
+
 __all__ = [
     'AuthError',
     'AuthenticationError',
@@ -224,5 +195,6 @@ __all__ = [
     'InvalidTwoFactorCodeError',
     'TokenRefreshError',
     'AccountLockedError',
-    'EmailNotVerifiedError'
+    'EmailNotVerifiedError',
+    'SocialAuthError'
 ] 

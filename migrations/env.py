@@ -42,7 +42,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Get database URL from settings
-DATABASE_URL = "postgresql://postgres:12345678@localhost:5432/deals"
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:12345678@localhost:5432/deals")
 
 logger.info(f"Using database URL: {DATABASE_URL}")
 

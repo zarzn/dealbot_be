@@ -17,7 +17,8 @@ async def redis_client():
     """Create Redis client fixture."""
     redis_mock = RedisMock()
     await redis_mock.auth("test_password")  # Authenticate mock
-    client = RedisClient(redis_mock)  # Initialize with mock
+    client = RedisClient()  # Initialize without mock
+    await client.init(redis_mock)  # Initialize with mock after creation
     yield client
     await client.close()
 

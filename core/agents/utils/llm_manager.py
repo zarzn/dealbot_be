@@ -1,14 +1,13 @@
 """LLM Manager for handling different LLM providers and fallback logic.
 
 This module provides a unified interface for interacting with different LLM providers,
-including Gemini (development), DeepSeek (primary), and OpenAI (fallback).
+including DeepSeek (primary) and OpenAI (fallback).
 """
 
 from typing import Dict, Any, Optional, List
 import asyncio
 from datetime import datetime
 import httpx
-import google.generativeai as genai
 from langchain.llms import OpenAI
 from pydantic import BaseModel
 from openai import AsyncOpenAI
@@ -59,13 +58,6 @@ class LLMManager:
 
     def _initialize_providers(self):
         """Initialize LLM providers"""
-        # Initialize Gemini
-        gemini_config = LLM_CONFIGS[LLMProvider.GEMINI]
-        genai.configure(api_key=gemini_config.api_key)
-        self.gemini_model = genai.GenerativeModel(
-            model_name=gemini_config.model
-        )
-
         # Initialize OpenAI client
         openai_config = LLM_CONFIGS[LLMProvider.OPENAI]
         self.openai_client = AsyncOpenAI(
@@ -81,78 +73,12 @@ class LLMManager:
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         """Generate response using appropriate LLM provider"""
-        start_time = datetime.utcnow()
-
-        try:
-            # Check cache first
-            cache_key = self._generate_cache_key(request)
-            cached_response = await self._get_cached_response(cache_key)
-            if cached_response:
-                return LLMResponse(
-                    text=cached_response["text"],
-                    provider=cached_response["provider"],
-                    tokens_used=cached_response["tokens_used"],
-                    processing_time=0,
-                    cache_hit=True
-                )
-
-            # Try providers in sequence
-            for provider in self._get_provider_sequence(request.provider):
-                try:
-                    if await self._check_rate_limit(provider):
-                        response = await self._generate_with_provider(
-                            provider, request
-                        )
-
-                        # Update token usage
-                        self._update_token_usage(provider, response.tokens_used)
-
-                        # Cache successful response
-                        await self._cache_response(cache_key, {
-                            "text": response.text,
-                            "provider": response.provider,
-                            "tokens_used": response.tokens_used
-                        })
-
-                        return response
-                except Exception as e:
-                    logger.error(
-                        f"Error with provider {provider}: {str(e)}",
-                        exc_info=True
-                    )
-                    if provider == request.provider:
-                        # Only try fallback if this was the preferred provider
-                        continue
-                    else:
-                        # If this was a fallback provider, raise the error
-                        raise LLMProviderError(f"All LLM providers failed: {str(e)}")
-
-            raise LLMProviderError("All LLM providers failed")
-
-        except Exception as e:
-            logger.error(f"LLM generation failed: {str(e)}", exc_info=True)
-            raise LLMProviderError(f"LLM generation failed: {str(e)}")
-
-    async def _generate_with_provider(
-        self,
-        provider: LLMProvider,
-        request: LLMRequest
-    ) -> LLMResponse:
-        """Generate response with specific provider"""
+        # Get provider sequence
+        provider = request.provider or LLMProvider.DEEPSEEK
         config = LLM_CONFIGS[provider]
         
-        # In development mode or tests, return test responses
+        # Development mode - use mock responses
         if self.is_development:
-            # If this is a test request (contains "test" in prompt)
-            if isinstance(request.prompt, str) and "test" in request.prompt.lower():
-                return LLMResponse(
-                    text=f"Test response from {provider.value.title()}",
-                    provider=provider,
-                    tokens_used=30,
-                    processing_time=0,
-                    cache_hit=False
-                )
-            # For non-test development requests
             return LLMResponse(
                 text=f"Development response from {provider.value.title()}",
                 provider=provider,
@@ -163,9 +89,7 @@ class LLMManager:
             
         # Production mode - use requested provider
         try:
-            if provider == LLMProvider.GEMINI:
-                return await self._generate_with_gemini(request, config)
-            elif provider == LLMProvider.DEEPSEEK:
+            if provider == LLMProvider.DEEPSEEK:
                 return await self._generate_with_deepseek(request, config)
             elif provider == LLMProvider.OPENAI:
                 return await self._generate_with_openai(request, config)
@@ -246,38 +170,6 @@ class LLMManager:
         except Exception as e:
             raise LLMProviderError(f"OpenAI API error: {str(e)}")
 
-    async def _generate_with_gemini(
-        self,
-        request: LLMRequest,
-        config: Dict[str, Any]
-    ) -> LLMResponse:
-        """Generate response using Gemini API."""
-        try:
-            if isinstance(self.gemini_model.generate_content, AsyncMock):
-                return LLMResponse(
-                    text="Test response from Gemini",
-                    provider=LLMProvider.GEMINI,
-                    tokens_used=100,  # Gemini doesn't provide token count
-                    processing_time=0,
-                    cache_hit=False
-                )
-
-            # Gemini's generate_content is not async, so we need to run it in a thread pool
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(
-                None, self.gemini_model.generate_content, request.prompt
-            )
-            
-            return LLMResponse(
-                text=response.text,
-                provider=LLMProvider.GEMINI,
-                tokens_used=100,  # Gemini doesn't provide token count
-                processing_time=0,
-                cache_hit=False
-            )
-        except Exception as e:
-            raise LLMProviderError(f"Gemini API error: {str(e)}")
-
     def _update_token_usage(self, provider: LLMProvider, tokens: int):
         """Update token usage tracking"""
         if provider not in self._token_usage:
@@ -299,10 +191,6 @@ class LLMManager:
         preferred_provider: Optional[LLMProvider]
     ) -> List[LLMProvider]:
         """Get sequence of providers to try"""
-        # In development mode or tests, use the requested provider
-        if self.is_development:
-            return [preferred_provider or LLMProvider.GEMINI]
-        
         # If a specific provider is requested, use it with OpenAI as fallback
         if preferred_provider:
             return [preferred_provider, LLMProvider.OPENAI]
@@ -356,7 +244,7 @@ class LLMManager:
         """Generate response using specified provider."""
         request = LLMRequest(
             prompt=prompt,
-            provider=provider or (LLMProvider.GEMINI if self.is_development else LLMProvider.DEEPSEEK),
+            provider=provider or (LLMProvider.DEEPSEEK if self.is_development else LLMProvider.DEEPSEEK),
             temperature=temperature,
             max_tokens=max_tokens
         )

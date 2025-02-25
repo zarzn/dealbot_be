@@ -1,18 +1,18 @@
 """Core services initialization."""
 
+from .market_search import MarketSearchService, get_current_price
+from .goal import GoalService
+from .notification import NotificationService
+from .auth import AuthService
 from .token import TokenService
 from .analytics import AnalyticsService
-from .market import MarketService
-from .deal import DealService
-from .goal import GoalService
-from .auth import get_current_user, get_current_active_user
 
 __all__ = [
-    'TokenService',
-    'AnalyticsService',
-    'MarketService',
-    'DealService',
+    'MarketSearchService',
+    'get_current_price',
     'GoalService',
-    'get_current_user',
-    'get_current_active_user'
+    'NotificationService',
+    'AuthService',
+    'TokenService',
+    'AnalyticsService'
 ]

@@ -4,39 +4,28 @@ This module defines the deal-related models for the AI Agentic Deals System,
 including deal status tracking, scoring, and price history.
 """
 
-from datetime import datetime
-from typing import Optional, List, Dict, Any
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List, Dict, Any, Union
 from uuid import UUID, uuid4
 from decimal import Decimal
 from pydantic import BaseModel, HttpUrl, Field, field_validator, conint, confloat
 import enum
+import re
 
 from sqlalchemy import (
     ForeignKey, String, Text, DECIMAL, JSON, Enum as SQLAlchemyEnum,
-    UniqueConstraint, CheckConstraint, Index, Column, DateTime, Boolean
+    UniqueConstraint, CheckConstraint, Index, Column, DateTime, Boolean, event
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, Mapper
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.sql import expression, text
+from sqlalchemy.engine import Connection
 
 from core.models.base import Base
-
-class DealStatus(str, enum.Enum):
-    """Deal status types."""
-    ACTIVE = "active"
-    EXPIRED = "expired"
-    INVALID = "invalid"
-    PENDING = "pending"
-    SOLD_OUT = "sold_out"
-    PRICE_CHANGED = "price_changed"
-
-class DealSource(str, enum.Enum):
-    """Deal source types."""
-    MANUAL = "manual"
-    API = "api"
-    SCRAPER = "scraper"
-    USER = "user"
-    AGENT = "agent"
+from core.models.enums import (
+    DealStatus, DealSource, MarketCategory, Currency
+)
+from core.exceptions.deal_exceptions import DealValidationError
 
 class DealPriority(int, enum.Enum):
     """Deal priority levels."""
@@ -236,7 +225,7 @@ class Deal(Base):
         CheckConstraint('price > 0', name='ch_positive_price'),
         CheckConstraint(
             'original_price IS NULL OR original_price > price',
-            name='ch_original_price_gt_price'
+            'ch_original_price_gt_price'
         ),
         Index('ix_deals_status_found', 'status', 'found_at'),
         Index('ix_deals_goal_status', 'goal_id', 'status'),
@@ -247,39 +236,227 @@ class Deal(Base):
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     goal_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("goals.id", ondelete="CASCADE"), nullable=True)
     market_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("markets.id", ondelete="CASCADE"))
-    title: Mapped[str] = mapped_column(String(255))
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    url: Mapped[str] = mapped_column(Text)
-    price: Mapped[Decimal] = mapped_column(DECIMAL(10, 2))
-    original_price: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(10, 2), nullable=True)
-    currency: Mapped[str] = mapped_column(String(3), default="USD")
-    source: Mapped[DealSource] = mapped_column(SQLAlchemyEnum(DealSource))
-    image_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    category: Mapped[Optional[str]] = mapped_column(String(50))
-    found_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    status: Mapped[DealStatus] = mapped_column(SQLAlchemyEnum(DealStatus), default=DealStatus.ACTIVE)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    price: Mapped[Decimal] = mapped_column(DECIMAL(10, 2), nullable=False)
+    original_price: Mapped[Optional[Decimal]] = mapped_column(DECIMAL(10, 2))
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
+    source: Mapped[DealSource] = mapped_column(
+        SQLAlchemyEnum(DealSource, values_callable=lambda x: [e.value for e in x]),
+        nullable=False
+    )
+    image_url: Mapped[Optional[str]] = mapped_column(Text)
+    category: Mapped[MarketCategory] = mapped_column(
+        SQLAlchemyEnum(MarketCategory, values_callable=lambda x: [e.value for e in x]),
+        nullable=False
+    )
     seller_info: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     availability: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+    found_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    status: Mapped[DealStatus] = mapped_column(
+        SQLAlchemyEnum(DealStatus, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+        default=DealStatus.ACTIVE
+    )
     deal_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     price_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("TIMEZONE('UTC', CURRENT_TIMESTAMP)")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=text("TIMEZONE('UTC', CURRENT_TIMESTAMP)")
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     # Relationships
     user = relationship("User", back_populates="deals")
     goal = relationship("Goal", back_populates="deals")
     market = relationship("Market", back_populates="deals")
-    price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
+    price_points = relationship("PricePoint", back_populates="deal", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="deal", cascade="all, delete-orphan")
     scores = relationship("DealScore", back_populates="deal", cascade="all, delete-orphan")
     trackers = relationship("TrackedDeal", back_populates="deal", cascade="all, delete-orphan")
     goal_matches = relationship("DealMatch", back_populates="deal", cascade="all, delete-orphan")
+    tracked_by_users = relationship("TrackedDeal", back_populates="deal", cascade="all, delete-orphan")
+
+    def __init__(
+        self,
+        *,
+        user_id: Optional[UUID] = None,
+        market_id: Optional[UUID] = None,
+        goal_id: Optional[UUID] = None,
+        user: Any = None,
+        market: Any = None,
+        goal: Any = None,
+        title: str = None,
+        description: Optional[str] = None,
+        url: str = None,
+        price: Decimal = None,
+        original_price: Decimal = None,
+        currency: str = "USD",
+        source: DealSource = None,
+        image_url: str = None,
+        category: MarketCategory = None,
+        seller_info: Dict[str, Any] = None,
+        availability: Dict[str, Any] = None,
+        found_at: datetime = None,
+        expires_at: datetime = None,
+        status: DealStatus = DealStatus.ACTIVE,
+        deal_metadata: Dict[str, Any] = None,
+        price_metadata: Dict[str, Any] = None,
+        _skip_updated_at: bool = False,
+        **kw,
+    ):
+        # Handle user parameter from factory
+        if user is not None and hasattr(user, 'id'):
+            user_id = user.id
+        if user_id is None:
+            raise ValueError("user_id is required")
+
+        # Handle market parameter from factory
+        if market is not None and hasattr(market, 'id'):
+            market_id = market.id
+        if market_id is None:
+            raise ValueError("market_id is required")
+            
+        # Handle goal parameter from factory
+        if goal is not None and hasattr(goal, 'id'):
+            goal_id = goal.id
+
+        if title is None:
+            # Set a default title if none is provided
+            title = f"Deal for {category.value if category else 'item'}"
+
+        if url is None:
+            # Set a default URL if none is provided
+            url = "https://example.com/deal"
+
+        if price is None:
+            # Set a default price if none is provided
+            price = Decimal("9.99")
+            
+        if source is None:
+            # Set a default source if none is provided
+            source = DealSource.MANUAL
+
+        # Validate source
+        if isinstance(source, str):
+            try:
+                source = DealSource(source.lower())
+            except ValueError:
+                raise ValueError(f"Invalid source: {source}")
+
+        # Validate category
+        if isinstance(category, str):
+            try:
+                category = MarketCategory(category.lower())
+            except ValueError:
+                raise ValueError(f"Invalid category: {category}")
+
+        # Validate currency
+        if currency and len(currency) > 3:
+            raise ValueError("Currency code should be 3 characters or fewer")
+
+        # Validate seller_info
+        if seller_info is not None and not isinstance(seller_info, dict):
+            raise ValueError("seller_info must be a dictionary")
+
+        # Validate URL
+        if not url:
+            raise ValueError("URL is required")
+
+        self.found_at = found_at or datetime.utcnow()
+        self.expires_at = expires_at or datetime.utcnow() + timedelta(days=30)
+
+        # Set the _skip_updated_at attribute directly instead of passing to super().__init__
+        self._skip_updated_at = _skip_updated_at
+
+        super().__init__(
+            user_id=user_id,
+            market_id=market_id,
+            url=url,
+            goal_id=goal_id,
+            title=title,
+            description=description,
+            price=price,
+            original_price=original_price,
+            currency=currency,
+            source=source,
+            image_url=image_url,
+            category=category,
+            seller_info=seller_info,
+            availability=availability,
+            status=status,
+            deal_metadata=deal_metadata or {},
+            price_metadata=price_metadata or {},
+            **kw,
+        )
+
+    def __setattr__(self, key, value):
+        """Custom __setattr__ to handle specific validations"""
+        if key == "title" and value is None:
+            # Prevent setting title to None
+            value = f"Deal for {self.category.value if hasattr(self, 'category') and self.category else 'item'}"
+        elif key == "url" and value is None:
+            # Prevent setting url to None
+            value = "https://example.com/deal"
+        elif key == "price" and value is None:
+            # Prevent setting price to None
+            value = Decimal("9.99")
+        elif key == "source" and value is None:
+            # Prevent setting source to None
+            value = DealSource.MANUAL
+        elif key == "status" and value is not None:
+            # Validate status values
+            if isinstance(value, DealStatus):
+                # Value is already a valid enum
+                pass
+            elif isinstance(value, str):
+                # Check if the string is a valid enum value
+                valid_values = [status.value for status in DealStatus]
+                if value not in valid_values:
+                    raise ValueError(f"Invalid status: {value}. Valid values are {valid_values}")
+        
+        super().__setattr__(key, value)
+
+    def _validate_url(self, url: str) -> None:
+        """Validate URL format."""
+        url_pattern = re.compile(
+            r'^https?://'  # http:// or https://
+            r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z]{2,6}\.?|'  # domain...
+            r'localhost|'  # localhost...
+            r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'  # ...or ip
+            r'(?::\d+)?'  # optional port
+            r'(?:/?|[/?]\S+)$', re.IGNORECASE)
+        if not url_pattern.match(url):
+            raise DealValidationError("Invalid URL format")
+
+    def _validate_seller_info(self, seller_info: Dict[str, Any]) -> None:
+        """Validate seller info format."""
+        required_fields = {'name', 'rating'}
+        if not isinstance(seller_info, dict):
+            raise DealValidationError("Invalid seller info format")
+        if not all(field in seller_info for field in required_fields):
+            raise DealValidationError("Missing required seller info fields")
+        if not isinstance(seller_info.get('rating'), (int, float)) or not 0 <= seller_info['rating'] <= 5:
+            raise DealValidationError("Invalid seller rating")
 
     def __repr__(self) -> str:
         """String representation of the deal."""
         return "<Deal {} ({} {})>".format(self.title, self.price, self.currency)
+
+@event.listens_for(Deal, 'before_update')
+def receive_before_update(mapper: Mapper, connection: Connection, target: Deal) -> None:
+    """Handle before update event."""
+    # Only update the timestamp if it hasn't been explicitly set
+    if not hasattr(target, '_skip_updated_at') or not target._skip_updated_at:
+        target.updated_at = datetime.now(timezone.utc)
 
 class DealAnalysis(BaseModel):
     deal_id: UUID

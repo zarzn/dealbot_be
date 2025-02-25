@@ -41,6 +41,33 @@ def get_user_model():
     from core.models.user import User
     return User
 
+# Notification model
+class Notification(Base):
+    """Notification model."""
+    __tablename__ = "notifications"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(String(1000), nullable=False)
+    type: Mapped[str] = mapped_column(
+        Enum('email', 'push', 'sms', 'in_app', name='notification_type'),
+        default='in_app'
+    )
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    data: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("NOW()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=text("NOW()"),
+        onupdate=text("NOW()")
+    )
+
 # Pydantic models for data validation
 class GoalBase(BaseModel):
     user_id: UUID

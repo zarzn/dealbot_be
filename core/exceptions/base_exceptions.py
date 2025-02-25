@@ -249,4 +249,8 @@ class RepositoryError(BaseError):
         return {
             'operation': self.operation,
             **self.details
-        } 
+        }
+
+class NotificationError(BaseError):
+    """Notification operation error."""
+    pass 
