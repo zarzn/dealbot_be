@@ -426,12 +426,15 @@ async def search_market(
             limit=limit
         )
         
-        # Deduct tokens for search request
-        await token_service.deduct_tokens(
-            current_user.id,
-            "market_search",
-            market_id=market_id
-        )
+        # Check if pricing exists before deducting tokens
+        pricing = await token_service.get_pricing_info("market_search")
+        if pricing:
+            # Deduct tokens for search request only if pricing exists
+            await token_service.deduct_tokens_for_operation(
+                current_user.id,
+                "market_search",
+                market_id=market_id
+            )
         
         return results
     except Exception as e:

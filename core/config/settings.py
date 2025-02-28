@@ -435,6 +435,23 @@ class Settings(BaseSettings):
             )
         return values
 
+    @model_validator(mode='before')
+    @classmethod
+    def build_redis_url(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Build Redis URL from components if not provided."""
+        if not values.get("REDIS_URL"):
+            # Build Redis URL from components
+            redis_host = values.get("REDIS_HOST", "localhost")
+            redis_port = values.get("REDIS_PORT", 6379)
+            redis_db = values.get("REDIS_DB", 0)
+            redis_password = values.get("REDIS_PASSWORD")
+            
+            if redis_password:
+                values["REDIS_URL"] = f"redis://:{redis_password}@{redis_host}:{redis_port}/{redis_db}"
+            else:
+                values["REDIS_URL"] = f"redis://{redis_host}:{redis_port}/{redis_db}"
+        return values
+
     @computed_field
     @property
     def sync_database_url(self) -> str:
@@ -463,4 +480,33 @@ class Settings(BaseSettings):
         """Pydantic model configuration."""
         env_file = ".env"
         env_file_encoding = "utf-8"
-        case_sensitive = True 
+        case_sensitive = True
+
+# Add the following settings for test environment
+
+# Determine if running in test mode
+TESTING = os.environ.get("TESTING", "").lower() == "true"
+
+# Test-specific settings
+SKIP_TOKEN_VERIFICATION = TESTING or os.environ.get("SKIP_TOKEN_VERIFICATION", "").lower() == "true"
+TEST_USER_ID = "00000000-0000-4000-a000-000000000000"
+
+# Update existing settings for test environment
+if TESTING:
+    # Use shorter token expiration for tests
+    ACCESS_TOKEN_EXPIRE_MINUTES = 5
+    REFRESH_TOKEN_EXPIRE_DAYS = 1
+    
+    # Skip token verification in tests
+    SKIP_TOKEN_VERIFICATION = True
+    
+    # Use in-memory SQLite for tests if not explicitly set
+    if 'DATABASE_URL' in locals() and DATABASE_URL and "sqlite" not in DATABASE_URL.lower() and os.environ.get("TEST_DATABASE_URL") is None:
+        DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+        
+    # Use mock Redis for tests if not explicitly set
+    if 'REDIS_URL' in locals() and REDIS_URL and os.environ.get("TEST_REDIS_URL") is None:
+        REDIS_HOST = "localhost"
+        REDIS_PORT = 6379
+        REDIS_DB = 1  # Use different DB for tests
+        REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}" 

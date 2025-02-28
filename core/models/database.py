@@ -340,13 +340,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 # Update Deal model relationships
 from core.models.deal import Deal
-Deal.price_trackers = relationship("PriceTracker", back_populates="deal", cascade="all, delete-orphan")
 Deal.price_predictions = relationship("PricePrediction", back_populates="deal", cascade="all, delete-orphan")
 Deal.price_points = relationship("PricePoint", back_populates="deal", cascade="all, delete-orphan")
 Deal.price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
 
 # Update User model relationships
 from core.models.user import User
-User.price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
 User.price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
 User.deals = relationship("Deal", back_populates="user", cascade="all, delete-orphan")

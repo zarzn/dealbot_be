@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Optional, Dict, List
-from uuid import UUID
+from uuid import UUID, uuid4
 from decimal import Decimal
 
 from sqlalchemy import Integer, String, DateTime, Float, ForeignKey, text
@@ -18,21 +18,22 @@ class PricePrediction(Base):
     """SQLAlchemy model for price predictions."""
     __tablename__ = "price_predictions"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     deal_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    model_name: Mapped[str] = mapped_column(String, index=True)
+    model_name: Mapped[str] = mapped_column(String, nullable=False)
     prediction_days: Mapped[int] = mapped_column(Integer, server_default="7")
     confidence_threshold: Mapped[float] = mapped_column(Float, server_default="0.8")
-    predictions: Mapped[Dict] = mapped_column(JSONB)
-    overall_confidence: Mapped[float] = mapped_column(Float)
+    predictions: Mapped[Dict] = mapped_column(JSONB, nullable=False)
+    overall_confidence: Mapped[float] = mapped_column(Float, nullable=False)
     trend_direction: Mapped[Optional[str]] = mapped_column(String)
     trend_strength: Mapped[Optional[float]] = mapped_column(Float)
     seasonality_score: Mapped[Optional[float]] = mapped_column(Float)
     features_used: Mapped[Optional[Dict]] = mapped_column(JSONB)
     model_params: Mapped[Optional[Dict]] = mapped_column(JSONB)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=text("NOW()"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
     meta_data: Mapped[Optional[Dict]] = mapped_column(JSONB)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), onupdate=text("CURRENT_TIMESTAMP"))
 
     # Relationships
     deal = relationship("Deal", back_populates="price_predictions")
@@ -79,7 +80,7 @@ class PricePredictionPoint(BaseModel):
 
 class PricePredictionResponse(PricePredictionBase):
     """Schema for price prediction response."""
-    id: int
+    id: UUID
     predictions: List[PricePredictionPoint]
     model_name: str
     created_at: datetime

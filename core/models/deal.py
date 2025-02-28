@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any, Union
 from uuid import UUID, uuid4
 from decimal import Decimal
-from pydantic import BaseModel, HttpUrl, Field, field_validator, conint, confloat
+from pydantic import BaseModel, HttpUrl, Field, field_validator, conint, confloat, ValidationInfo
 import enum
 import re
 
@@ -69,7 +69,7 @@ class PriceHistoryBase(BaseModel):
     """Base model for price history."""
     price: Decimal
     currency: str
-    timestamp: datetime
+    created_at: datetime
     source: str
     meta_data: Optional[Dict[str, Any]] = None
 
@@ -77,9 +77,9 @@ class PriceHistory(Base):
     """SQLAlchemy model for price history."""
     __tablename__ = "price_histories"
     __table_args__ = (
-        UniqueConstraint('deal_id', 'timestamp', name='uq_price_history_deal_time'),
+        UniqueConstraint('deal_id', 'created_at', name='uq_price_history_deal_time'),
         CheckConstraint('price > 0', name='ch_positive_historical_price'),
-        Index('ix_price_histories_deal_time', 'deal_id', 'timestamp'),
+        Index('ix_price_histories_deal_time', 'deal_id', 'created_at'),
         Index('ix_price_histories_market', 'market_id'),
     )
 
@@ -89,7 +89,6 @@ class PriceHistory(Base):
     price: Mapped[Decimal] = mapped_column(DECIMAL(10, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="USD")
     source: Mapped[str] = mapped_column(String(50), nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -100,7 +99,7 @@ class PriceHistory(Base):
 
     def __repr__(self) -> str:
         """String representation of the price history entry."""
-        return "<PriceHistory {} {} at {}>".format(self.price, self.currency, self.timestamp)
+        return "<PriceHistory {} {} at {}>".format(self.price, self.currency, self.created_at)
 
 class PriceHistoryResponse(PriceHistoryBase):
     """Response model for price history."""
@@ -144,9 +143,9 @@ class DealBase(BaseModel):
 
     @field_validator('original_price')
     @classmethod
-    def validate_original_price(cls, v: Optional[Decimal], values: Dict[str, Any]) -> Optional[Decimal]:
+    def validate_original_price(cls, v: Optional[Decimal], values: ValidationInfo) -> Optional[Decimal]:
         """Validate original price is greater than current price."""
-        if v is not None and 'price' in values and v <= values['price']:
+        if v is not None and 'price' in values.data and values.data['price'] is not None and v <= values.data['price']:
             raise ValueError("Original price must be greater than current price")
         return v
 
@@ -168,6 +167,8 @@ class DealCreate(DealBase):
 
 class DealUpdate(BaseModel):
     """Deal update model."""
+    title: Optional[str] = None
+    description: Optional[str] = None
     price: Optional[Decimal] = Field(None, gt=0)
     original_price: Optional[Decimal] = Field(None, gt=0)
     status: Optional[DealStatus] = None
@@ -177,9 +178,9 @@ class DealUpdate(BaseModel):
 
     @field_validator('original_price')
     @classmethod
-    def validate_original_price(cls, v: Optional[Decimal], values: Dict[str, Any]) -> Optional[Decimal]:
+    def validate_original_price(cls, v: Optional[Decimal], values: ValidationInfo) -> Optional[Decimal]:
         """Validate original price is greater than current price."""
-        if v is not None and 'price' in values and values['price'] is not None and v <= values['price']:
+        if v is not None and 'price' in values.data and values.data['price'] is not None and v <= values.data['price']:
             raise ValueError("Original price must be greater than current price")
         return v
 
@@ -284,6 +285,9 @@ class Deal(Base):
     trackers = relationship("TrackedDeal", back_populates="deal", cascade="all, delete-orphan")
     goal_matches = relationship("DealMatch", back_populates="deal", cascade="all, delete-orphan")
     tracked_by_users = relationship("TrackedDeal", back_populates="deal", cascade="all, delete-orphan")
+    price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
+    price_trackers = relationship("PriceTracker", back_populates="deal", cascade="all, delete-orphan")
+    price_predictions = relationship("PricePrediction", back_populates="deal", cascade="all, delete-orphan")
 
     def __init__(
         self,
@@ -412,6 +416,28 @@ class Deal(Base):
         elif key == "source" and value is None:
             # Prevent setting source to None
             value = DealSource.MANUAL
+        elif key == "source" and value is not None:
+            # Validate source values
+            if isinstance(value, DealSource):
+                # Value is already a valid enum
+                pass
+            elif isinstance(value, str):
+                # Check if the string is a valid enum value
+                try:
+                    DealSource(value.lower())
+                except ValueError:
+                    raise ValueError(f"Invalid source: {value}")
+        elif key == "category" and value is not None:
+            # Validate category values
+            if isinstance(value, MarketCategory):
+                # Value is already a valid enum
+                pass
+            elif isinstance(value, str):
+                # Check if the string is a valid enum value
+                try:
+                    MarketCategory(value.lower())
+                except ValueError:
+                    raise ValueError(f"Invalid category: {value}")
         elif key == "status" and value is not None:
             # Validate status values
             if isinstance(value, DealStatus):

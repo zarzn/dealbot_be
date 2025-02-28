@@ -97,16 +97,21 @@ def init_database():
 def run_migrations():
     """Run alembic migrations."""
     try:
+        # Get the current working directory
+        current_dir = os.getcwd()
+        
         # Run migrations for both main and test databases
         for db_name in ['deals', 'deals_test']:
             # Set the database URL in environment
             os.environ['DATABASE_URL'] = f'postgresql://postgres:12345678@localhost:5432/{db_name}'
             
+            # Run alembic from the backend directory
             result = subprocess.run(
                 ['alembic', 'upgrade', 'head'],
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                cwd=current_dir  # Use current directory instead of backend_dir
             )
             logger.info(f"Migrations for {db_name}:\n{result.stdout}")
             

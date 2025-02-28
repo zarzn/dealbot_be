@@ -29,7 +29,8 @@ from core.exceptions import (
     IntegrationError,
     NetworkError,
     ServiceError,
-    DataQualityError
+    DataQualityError,
+    RateLimitError
 )
 from core.config import settings
 
@@ -727,4 +728,88 @@ class MarketSearchService:
             f"price:{min_price}-{max_price}",
             f"limit:{limit}"
         ]
-        return ":".join(key_parts) 
+        return ":".join(key_parts)
+
+    async def search(
+        self,
+        market_id: UUID,
+        query: str,
+        category: Optional[str] = None,
+        min_price: Optional[float] = None,
+        max_price: Optional[float] = None,
+        limit: int = 10
+    ) -> Dict[str, Any]:
+        """Search products in a specific market.
+        
+        Args:
+            market_id: UUID of the market to search
+            query: Search query string
+            category: Optional category filter
+            min_price: Optional minimum price filter
+            max_price: Optional maximum price filter
+            limit: Maximum number of results to return
+            
+        Returns:
+            Dict containing search results
+            
+        Raises:
+            MarketError: If market is not found or search fails
+            ValidationError: If input validation fails
+            RateLimitError: If rate limit is exceeded
+        """
+        try:
+            # Convert market_id to string if it's a UUID object
+            market_id_str = str(market_id)
+            
+            # Get market type from market_id
+            # Create a market repository if we have a db session directly
+            if hasattr(self.market_repository, 'execute'):
+                # We have a db session, not a repository
+                from sqlalchemy import select
+                from core.models.market import Market
+                
+                # Get market by ID using the session directly
+                result = await self.market_repository.execute(
+                    select(Market).where(Market.id == market_id_str)
+                )
+                market = result.scalar_one_or_none()
+            elif hasattr(self.market_repository, 'query'):
+                # We have a db session with legacy query interface
+                from core.models.market import Market
+                market = await self.market_repository.query(Market).filter(Market.id == market_id_str).first()
+            else:
+                # We have a proper market repository
+                market = await self.market_repository.get_by_id(market_id_str)
+                
+            if not market:
+                raise MarketError(f"Market with ID {market_id} not found")
+                
+            # Check if market is active
+            if not market.is_active:
+                raise MarketError(f"Market {market.name} is not active")
+                
+            # Search products using the existing search_products method
+            results = await self.search_products(
+                query=query,
+                market_types=[market.type],
+                category=category,
+                min_price=min_price,
+                max_price=max_price,
+                limit=limit
+            )
+            
+            return {
+                "market_id": market_id_str,
+                "market_name": market.name,
+                "query": query,
+                "products": results.products,
+                "total_found": results.total_found,
+                "search_time": results.search_time,
+                "cache_hit": results.cache_hit
+            }
+            
+        except Exception as e:
+            logger.error(f"Error searching market {market_id}: {str(e)}")
+            if isinstance(e, (MarketError, ValidationError, RateLimitError)):
+                raise
+            raise MarketError(f"Failed to search market: {str(e)}") 

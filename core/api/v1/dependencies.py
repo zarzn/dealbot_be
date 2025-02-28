@@ -5,7 +5,7 @@ from fastapi import Depends, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_async_db_session as get_db
-from core.services.token import TokenService
+from core.services.token import TokenService, SolanaTokenService
 from core.services.analytics import AnalyticsService
 from core.services.market import MarketService
 from core.services.deal import DealService
@@ -24,7 +24,7 @@ from core.repositories.analytics import AnalyticsRepository
 
 async def get_token_service(db: AsyncSession = Depends(get_db)) -> TokenService:
     """Get token service instance."""
-    return TokenService(TokenRepository(db))
+    return SolanaTokenService(db)
 
 async def get_analytics_service(
     db: AsyncSession = Depends(get_db),

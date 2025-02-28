@@ -1,5 +1,5 @@
 from decimal import Decimal
-from factory import Faker, SubFactory, LazyAttribute
+from factory import Faker, SubFactory, LazyAttribute, Sequence
 from uuid import UUID, uuid4
 from datetime import datetime, timedelta
 from .base import BaseFactory
@@ -15,7 +15,8 @@ class DealFactory(BaseFactory):
 
     title = Faker('sentence')
     description = Faker('text')
-    url = Faker('url')
+    # Use a sequence to ensure unique URLs
+    url = Sequence(lambda n: f"https://example.com/deal/{n}")
     price = Decimal("99.99")
     original_price = Decimal("149.99")
     currency = "USD"
@@ -82,13 +83,35 @@ class DealFactory(BaseFactory):
             
         # Validate price
         price = kwargs.get('price', cls.price)
+        # Convert string price to Decimal if needed
+        if isinstance(price, str):
+            price = Decimal(price)
         if price <= 0:
             raise ValueError("Deal price must be positive")
 
+        # Update kwargs with the converted price
+        if 'price' in kwargs and isinstance(kwargs['price'], str):
+            kwargs['price'] = price
+
         # Validate original price
+        if 'price' in kwargs:
+            # If price is specified, ensure original_price is higher than price
+            if 'original_price' not in kwargs:
+                # Make sure the difference between original_price and price is at least 0.01
+                calculated_price = price * Decimal('1.5')  # 50% higher than the current price
+                if calculated_price - price < Decimal('0.01'):
+                    kwargs['original_price'] = price + Decimal('0.01')  # Ensure difference is at least 0.01
+                else:
+                    kwargs['original_price'] = calculated_price
+            elif kwargs['original_price'] <= price:
+                # If original_price is provided but not greater than price, adjust it
+                kwargs['original_price'] = price + Decimal('0.01')  # Ensure difference is at least 0.01
+        
+        # Double check that original_price is greater than price
         original_price = kwargs.get('original_price', cls.original_price)
+        price = kwargs.get('price', cls.price)
         if original_price and original_price <= price:
-            raise ValueError("Original price must be greater than current price")
+            kwargs['original_price'] = price + Decimal('0.01')  # Final safety check ensuring 0.01 difference
 
         # Validate status
         status = kwargs.get('status', cls.status)

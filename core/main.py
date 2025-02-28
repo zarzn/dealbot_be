@@ -12,6 +12,8 @@ app = FastAPI(
     description=settings.API_DESCRIPTION,
     docs_url="/docs" if not settings.TESTING else None,
     redoc_url="/redoc" if not settings.TESTING else None,
+    # Handle trailing slashes - don't redirect
+    redirect_slashes=False
 )
 
 # Add CORS middleware

@@ -18,6 +18,7 @@ import json
 from datetime import datetime, date, timezone
 from decimal import Decimal
 from uuid import UUID
+from httpx import AsyncClient
 
 # Configure Pydantic to allow arbitrary types globally
 BaseModel.model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -26,25 +27,20 @@ BaseModel.model_config = ConfigDict(arbitrary_types_allowed=True)
 backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
-# Import after Pydantic configuration
-from core.database import Base, get_session
-from core.config import settings
-from core.main import app
-from core.services.redis import get_redis_service, RedisService
-from core.models.token_models import Token
-from backend_tests.utils.state import state_manager
-from backend_tests.factories import UserFactory
-from backend_tests.mocks.redis_mock import redis_mock, patch_redis_service
-
 # Set testing flag
 os.environ["TESTING"] = "true"
+os.environ["SKIP_TOKEN_VERIFICATION"] = "true"
 
 # Set Redis configuration
-os.environ["REDIS_URL"] = "redis://redis:6379/0"
-os.environ["REDIS_HOST"] = "redis"
+os.environ["REDIS_URL"] = "redis://localhost:6379/0"
+os.environ["REDIS_HOST"] = "localhost"
 os.environ["REDIS_PORT"] = "6379"
 os.environ["REDIS_DB"] = "0"
 os.environ["REDIS_PASSWORD"] = "your_redis_password"
+
+# Override database URL to use localhost instead of postgres
+os.environ["DATABASE_URL"] = "postgresql+asyncpg://postgres:12345678@localhost:5432/deals_test"
+os.environ["POSTGRES_HOST"] = "localhost"
 
 # Load environment variables from .env.development
 env_file = backend_dir / '.env.development'
@@ -55,6 +51,23 @@ TEST_DATABASE_URL = "postgresql+asyncpg://postgres:12345678@localhost:5432/deals
 
 # Test Redis URL - use localhost for tests
 TEST_REDIS_URL = f"redis://:{os.environ['REDIS_PASSWORD']}@localhost:6379/1"  # Use DB 1 for tests
+
+# Import after environment variables are set
+from core.config import settings
+
+# Override settings directly
+settings.DATABASE_URL = TEST_DATABASE_URL
+settings.REDIS_URL = TEST_REDIS_URL
+settings.REDIS_HOST = "localhost"
+
+# Now import the rest of the modules
+from core.database import Base, get_session
+from core.main import app
+from core.services.redis import get_redis_service, RedisService
+from core.models.token_models import Token
+from backend_tests.utils.state import state_manager
+from backend_tests.factories import UserFactory
+from backend_tests.mocks.redis_mock import redis_mock, patch_redis_service
 
 # Create test engine
 test_engine = create_async_engine(
@@ -89,12 +102,15 @@ def event_loop() -> Generator:
 @pytest.fixture(scope="session")
 async def test_db() -> AsyncGenerator:
     """Set up the test database."""
+    # Database settings should already be overridden
+    
     async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+        # Create tables
         await conn.run_sync(Base.metadata.create_all)
     
     yield test_engine
     
+    # Drop tables after tests
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
 
@@ -114,16 +130,36 @@ async def db_session(test_db) -> AsyncGenerator[AsyncSession, None]:
         await connection.close()
 
 @pytest.fixture(scope="function")
-async def client(db_session) -> AsyncGenerator[TestClient, None]:
+async def client(db_session) -> AsyncGenerator:
     """Create a test client with a fresh database session."""
-    async def override_get_session() -> AsyncGenerator[AsyncSession, None]:
-        yield db_session
+    # Import the app instance from core.main
+    from core.main import app
     
+    # Define override function that yields the session
+    async def override_get_session():
+        try:
+            yield db_session
+        finally:
+            pass
+            
+    # Define override for Redis service
+    async def override_redis_service():
+        return redis_mock
+    
+    # Apply all dependency overrides
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_redis_service] = override_redis_service
     
-    with TestClient(app) as test_client:
-        yield test_client
+    # Import the APITestClient wrapper
+    from backend_tests.utils.test_client import APITestClient, create_api_test_client
     
+    # Create a TestClient with our modified app
+    async with AsyncClient(app=app, base_url="http://testserver") as async_client:
+        # Wrap with our APITestClient for path handling
+        api_client = APITestClient(async_client)
+        yield api_client
+    
+    # Clean up
     app.dependency_overrides.clear()
 
 @pytest.fixture(scope="function")
@@ -148,3 +184,17 @@ def reset_test_state():
     state_manager.reset()
     UserFactory._sequence = 1  # Reset UserFactory sequence
     yield 
+
+# Add a fixture for test tokens
+@pytest.fixture
+def test_token() -> str:
+    """Generate a test token that will be accepted in the test environment."""
+    return "test_token"
+
+# Add a fixture for authenticated client
+@pytest.fixture
+async def auth_client(client, test_token) -> AsyncGenerator:
+    """Create an authenticated test client."""
+    # Set the authorization header with the test token
+    client.client.headers.update({"Authorization": f"Bearer {test_token}"})
+    yield client 

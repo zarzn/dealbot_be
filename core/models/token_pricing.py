@@ -73,12 +73,11 @@ class TokenPricing(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    service_type: Mapped[ServiceType] = mapped_column(SQLEnum(ServiceType), nullable=False)
+    service_type: Mapped[str] = mapped_column(String(50), nullable=False)
     token_cost: Mapped[Decimal] = mapped_column(DECIMAL(18, 8), nullable=False)
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     valid_to: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    description: Mapped[Optional[str]] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
 
     def __repr__(self):

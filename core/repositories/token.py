@@ -55,6 +55,18 @@ class TokenRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
+    def begin(self):
+        """Begin a new transaction.
+        
+        Returns:
+            An async context manager for the transaction
+            
+        Example:
+            async with repository.begin() as session:
+                # Perform operations within transaction
+        """
+        return self.session.begin()
+
     async def create_transaction(
         self,
         user_id: str,
@@ -799,21 +811,43 @@ class TokenRepository:
         """
         try:
             now = datetime.now(timezone.utc)
-            async with self.session.begin() as session:
-                stmt = select(TokenPricing).where(
-                    and_(
-                        TokenPricing.service_type == service_type,
-                        TokenPricing.is_active.is_(True),
-                        TokenPricing.valid_from <= now,
-                        or_(
-                            TokenPricing.valid_to.is_(None),
-                            TokenPricing.valid_to >= now
-                        )
+            logger.debug(f"Looking for pricing for service_type={service_type}, current time={now}")
+            
+            # First, check if the service exists at all
+            check_stmt = select(TokenPricing).where(TokenPricing.service_type == service_type)
+            check_result = await self.session.execute(check_stmt)
+            all_records = check_result.scalars().all()
+            
+            if not all_records:
+                logger.debug(f"No pricing records found for service_type={service_type}")
+                return None
+            else:
+                logger.debug(f"Found {len(all_records)} pricing records for service_type={service_type}")
+                for record in all_records:
+                    logger.debug(f"Record: id={record.id}, service_type={record.service_type}, is_active={record.is_active}, valid_from={record.valid_from}, valid_to={record.valid_to}")
+            
+            # Now apply all filters
+            stmt = select(TokenPricing).where(
+                and_(
+                    TokenPricing.service_type == service_type,
+                    TokenPricing.is_active.is_(True),
+                    TokenPricing.valid_from <= now,
+                    or_(
+                        TokenPricing.valid_to.is_(None),
+                        TokenPricing.valid_to >= now
                     )
-                ).order_by(desc(TokenPricing.valid_from))
+                )
+            ).order_by(desc(TokenPricing.valid_from))
+            
+            result = await self.session.execute(stmt)
+            pricing = result.scalar_one_or_none()
+            
+            if pricing:
+                logger.debug(f"Found active pricing record: id={pricing.id}, cost={pricing.token_cost}")
+            else:
+                logger.debug(f"No active pricing record found after applying filters")
                 
-                result = await session.execute(stmt)
-                return result.scalar_one_or_none()
+            return pricing
             
         except SQLAlchemyError as e:
             logger.error(f"Error getting pricing info for service {service_type}: {str(e)}")

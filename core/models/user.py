@@ -294,6 +294,8 @@ class User(Base):
     agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
     tracked_deals = relationship("TrackedDeal", back_populates="user", cascade="all, delete-orphan")
     user_preferences = relationship("UserPreferences", back_populates="user", cascade="all, delete-orphan")
+    price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
+    price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
 
     @property
     def is_active(self) -> bool:

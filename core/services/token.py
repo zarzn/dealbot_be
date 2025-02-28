@@ -14,8 +14,9 @@ from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Commitment
 from solana.transaction import Transaction
 from base58 import b58decode
-from uuid import UUID
+from uuid import UUID, uuid4
 from redis.asyncio import Redis
+from fastapi import Depends
 
 from core.repositories.token import TokenRepository
 from core.models.token import (
@@ -47,6 +48,8 @@ from core.exceptions import (
 )
 from core.config import settings
 from core.utils.logger import get_logger
+from core.database import get_db
+from core.services.redis import get_redis_service
 
 logger = get_logger(__name__)
 
@@ -151,6 +154,9 @@ class SolanaTokenService(ITokenService):
         try:
             balance = await self.repository.get_user_balance(user_id)
             logger.debug(f"Retrieved balance for user {user_id}: {balance}")
+            # Return 0 if balance is None
+            if balance is None:
+                return Decimal("0.0")
             return balance
         except Exception as e:
             logger.error(f"Failed to check balance for user {user_id}: {str(e)}")
@@ -258,6 +264,59 @@ class SolanaTokenService(ITokenService):
                 operation="deduct_tokens", 
                 reason=f"Failed to deduct tokens: {str(e)}",
                 details={"user_id": user_id, "amount": str(amount), "reason": reason}
+            )
+
+    async def deduct_tokens_for_operation(
+        self,
+        user_id: str,
+        operation: str,
+        **kwargs
+    ) -> TokenTransaction:
+        """Deduct tokens for a specific operation.
+        
+        Args:
+            user_id: The ID of the user
+            operation: The operation type (e.g., market_search)
+            **kwargs: Additional operation-specific parameters
+            
+        Returns:
+            The created transaction record
+            
+        Raises:
+            TokenValidationError: If validation fails
+            TokenBalanceError: If insufficient balance
+        """
+        try:
+            # Get pricing for the operation
+            pricing = await self.get_pricing_info(operation)
+            if not pricing:
+                logger.warning(f"No pricing found for operation {operation}, skipping token deduction")
+                # Create a dummy transaction for tracking purposes
+                return TokenTransaction(
+                    id=uuid4(),
+                    user_id=user_id,
+                    type=TransactionType.DEDUCTION.value,
+                    amount=Decimal('0'),
+                    status=TokenTransactionStatus.COMPLETED.value,
+                    meta_data={"operation": operation, "reason": f"No pricing for {operation}", **kwargs}
+                )
+            
+            # Deduct tokens based on the pricing
+            reason = f"{operation} operation"
+            if 'market_id' in kwargs:
+                reason += f" for market {kwargs['market_id']}"
+            
+            return await self.deduct_tokens(user_id, pricing.token_cost, reason)
+            
+        except TokenBalanceError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to deduct tokens for operation {operation}: {str(e)}")
+            raise TokenTransactionError(
+                transaction_id="deduct_tokens_for_operation",
+                operation=operation,
+                reason=f"Failed to deduct tokens for operation: {str(e)}",
+                details={"user_id": user_id, "operation": operation, **kwargs}
             )
 
     async def add_reward(
@@ -688,3 +747,11 @@ class SolanaTokenService(ITokenService):
 
 # Export SolanaTokenService as TokenService for backward compatibility
 TokenService = SolanaTokenService
+
+# Add this function to provide a dependency for the token service
+async def get_token_service(
+    db: AsyncSession = Depends(get_db),
+    redis_service = Depends(get_redis_service)
+) -> SolanaTokenService:
+    """Get a token service instance."""
+    return SolanaTokenService(db, redis_service)

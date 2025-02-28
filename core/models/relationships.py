@@ -10,7 +10,7 @@ def setup_relationships():
     from core.models.user import User
     from core.models.deal import Deal
     from core.models.goal import Goal
-    from core.models.price_tracking import PriceTracker, PricePoint
+    from core.models.price_tracking import PricePoint, PriceTracker
     from core.models.price_prediction import PricePrediction
     from core.models.market import Market
     from core.models.notification import Notification
@@ -19,18 +19,20 @@ def setup_relationships():
     from core.models.deal_score import DealScore
     from core.models.user_preferences import UserPreferences
     from core.models.tracked_deal import TrackedDeal
+    from core.models.deal_interaction import DealInteraction
 
     # Deal relationships
     Deal.user = relationship("User", back_populates="deals")
     Deal.goal = relationship("Goal", back_populates="deals")
     Deal.market = relationship("Market", back_populates="deals")
     Deal.price_points = relationship("PricePoint", back_populates="deal", cascade="all, delete-orphan")
-    Deal.price_trackers = relationship("PriceTracker", back_populates="deal", cascade="all, delete-orphan")
     Deal.price_predictions = relationship("PricePrediction", back_populates="deal", cascade="all, delete-orphan")
     Deal.price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
     Deal.scores = relationship("DealScore", back_populates="deal", cascade="all, delete-orphan")
     Deal.notifications = relationship("Notification", back_populates="deal", cascade="all, delete-orphan")
     Deal.trackers = relationship("TrackedDeal", back_populates="deal", cascade="all, delete-orphan")
+    Deal.interactions = relationship("DealInteraction", back_populates="deal", cascade="all, delete-orphan")
+    Deal.price_trackers = relationship("PriceTracker", back_populates="deal", cascade="all, delete-orphan")
 
     # Market relationships
     Market.deals = relationship("Deal", back_populates="market", cascade="all, delete-orphan")
@@ -42,7 +44,7 @@ def setup_relationships():
     Goal.notifications = relationship("Notification", back_populates="goal", cascade="all, delete-orphan")
 
     # User relationships
-    User.deals = relationship("Deal", back_populates="user", cascade="all, delete-orphan")
+    User.deals = relationship("Deal", back_populates="user")
     User.goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")
     User.notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
     User.preferences = relationship("UserPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan")
@@ -54,7 +56,6 @@ def setup_relationships():
     User.referrals = relationship(
         "User",
         primaryjoin="User.id==User.referred_by",
-        remote_side="User.referred_by",
         back_populates="referred_by_user"
     )
     User.referred_by_user = relationship(
@@ -63,18 +64,18 @@ def setup_relationships():
         remote_side="User.id",
         back_populates="referrals"
     )
-    User.price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
     User.price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
     User.tracked_deals = relationship("TrackedDeal", back_populates="user", cascade="all, delete-orphan")
+    # User.market_users = relationship("MarketUser", back_populates="user")  # MarketUser model not defined
+    User.deal_interactions = relationship("DealInteraction", back_populates="user")
+    User.price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
 
-    # Price tracking relationships
-    PricePoint.deal = relationship("Deal", back_populates="price_points")
-    PriceTracker.deal = relationship("Deal", back_populates="price_trackers")
-    PriceTracker.user = relationship("User", back_populates="price_trackers")
+    # DealInteraction relationships
+    DealInteraction.user = relationship("User", back_populates="deal_interactions")
+    DealInteraction.deal = relationship("Deal", back_populates="interactions")
 
     # Price prediction relationships
     PricePrediction.deal = relationship("Deal", back_populates="price_predictions")
-    PricePrediction.user = relationship("User", back_populates="price_predictions")
 
     # Token relationships
     TokenTransaction.user = relationship("User", back_populates="token_transactions")
@@ -98,4 +99,8 @@ def setup_relationships():
 
     # TrackedDeal relationships
     TrackedDeal.user = relationship("User", back_populates="tracked_deals")
-    TrackedDeal.deal = relationship("Deal", back_populates="trackers") 
+    TrackedDeal.deal = relationship("Deal", back_populates="trackers")
+
+    # PriceTracker relationships
+    PriceTracker.user = relationship("User", back_populates="price_trackers")
+    PriceTracker.deal = relationship("Deal", back_populates="price_trackers") 

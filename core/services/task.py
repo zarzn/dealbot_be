@@ -1,6 +1,7 @@
 """Task service for managing background tasks and job queues."""
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -43,7 +44,12 @@ class TaskService:
                 "completed_at": None,
                 "error": None
             }
+            
+            # Make sure metadata is stored before task starts
             await self._cache.set(task_key, metadata)
+            
+            # Log task creation for debugging
+            logger.info(f"Creating task: {task_id}")
 
             # Create and schedule task
             async def wrapped_task():
@@ -55,29 +61,68 @@ class TaskService:
                             delay_seconds = delay
                         await asyncio.sleep(delay_seconds)
 
+                    # Update status to running
+                    metadata = await self._cache.get(task_key)
+                    if isinstance(metadata, str):
+                        metadata = json.loads(metadata)
+                    elif metadata is None:
+                        metadata = {
+                            "id": task_id,
+                            "status": "pending",
+                            "created_at": datetime.utcnow().isoformat()
+                        }
+                    
                     metadata["status"] = "running"
                     metadata["started_at"] = datetime.utcnow().isoformat()
                     await self._cache.set(task_key, metadata)
 
+                    # Execute the task function
                     result = await func(*args, **kwargs)
 
+                    # Update status to completed
+                    metadata = await self._cache.get(task_key)
+                    if isinstance(metadata, str):
+                        metadata = json.loads(metadata)
+                    elif metadata is None:
+                        metadata = {
+                            "id": task_id,
+                            "status": "running",
+                            "created_at": datetime.utcnow().isoformat(),
+                            "started_at": datetime.utcnow().isoformat()
+                        }
+                        
                     metadata["status"] = "completed"
                     metadata["completed_at"] = datetime.utcnow().isoformat()
                     await self._cache.set(task_key, metadata)
 
                     return result
                 except Exception as e:
+                    # Update status to failed
+                    metadata = await self._cache.get(task_key)
+                    if isinstance(metadata, str):
+                        metadata = json.loads(metadata)
+                    elif metadata is None:
+                        metadata = {
+                            "id": task_id,
+                            "status": "running",
+                            "created_at": datetime.utcnow().isoformat(),
+                            "started_at": datetime.utcnow().isoformat()
+                        }
+                        
                     metadata["status"] = "failed"
                     metadata["error"] = str(e)
                     await self._cache.set(task_key, metadata)
                     logger.error(f"Task {task_id} failed: {str(e)}")
                     raise
                 finally:
+                    # Remove from active tasks
                     if task_id in self._tasks:
                         del self._tasks[task_id]
 
+            # Start the task
             task = asyncio.create_task(wrapped_task())
             self._tasks[task_id] = task
+            
             return task_id
 
         except Exception as e:
@@ -91,6 +136,14 @@ class TaskService:
             metadata = await self._cache.get(task_key)
             if metadata is None:
                 raise TaskError(f"Task {task_id} not found")
+                
+            # If the metadata is a string (serialized JSON), deserialize it
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid JSON in task metadata for task {task_id}")
+                    
             return metadata
         except Exception as e:
             logger.error(f"Error getting task status: {str(e)}")
@@ -138,15 +191,33 @@ class TaskService:
                     if isinstance(key, bytes):
                         task_key = key.decode('utf-8')
                     
+                    # Make sure task_key has the prefix for fetching
+                    if not task_key.startswith(self._prefix):
+                        task_key = f"{self._prefix}{task_key}"
+                        
                     # Get task metadata
-                    # We need to remove the cache service prefix from the key if it exists
-                    # but use the original key for retrieving from cache
-                    task_id = task_key
-                    if task_id.startswith(self._prefix):
-                        task_id = task_id[len(self._prefix):]
-                    
                     metadata = await self._cache.get(task_key)
+                    
+                    # Handle JSON string data
+                    if isinstance(metadata, str):
+                        try:
+                            metadata = json.loads(metadata)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Invalid JSON in task metadata for task {task_key}")
+                            continue
+                    
                     if metadata and (status is None or metadata.get("status") == status):
+                        # Ensure task_id is properly extracted
+                        task_id = key
+                        if isinstance(task_id, bytes):
+                            task_id = task_id.decode('utf-8')
+                        if task_id.startswith(self._prefix):
+                            task_id = task_id[len(self._prefix):]
+                        
+                        # Add task_id to metadata if not present
+                        if "id" not in metadata:
+                            metadata["id"] = task_id
+                            
                         tasks.append(metadata)
                 
                 # Break if we've completed the scan
@@ -176,20 +247,50 @@ class TaskService:
                     if isinstance(key, bytes):
                         task_key = key.decode('utf-8')
                     
+                    # Make sure task_key has the prefix for fetching
+                    if not task_key.startswith(self._prefix):
+                        task_key = f"{self._prefix}{task_key}"
+                        
                     # Get task metadata
                     metadata = await self._cache.get(task_key)
+                    
+                    # Handle JSON string data
+                    if isinstance(metadata, str):
+                        try:
+                            metadata = json.loads(metadata)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Invalid JSON in task metadata for task {task_key}")
+                            continue
+                            
                     if metadata and metadata.get("status") in ["completed", "failed", "cancelled"]:
                         # Check if the task has a completed_at timestamp
+                        completed_at = None
                         if "completed_at" in metadata:
                             try:
                                 completed_at = datetime.fromisoformat(metadata["completed_at"])
-                                if completed_at < cutoff:
-                                    await self._cache.delete(task_key)
-                                    count += 1
                             except ValueError:
                                 # Skip if the timestamp is invalid
                                 logger.warning(f"Invalid timestamp for task {task_key}")
                                 continue
+                        elif "started_at" in metadata:
+                            # Fallback to started_at if completed_at is not available
+                            try:
+                                completed_at = datetime.fromisoformat(metadata["started_at"])
+                            except ValueError:
+                                continue
+                        else:
+                            # Fallback to created_at
+                            try:
+                                completed_at = datetime.fromisoformat(metadata["created_at"])
+                            except ValueError:
+                                continue
+                                
+                        if completed_at and completed_at < cutoff:
+                            # Make sure we're deleting with the full key
+                            if not task_key.startswith(self._prefix):
+                                task_key = f"{self._prefix}{task_key}"
+                            await self._cache.delete(task_key)
+                            count += 1
                 
                 # Break if we've completed the scan
                 if cursor == 0:

@@ -7,6 +7,7 @@ Create Date: 2024-02-19 00:00:01.000000
 """
 from typing import Sequence, Union
 from alembic import op
+from alembic.operations import Operations
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.sql import text
@@ -26,8 +27,9 @@ def upgrade() -> None:
     """Create initial database schema."""
     try:
         logger.info("Starting initial schema migration")
+        # Get the connection directly from operation context
         conn = op.get_bind()
-
+        
         # Drop existing tables if they exist
         logger.info("Dropping existing tables...")
         conn.execute(text("""
@@ -307,6 +309,7 @@ def upgrade() -> None:
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 item_category VARCHAR(50) NOT NULL,
                 title VARCHAR(255) NOT NULL,
+                description TEXT,
                 constraints JSONB NOT NULL,
                 deadline TIMESTAMP WITH TIME ZONE,
                 status goalstatus NOT NULL DEFAULT 'active',
@@ -562,14 +565,13 @@ def upgrade() -> None:
                 price NUMERIC(10, 2) NOT NULL,
                 currency VARCHAR(3) NOT NULL DEFAULT 'USD',
                 source VARCHAR(50) NOT NULL,
-                timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 meta_data JSONB,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT ch_positive_price CHECK (price > 0),
-                CONSTRAINT uq_price_history_deal_time UNIQUE (deal_id, timestamp)
+                CONSTRAINT uq_price_history_deal_time UNIQUE (deal_id, created_at)
             );
-            CREATE INDEX ix_price_histories_deal_time ON price_histories(deal_id, timestamp);
+            CREATE INDEX ix_price_histories_deal_time ON price_histories(deal_id, created_at);
             CREATE INDEX ix_price_histories_market ON price_histories(market_id);
         """))
         logger.info("Price_histories table created")
@@ -708,6 +710,8 @@ def upgrade() -> None:
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 score FLOAT NOT NULL,
                 confidence FLOAT NOT NULL,
+                score_type VARCHAR(50) NOT NULL DEFAULT 'ai',
+                score_metadata JSONB,
                 factors JSONB NOT NULL,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -716,6 +720,52 @@ def upgrade() -> None:
             CREATE INDEX ix_deal_scores_user ON deal_scores(user_id);
         """))
         logger.info("Deal_scores table created")
+        
+        # Create price_trackers table
+        logger.info("Creating price_trackers table...")
+        conn.execute(text("""
+            CREATE TABLE price_trackers (
+                id SERIAL PRIMARY KEY,
+                deal_id UUID NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                initial_price NUMERIC(10, 2) NOT NULL,
+                threshold_price NUMERIC(10, 2),
+                check_interval INTEGER NOT NULL DEFAULT 300,
+                last_check TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                is_active BOOLEAN NOT NULL DEFAULT true,
+                notification_settings JSONB,
+                meta_data JSONB,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX ix_price_trackers_deal ON price_trackers(deal_id);
+            CREATE INDEX ix_price_trackers_user ON price_trackers(user_id);
+            CREATE INDEX ix_price_trackers_active ON price_trackers(is_active);
+        """))
+        logger.info("Price_trackers table created")
+        
+        # Create deal_interactions table
+        logger.info("Creating deal_interactions table...")
+        conn.execute(text("""
+            CREATE TABLE deal_interactions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                deal_id UUID NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+                interaction_type VARCHAR(50) NOT NULL,
+                interaction_data JSONB,
+                session_id VARCHAR(100),
+                referrer TEXT,
+                device_info JSONB,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT TIMEZONE('UTC', CURRENT_TIMESTAMP),
+                is_conversion BOOLEAN NOT NULL DEFAULT false,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX ix_deal_interactions_user_id ON deal_interactions(user_id);
+            CREATE INDEX ix_deal_interactions_deal_id ON deal_interactions(deal_id);
+            CREATE INDEX ix_deal_interactions_interaction_type ON deal_interactions(interaction_type);
+            CREATE INDEX ix_deal_interactions_created_at ON deal_interactions(created_at);
+        """))
+        logger.info("Deal_interactions table created")
 
         # Create chat_contexts table
         logger.info("Creating chat_contexts table...")
@@ -866,8 +916,61 @@ def upgrade() -> None:
                 BEFORE UPDATE ON tracked_deals
                 FOR EACH ROW
                 EXECUTE FUNCTION update_updated_at_column();
+
+            CREATE TRIGGER update_deal_interactions_updated_at
+                BEFORE UPDATE ON deal_interactions
+                FOR EACH ROW
+                EXECUTE FUNCTION update_updated_at_column();
+
+            CREATE TRIGGER update_price_trackers_updated_at
+                BEFORE UPDATE ON price_trackers
+                FOR EACH ROW
+                EXECUTE FUNCTION update_updated_at_column();
         """))
         logger.info("Updated_at triggers created")
+
+        # Add triggers for the new tables
+        logger.info("Creating triggers for deal_scores and deal_interactions...")
+        conn.execute(text("""
+            -- These triggers are already created above
+            SELECT 1; -- Add a dummy query to avoid empty query error
+        """))
+        logger.info("Triggers created for deal_scores and deal_interactions")
+
+        # Create price_predictions table
+        logger.info("Creating price_predictions table...")
+        conn.execute(text("""
+            CREATE TABLE price_predictions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                deal_id UUID NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                model_name VARCHAR(255) NOT NULL,
+                prediction_days INTEGER NOT NULL DEFAULT 7,
+                confidence_threshold FLOAT NOT NULL DEFAULT 0.8,
+                predictions JSONB NOT NULL,
+                overall_confidence FLOAT NOT NULL,
+                trend_direction VARCHAR(255),
+                trend_strength FLOAT,
+                seasonality_score FLOAT,
+                features_used JSONB,
+                model_params JSONB,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                meta_data JSONB,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX ix_price_predictions_deal_id ON price_predictions(deal_id);
+            CREATE INDEX ix_price_predictions_user_id ON price_predictions(user_id);
+        """))
+        logger.info("Price_predictions table created")
+
+        # Create trigger for updated_at column for price_predictions
+        conn.execute(text("""
+            CREATE TRIGGER set_updated_at
+            BEFORE UPDATE ON price_predictions
+            FOR EACH ROW
+            EXECUTE FUNCTION update_updated_at_column();
+        """))
+        logger.info("Updated_at trigger created for price_predictions")
 
         logger.info("Initial schema migration completed successfully")
         
@@ -879,6 +982,7 @@ def downgrade() -> None:
     """Downgrade database schema."""
     try:
         logger.info("Starting schema downgrade")
+        # Get the connection directly from operation context
         conn = op.get_bind()
         
         # Drop triggers first
@@ -902,6 +1006,8 @@ def downgrade() -> None:
             DROP TRIGGER IF EXISTS update_deal_scores_updated_at ON deal_scores;
             DROP TRIGGER IF EXISTS update_chat_contexts_updated_at ON chat_contexts;
             DROP TRIGGER IF EXISTS update_tracked_deals_updated_at ON tracked_deals;
+            DROP TRIGGER IF EXISTS update_deal_interactions_updated_at ON deal_interactions;
+            DROP TRIGGER IF EXISTS update_price_trackers_updated_at ON price_trackers;
         """))
         logger.info("Triggers dropped")
 
@@ -915,8 +1021,8 @@ def downgrade() -> None:
         tables = [
             'agents', 'chat_messages', 'chat_contexts', 'user_preferences', 'price_histories',
             'token_pricing', 'token_balance_history', 'token_transactions',
-            'token_balances', 'token_wallets', 'deal_scores', 'tracked_deals', 'notifications', 
-            'deals', 'goals', 'markets', 'auth_tokens', 'users'
+            'token_balances', 'token_wallets', 'deal_scores', 'deal_interactions', 'tracked_deals', 'notifications', 
+            'deals', 'goals', 'markets', 'auth_tokens', 'users', 'price_trackers', 'price_predictions'
         ]
         for table in tables:
             logger.info(f"Dropping table {table}")

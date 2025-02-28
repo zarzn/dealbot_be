@@ -100,7 +100,6 @@ class TokenPricingResponse(BaseModel):
     valid_from: datetime
     valid_to: Optional[datetime] = None
     is_active: bool = True
-    description: Optional[str] = None
     pricing_metadata: Optional[Dict[str, Any]] = None
     
     model_config = ConfigDict(from_attributes=True)

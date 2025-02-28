@@ -45,7 +45,7 @@ class PriceTracker(Base):
     notification_settings: Mapped[Optional[Dict]] = mapped_column(JSONB)
     meta_data: Mapped[Optional[Dict]] = mapped_column(JSONB)
 
-    # Relationships - use string references to avoid circular imports
+    # Relationships - restore these
     deal = relationship("Deal", back_populates="price_trackers")
     user = relationship("User", back_populates="price_trackers")
 

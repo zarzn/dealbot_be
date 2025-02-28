@@ -23,6 +23,11 @@ class AgentType(str, enum.Enum):
     MARKET = "market"
     PRICE = "price"
     CHAT = "chat"
+    # Add the missing agent types needed for tests
+    GOAL_ANALYST = "goal_analyst"
+    DEAL_FINDER = "deal_finder"
+    PRICE_ANALYST = "price_analyst"
+    NOTIFIER = "notifier"
 
 class AgentStatus(str, enum.Enum):
     """Agent status types."""
@@ -30,6 +35,7 @@ class AgentStatus(str, enum.Enum):
     INACTIVE = "inactive"
     BUSY = "busy"
     ERROR = "error"
+    IDLE = "idle"  # Add the IDLE status needed for tests
 
 class Agent(Base):
     """Agent database model."""

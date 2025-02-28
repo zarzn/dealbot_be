@@ -131,6 +131,9 @@ from .chat import (
     MessageStatus
 )
 
+# Deal interaction models
+from .deal_interaction import DealInteraction, InteractionType
+
 __all__ = [
     # Auth
     'AuthToken',
@@ -254,5 +257,9 @@ __all__ = [
     'ChatAnalytics',
     'ChatFilter',
     'MessageRole',
-    'MessageStatus'
+    'MessageStatus',
+
+    # Deal Interaction
+    'DealInteraction',
+    'InteractionType'
 ]

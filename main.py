@@ -133,7 +133,7 @@ def create_app() -> FastAPI:
         )
 
     # Include routers
-    app.include_router(auth_router, prefix=f"{settings.API_V1_PREFIX}", tags=["Authentication"])
+    app.include_router(auth_router, prefix=f"{settings.API_V1_PREFIX}/auth", tags=["Authentication"])
     app.include_router(users_router, prefix=f"{settings.API_V1_PREFIX}/users", tags=["Users"])
     app.include_router(goals_router, prefix=f"{settings.API_V1_PREFIX}/goals", tags=["Goals"])
     app.include_router(deals_router, prefix=f"{settings.API_V1_PREFIX}/deals", tags=["Deals"])

@@ -52,35 +52,37 @@ class DealScore(Base):
         CheckConstraint('score >= 0 AND score <= 1', name='ch_score_range'),
         CheckConstraint('confidence >= 0 AND confidence <= 1', name='ch_confidence_range'),
         Index('ix_deal_scores_deal_id', 'deal_id'),
-        Index('ix_deal_scores_timestamp', 'timestamp'),
+        Index('ix_deal_scores_created_at', 'created_at'),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     deal_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"))
+    user_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     score: Mapped[float] = mapped_column(Float, nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    score_type: Mapped[str] = mapped_column(String(50), default="ai")
+    score_type: Mapped[str] = mapped_column(String(50), nullable=False, default="ai")
     score_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB, nullable=True)
+    factors: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, default={})
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
     deal = relationship("Deal", back_populates="scores")
 
     def __repr__(self) -> str:
         """String representation of the deal score."""
-        return f"<DealScore {self.score} ({self.score_type})>"
+        return f"<DealScore {self.score}>"
 
     def to_json(self) -> str:
         """Convert deal score to JSON string."""
         return json.dumps({
             'id': str(self.id),
             'deal_id': str(self.deal_id),
+            'user_id': str(self.user_id),
             'score': float(self.score),
             'confidence': float(self.confidence),
-            'timestamp': self.timestamp.isoformat(),
-            'score_type': self.score_type,
-            'score_metadata': self.score_metadata,
+            'timestamp': self.created_at.isoformat(),
+            'factors': self.factors,
             'created_at': self.created_at.isoformat()
         })
 
@@ -89,9 +91,10 @@ class DealScore(Base):
         cls,
         db: AsyncSession,
         deal_id: UUID,
+        user_id: UUID,
         score: float,
         confidence: float = 1.0,
-        metrics: Optional[Dict[str, Any]] = None
+        factors: Optional[Dict[str, Any]] = None
     ) -> 'DealScore':
         """Create a new deal score."""
         try:
@@ -102,9 +105,10 @@ class DealScore(Base):
 
             score_obj = cls(
                 deal_id=deal_id,
+                user_id=user_id,
                 score=score,
                 confidence=confidence,
-                score_metadata=metrics
+                factors=factors
             )
             db.add(score_obj)
             await db.commit()
@@ -114,6 +118,7 @@ class DealScore(Base):
                 "Created new deal score",
                 extra={
                     'deal_id': str(deal_id),
+                    'user_id': str(user_id),
                     'score': score,
                     'confidence': confidence
                 }
@@ -126,6 +131,7 @@ class DealScore(Base):
                 "Failed to create deal score",
                 extra={
                     'deal_id': str(deal_id),
+                    'user_id': str(user_id),
                     'score': score,
                     'error': str(e)
                 }
@@ -139,42 +145,43 @@ class DealScore(Base):
         db: AsyncSession,
         metrics: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Update score metrics."""
+        """Update the score metrics."""
         try:
             if metrics is not None:
-                self.score_metadata = metrics
+                self.factors = metrics
 
             await db.commit()
-            await db.refresh(self)
-
             logger.info(
-                "Updated deal score metrics",
+                f"Updated metrics for deal score {self.id}",
                 extra={
                     'id': str(self.id),
                     'deal_id': str(self.deal_id),
-                    'score_metadata': self.score_metadata
+                    'factors': self.factors
                 }
             )
-
         except Exception as e:
             await db.rollback()
             logger.error(
-                "Failed to update deal score metrics",
+                f"Failed to update metrics for deal score {self.id}: {str(e)}",
                 extra={
                     'id': str(self.id),
                     'deal_id': str(self.deal_id),
                     'error': str(e)
                 }
             )
-            raise ValidationError(str(e))
+            raise
 
 # Pydantic models for API
 class DealScoreCreate(BaseModel):
-    """Schema for creating a deal score."""
+    """Deal score creation model."""
+
     deal_id: UUID
+    user_id: UUID
     score: confloat(ge=0, le=1)
     confidence: confloat(ge=0, le=1) = 1.0
-    metrics: Optional[Dict[str, Any]] = None
+    timestamp: datetime
+    factors: Dict[str, Any]
+    created_at: datetime
 
     @classmethod
     def validate_score(cls, score: float) -> float:
@@ -201,8 +208,7 @@ class DealScoreResponse(BaseModel):
     score: float
     confidence: float
     timestamp: datetime
-    score_type: str
-    score_metadata: Optional[Dict[str, Any]]
+    factors: Dict[str, Any]
     created_at: datetime
 
     class Config:

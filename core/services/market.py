@@ -5,6 +5,8 @@ from datetime import datetime
 from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
+import json
+import hashlib
 
 from ..repositories.market import MarketRepository
 from ..models.market import MarketCreate, MarketUpdate, Market, MarketType, MarketStatus
@@ -460,4 +462,135 @@ class MarketService(BaseService[Market, MarketCreate, MarketUpdate]):
             raise MarketConnectionError(
                 market=getattr(market, 'name', str(market_id)),
                 reason=f"Failed to make request to market: {str(e)}"
-            ) 
+            )
+
+    async def update_product_price(self, market_id: UUID, product_url: str, new_price: Decimal) -> Dict[str, Any]:
+        """Update the price of a product in a market.
+        
+        Args:
+            market_id: The ID of the market
+            product_url: The URL of the product
+            new_price: The new price value
+            
+        Returns:
+            Dict containing update status and information
+            
+        Raises:
+            MarketNotFound: If the market doesn't exist
+            MarketOperationError: If there's an error updating the price
+            ValidationError: If the inputs are invalid
+        """
+        try:
+            # Validate inputs
+            if not isinstance(market_id, UUID):
+                raise ValidationError(
+                    message="Market ID must be a valid UUID",
+                    resource_type="market",
+                    resource_id=str(market_id)
+                )
+                
+            if not product_url or not isinstance(product_url, str):
+                raise ValidationError(
+                    message="Product URL must be a valid string",
+                    resource_type="product",
+                    resource_id=product_url
+                )
+                
+            if not isinstance(new_price, Decimal) or new_price <= 0:
+                raise ValidationError(
+                    message="Price must be a positive decimal",
+                    resource_type="product",
+                    resource_id=product_url
+                )
+            
+            # Get the market
+            market = await self.get_market(market_id)
+            
+            # Check cache for existing data
+            cache_key = f"market:{market_id}:product:{self._hash_url(product_url)}"
+            existing_data = None
+            
+            if self._redis:
+                try:
+                    cached_data = await self._redis.get(cache_key)
+                    if cached_data:
+                        existing_data = json.loads(cached_data)
+                except Exception as e:
+                    logger.warning(f"Error retrieving from cache: {str(e)}")
+            
+            # Create update data
+            update_data = {
+                "url": product_url,
+                "price": str(new_price),  # Convert Decimal to string for serialization
+                "currency": market.default_currency or "USD",
+                "market_id": str(market_id),
+                "updated_at": datetime.utcnow().isoformat(),
+                "previous_price": existing_data["price"] if existing_data else None,
+                "price_change": str(Decimal(existing_data["price"]) - new_price) if existing_data and "price" in existing_data else None,
+                "source": "manual_update"
+            }
+            
+            # Update cache
+            if self._redis:
+                try:
+                    await self._redis.set(
+                        cache_key, 
+                        json.dumps(update_data),
+                        ex=3600 * 24  # 24 hour cache
+                    )
+                except Exception as e:
+                    logger.warning(f"Error updating cache: {str(e)}")
+            
+            logger.info(
+                f"Updated product price in market {market.name}",
+                extra={
+                    "market_id": str(market_id),
+                    "product_url": product_url,
+                    "new_price": str(new_price),
+                    "old_price": existing_data["price"] if existing_data and "price" in existing_data else "unknown"
+                }
+            )
+            
+            return update_data
+            
+        except NotFoundException as e:
+            logger.error(
+                f"Market not found for price update: {str(e)}",
+                extra={
+                    "market_id": str(market_id),
+                    "product_url": product_url
+                }
+            )
+            raise
+            
+        except ValidationError as e:
+            logger.error(
+                f"Validation error on product price update: {str(e)}",
+                extra={
+                    "market_id": str(market_id),
+                    "product_url": product_url,
+                    "new_price": str(new_price) if isinstance(new_price, Decimal) else str(new_price)
+                }
+            )
+            raise
+            
+        except Exception as e:
+            # Get market name if possible
+            market_name = None
+            try:
+                market = await self.get_market(market_id)
+                market_name = market.name
+            except:
+                market_name = str(market_id)
+                
+            # Add required parameters to the MarketOperationError
+            raise MarketOperationError(
+                f"Failed to update product price: {str(e)}",
+                operation="update_product_price",
+                market=market_name,
+                reason=f"Error processing request: {str(e)}"
+            )
+            
+    def _hash_url(self, url: str) -> str:
+        """Create a hash of a URL to use as a cache key."""
+        return hashlib.md5(url.encode('utf-8')).hexdigest() 

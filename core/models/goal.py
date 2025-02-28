@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator, conint,
 from sqlalchemy import (
     Column, String, Integer, DateTime, select, update, func, Numeric, text,
     Index, CheckConstraint, UniqueConstraint, Enum as SQLEnum, ForeignKey, Float, Boolean, event, TIMESTAMP, JSON,
-    Connection
+    Connection, Text
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -64,52 +64,94 @@ class GoalType(str, enum.Enum):
 
 class GoalBase(BaseModel):
     """Base model for Goal with validation"""
-    item_category: MarketCategory = Field(...)
     title: str = Field(..., min_length=1, max_length=255)
-    constraints: Dict[str, Any] = Field(...)
-    deadline: Optional[datetime] = Field(None)
+    description: Optional[str] = Field(None, max_length=1000)
     status: GoalStatus = Field(default=GoalStatus.ACTIVE)
-    priority: GoalPriority = Field(default=GoalPriority.MEDIUM)
+    priority: Optional[int] = Field(None)
+    due_date: Optional[datetime] = Field(None)
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    
+    # For backward compatibility
+    item_category: Optional[str] = Field(None)
+    constraints: Optional[Dict[str, Any]] = Field(None)
+    deadline: Optional[datetime] = Field(None)
     max_matches: Optional[int] = Field(None, gt=0)
-    max_tokens: Optional[float] = Field(None, gt=0)
-    notification_threshold: Optional[float] = Field(None, ge=0, le=1)
-    auto_buy_threshold: Optional[float] = Field(None, ge=0, le=1)
+    max_tokens: Optional[float] = Field(None)
+    notification_threshold: Optional[float] = Field(None)
+    auto_buy_threshold: Optional[float] = Field(None)
 
     @model_validator(mode='after')
     def validate_constraints(self) -> 'GoalBase':
-        """Validate goal constraints structure"""
+        """Validate goal constraints structure if provided"""
+        # Skip validation if constraints not provided
+        if not self.constraints:
+            return self
+            
         constraints = self.constraints
-        required_fields = ['max_price', 'min_price', 'brands', 'conditions', 'keywords']
         
-        # Check for missing fields
-        missing_fields = [field for field in required_fields if field not in constraints]
-        if missing_fields:
-            raise GoalConstraintError(
-                "Missing required constraint fields: {}".format(', '.join(missing_fields))
-            )
+        # For backward compatibility, convert some fields to float if they're strings
+        if self.max_tokens and isinstance(self.max_tokens, str):
+            try:
+                self.max_tokens = float(self.max_tokens)
+            except ValueError:
+                raise GoalConstraintError("max_tokens must be a number")
+                
+        if self.notification_threshold and isinstance(self.notification_threshold, str):
+            try:
+                self.notification_threshold = float(self.notification_threshold)
+            except ValueError:
+                raise GoalConstraintError("notification_threshold must be a number")
+                
+        if self.auto_buy_threshold and isinstance(self.auto_buy_threshold, str):
+            try:
+                self.auto_buy_threshold = float(self.auto_buy_threshold)
+            except ValueError:
+                raise GoalConstraintError("auto_buy_threshold must be a number")
         
-        # Validate price constraints
-        try:
-            max_price = float(constraints['max_price'])
-            min_price = float(constraints['min_price'])
+        # Only validate certain fields if they exist
+        if 'max_price' in constraints and 'min_price' in constraints:
+            try:
+                max_price = float(constraints['max_price'])
+                min_price = float(constraints['min_price'])
+                
+                if max_price <= min_price:
+                    raise GoalConstraintError("max_price must be greater than min_price")
+                if min_price < 0:
+                    raise GoalConstraintError("min_price cannot be negative")
+                if max_price > settings.MAX_GOAL_PRICE:
+                    raise GoalConstraintError(f"max_price cannot exceed {settings.MAX_GOAL_PRICE}")
+            except (ValueError, TypeError):
+                raise GoalConstraintError("Price constraints must be valid numbers")
             
-            if max_price <= min_price:
-                raise GoalConstraintError("max_price must be greater than min_price")
-            if min_price < 0:
-                raise GoalConstraintError("min_price cannot be negative")
-            if max_price > settings.MAX_GOAL_PRICE:
-                raise GoalConstraintError("max_price cannot exceed {}".format(settings.MAX_GOAL_PRICE))
-        except (ValueError, TypeError) as e:
-            raise GoalConstraintError("Price constraints must be valid numbers") from e
+        # Handle price_range if provided instead of min/max price
+        if 'price_range' in constraints:
+            price_range = constraints['price_range']
+            if not isinstance(price_range, dict):
+                raise GoalConstraintError("price_range must be a dictionary")
+                
+            if 'min' in price_range and 'max' in price_range:
+                try:
+                    max_price = float(price_range['max'])
+                    min_price = float(price_range['min'])
+                    
+                    if max_price <= min_price:
+                        raise GoalConstraintError("price_range.max must be greater than price_range.min")
+                    if min_price < 0:
+                        raise GoalConstraintError("price_range.min cannot be negative")
+                    if max_price > settings.MAX_GOAL_PRICE:
+                        raise GoalConstraintError(f"price_range.max cannot exceed {settings.MAX_GOAL_PRICE}")
+                except (ValueError, TypeError):
+                    raise GoalConstraintError("Price range must contain valid numbers")
             
-        # Validate other constraints
-        if not isinstance(constraints['brands'], list):
-            raise GoalConstraintError("brands must be a list")
-        if not isinstance(constraints['conditions'], list):
-            raise GoalConstraintError("conditions must be a list")
-        if not isinstance(constraints['keywords'], list):
-            raise GoalConstraintError("keywords must be a list")
-            
+        # Validate array fields if they exist
+        array_fields = ['keywords', 'categories', 'brands', 'conditions']
+        for field in array_fields:
+            if field in constraints:
+                if not isinstance(constraints[field], list):
+                    raise GoalConstraintError(f"{field} must be a list")
+                if len(constraints[field]) > 100:
+                    raise GoalConstraintError(f"{field} list cannot exceed 100 items")
+                
         return self
 
     @field_validator('deadline')
@@ -129,47 +171,60 @@ class GoalBase(BaseModel):
 
 class GoalCreate(GoalBase):
     """Model for creating a new goal"""
-    user_id: UUID
+    user_id: Optional[UUID] = None
     initial_search: bool = Field(default=True)
 
 class GoalUpdate(BaseModel):
     """Model for updating a goal"""
-    item_category: Optional[MarketCategory] = None
     title: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = Field(None, max_length=1000)
+    status: Optional[GoalStatus] = None
+    priority: Optional[int] = None
+    due_date: Optional[datetime] = None
+    metadata: Optional[Dict[str, Any]] = None
+    
+    # For backward compatibility
+    item_category: Optional[str] = None
     constraints: Optional[Dict[str, Any]] = None
     deadline: Optional[datetime] = None
-    status: Optional[GoalStatus] = None
-    priority: Optional[GoalPriority] = None
     max_matches: Optional[int] = Field(None, gt=0)
-    max_tokens: Optional[float] = Field(None, gt=0)
-    notification_threshold: Optional[float] = Field(None, ge=0, le=1)
-    auto_buy_threshold: Optional[float] = Field(None, ge=0, le=1)
+    max_tokens: Optional[str] = Field(None)
+    notification_threshold: Optional[str] = Field(None)
+    auto_buy_threshold: Optional[str] = Field(None)
 
     @model_validator(mode='after')
     def validate_constraints(self) -> 'GoalUpdate':
         """Validate goal constraints structure"""
-        constraints = self.constraints
+        constraints = getattr(self, 'constraints', None)
         if constraints is None:
             return self
             
-        required_fields = ['max_price', 'min_price', 'brands', 'conditions', 'keywords']
-        if not all(field in constraints for field in required_fields):
-            raise InvalidGoalConstraintsError(
-                "Constraints must include: {}".format(', '.join(required_fields))
-            )
-        
-        # Validate price constraints
-        if 'max_price' in constraints and 'min_price' in constraints:
-            max_price = float(constraints['max_price'])
-            min_price = float(constraints['min_price'])
+        # Ensure constraints is a dictionary
+        if not isinstance(constraints, dict):
+            raise InvalidGoalConstraintsError("Constraints must be a dictionary")
             
-            if max_price <= min_price:
-                raise InvalidGoalConstraintsError("max_price must be greater than min_price")
-            if min_price < 0:
-                raise InvalidGoalConstraintsError("min_price cannot be negative")
-            if max_price > settings.MAX_GOAL_PRICE:
-                raise InvalidGoalConstraintsError("max_price cannot exceed {}".format(settings.MAX_GOAL_PRICE))
+        # Only validate if we have constraints
+        if constraints:  
+            required_fields = ['max_price', 'min_price', 'brands', 'conditions', 'keywords']
+            missing_fields = [f for f in required_fields if f not in constraints]
+            if missing_fields:
+                raise InvalidGoalConstraintsError(
+                    f"Constraints missing required fields: {', '.join(missing_fields)}"
+                )
             
+            # Validate price constraints
+            if 'max_price' in constraints and 'min_price' in constraints:
+                try:
+                    max_price = float(constraints['max_price'])
+                    min_price = float(constraints['min_price'])
+                    
+                    if max_price <= min_price:
+                        raise InvalidGoalConstraintsError("max_price must be greater than min_price")
+                    if min_price < 0:
+                        raise InvalidGoalConstraintsError("min_price cannot be negative")
+                except (ValueError, TypeError):
+                    raise InvalidGoalConstraintsError("Price values must be valid numbers")
+                
         return self
 
 class GoalResponse(GoalBase):
@@ -200,6 +255,56 @@ class GoalResponse(GoalBase):
             GoalPriority: lambda v: v.value,
             MarketCategory: lambda v: v.value
         }
+    
+    @model_validator(mode='before')
+    @classmethod
+    def convert_priority_and_metadata(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert GoalPriority enum to integer and ensure metadata is a dict."""
+        if isinstance(data, dict):
+            # Handle priority conversion
+            if 'priority' in data:
+                priority = data['priority']
+                # Handle GoalPriority enum instances
+                if isinstance(priority, GoalPriority):
+                    # Map priorities to integers: HIGH=3, MEDIUM=2, LOW=1
+                    priority_map = {
+                        GoalPriority.HIGH: 3,
+                        GoalPriority.MEDIUM: 2,
+                        GoalPriority.LOW: 1
+                    }
+                    data['priority'] = priority_map.get(priority, 2)  # Default to MEDIUM (2) if not found
+                # Handle string values from database
+                elif isinstance(priority, str):
+                    priority_str_map = {
+                        "high": 3,
+                        "medium": 2,
+                        "low": 1
+                    }
+                    data['priority'] = priority_str_map.get(priority.lower(), 2)
+                # Make sure priority is an int if it's still not
+                if not isinstance(data['priority'], int):
+                    try:
+                        data['priority'] = int(data['priority'])
+                    except (ValueError, TypeError):
+                        # Default to medium priority (2) if conversion fails
+                        data['priority'] = 2
+            
+            # Ensure metadata is a dict
+            if 'metadata' in data:
+                if data['metadata'] is None:
+                    data['metadata'] = {}
+                elif hasattr(data['metadata'], '__dict__'):
+                    # Convert object to dict if it has __dict__ attribute
+                    data['metadata'] = vars(data['metadata'])
+                elif not isinstance(data['metadata'], dict):
+                    try:
+                        # Try to convert to dict
+                        data['metadata'] = dict(data['metadata'])
+                    except (ValueError, TypeError):
+                        # If not convertible, use empty dict
+                        data['metadata'] = {}
+        
+        return data
 
 class GoalAnalytics(BaseModel):
     """Model for goal analytics data"""
@@ -345,6 +450,7 @@ class Goal(Base):
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
     item_category: Mapped[MarketCategory] = mapped_column(SQLEnum(MarketCategory, values_callable=lambda x: [e.value for e in x]), nullable=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     constraints: Mapped[Dict] = mapped_column(JSONB, nullable=False)
     deadline: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     status: Mapped[GoalStatus] = mapped_column(SQLEnum(GoalStatus, values_callable=lambda x: [e.value for e in x]), nullable=False, default=GoalStatus.ACTIVE)
@@ -394,6 +500,7 @@ class Goal(Base):
             "user_id": str(self.user_id),
             "item_category": self.item_category,
             "title": self.title,
+            "description": self.description,
             "constraints": self.constraints,
             "deadline": self.deadline.isoformat() if self.deadline else None,
             "status": self.status,
@@ -559,6 +666,7 @@ class Goal(Base):
             "user_id": str(self.user_id),
             "item_category": self.item_category,
             "title": self.title,
+            "description": self.description,
             "constraints": self.constraints,
             "deadline": self.deadline.isoformat() if self.deadline else None,
             "status": self.status,
