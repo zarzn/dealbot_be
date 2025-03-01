@@ -906,7 +906,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                 joinedload(Deal.price_points),
                 joinedload(Deal.tracked_by_users)
             )
-  
+
             if search.query:
                 # Full-text search on title and description
                 query = query.filter(
@@ -915,16 +915,16 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                         Deal.description.ilike(f"%{search.query}%")
                     )
                 )
-          
+        
             if search.category:
                 query = query.filter(Deal.category == search.category)
-                
+        
             if search.min_price is not None:
                 query = query.filter(Deal.price >= search.min_price)
-                
+        
             if search.max_price is not None:
                 query = query.filter(Deal.price <= search.max_price)
-                
+
             if search.source:
                 query = query.filter(Deal.source == search.source)
                 
@@ -1091,8 +1091,8 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                             "timestamp": datetime.utcnow().isoformat()
                         }
                     }
-            
-            # Convert to response models
+
+        # Convert to response models
             response_deals = []
             for deal in deals:
                 response_deal = await self._convert_to_response(deal, user_id)

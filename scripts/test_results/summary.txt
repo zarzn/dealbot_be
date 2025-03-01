@@ -1,0 +1,12 @@
+# Test Summary
+- Date: 03/01/2025 17:51:45
+- Total Tests: 0
+- Passed: 0
+- Failed: 0
+- Duration: 2.6456392 seconds
+
+## Configuration
+- Test Type: True
+- Test Path: True
+- Coverage: True
+- HTML Report: True

@@ -109,6 +109,9 @@ def run_migrations():
         # Get the current working directory
         current_dir = os.getcwd()
         
+        # Get the parent directory (backend) where alembic.ini is located
+        backend_dir = os.path.dirname(current_dir)
+        
         # Run migrations for both main and test databases
         for db_name in ['deals', 'deals_test']:
             # Set the database URL in environment
@@ -120,7 +123,7 @@ def run_migrations():
                 capture_output=True,
                 text=True,
                 check=True,
-                cwd=current_dir  # Use current directory instead of backend_dir
+                cwd=backend_dir  # Use backend directory where alembic.ini is located
             )
             logger.info(f"Migrations for {db_name}:\n{result.stdout}")
             

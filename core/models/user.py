@@ -293,7 +293,7 @@ class User(Base):
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
     agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
     tracked_deals = relationship("TrackedDeal", back_populates="user", cascade="all, delete-orphan")
-    user_preferences = relationship("UserPreferences", back_populates="user", cascade="all, delete-orphan")
+    user_preferences = relationship("UserPreferences", back_populates="user", cascade="all, delete-orphan", overlaps="preferences")
     price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
     price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
     

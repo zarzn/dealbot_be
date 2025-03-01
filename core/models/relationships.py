@@ -51,7 +51,7 @@ def setup_relationships():
     User.chat_messages = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
     User.token_transactions = relationship("TokenTransaction", back_populates="user", cascade="all, delete-orphan")
     User.token_balance_history = relationship("TokenBalanceHistory", back_populates="user", cascade="all, delete-orphan")
-    User.token_wallet = relationship("TokenWallet", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    User.token_wallet = relationship("TokenWallet", back_populates="user", uselist=False, cascade="all, delete-orphan", overlaps="token_wallets")
     User.token_balance = relationship("TokenBalance", back_populates="user", uselist=False, cascade="all, delete-orphan")
     User.referrals = relationship(
         "User",
@@ -80,7 +80,7 @@ def setup_relationships():
     # Token relationships
     TokenTransaction.user = relationship("User", back_populates="token_transactions")
     TokenBalanceHistory.user = relationship("User", back_populates="token_balance_history")
-    TokenWallet.user = relationship("User", back_populates="token_wallet")
+    TokenWallet.user = relationship("User", back_populates="token_wallets", overlaps="token_wallet")
     TokenBalance.user = relationship("User", back_populates="token_balance")
 
     # Deal score relationships

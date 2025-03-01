@@ -74,11 +74,6 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings
 
-# Token expiration times (in minutes)
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-REFRESH_TOKEN_EXPIRE_DAYS = 7
-PASSWORD_RESET_TOKEN_EXPIRE_HOURS = 24
-
 # Get the base directory
 _BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -88,6 +83,11 @@ class Settings(BaseSettings):
     This class defines all configuration settings for the application.
     Settings are loaded from environment variables and .env files.
     """
+    
+    # Token expiration times
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30)
+    REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7)
+    PASSWORD_RESET_TOKEN_EXPIRE_HOURS: int = Field(default=24)
     
     # Application settings
     APP_NAME: str = Field(default="AI Agentic Deals", description="Application name")
@@ -99,6 +99,8 @@ class Settings(BaseSettings):
     
     # Testing settings
     TESTING: bool = Field(default=True, description="Testing mode")
+    SKIP_TOKEN_VERIFICATION: bool = Field(default=False, description="Skip token verification")
+    TEST_USER_ID: str = Field(default="00000000-0000-4000-a000-000000000000", description="Test user ID")
     
     # Base directory
     BASE_DIR: str = str(_BASE_DIR)
@@ -166,9 +168,13 @@ class Settings(BaseSettings):
     
     # JWT settings
     JWT_SECRET_KEY: SecretStr = Field(default="test-secret-key")
+    JWT_SECRET: SecretStr = Field(default="test-jwt-secret-key")
     JWT_ALGORITHM: str = Field(default="HS256")
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=ACCESS_TOKEN_EXPIRE_MINUTES)
-    JWT_REFRESH_TOKEN_EXPIRE_MINUTES: int = Field(default=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60)
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30)
+    JWT_REFRESH_TOKEN_EXPIRE_MINUTES: int = Field(default=7 * 24 * 60)
+    
+    # NextAuth settings
+    NEXTAUTH_SECRET: SecretStr = Field(default="test-nextauth-secret-key")
     
     # API settings
     API_V1_STR: str = Field(default="/api/v1")
@@ -481,32 +487,40 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
-
-# Add the following settings for test environment
-
-# Determine if running in test mode
-TESTING = os.environ.get("TESTING", "").lower() == "true"
-
-# Test-specific settings
-SKIP_TOKEN_VERIFICATION = TESTING or os.environ.get("SKIP_TOKEN_VERIFICATION", "").lower() == "true"
-TEST_USER_ID = "00000000-0000-4000-a000-000000000000"
-
-# Update existing settings for test environment
-if TESTING:
-    # Use shorter token expiration for tests
-    ACCESS_TOKEN_EXPIRE_MINUTES = 5
-    REFRESH_TOKEN_EXPIRE_DAYS = 1
-    
-    # Skip token verification in tests
-    SKIP_TOKEN_VERIFICATION = True
-    
-    # Use in-memory SQLite for tests if not explicitly set
-    if 'DATABASE_URL' in locals() and DATABASE_URL and "sqlite" not in DATABASE_URL.lower() and os.environ.get("TEST_DATABASE_URL") is None:
-        DATABASE_URL = "sqlite+aiosqlite:///:memory:"
         
-    # Use mock Redis for tests if not explicitly set
-    if 'REDIS_URL' in locals() and REDIS_URL and os.environ.get("TEST_REDIS_URL") is None:
-        REDIS_HOST = "localhost"
-        REDIS_PORT = 6379
-        REDIS_DB = 1  # Use different DB for tests
-        REDIS_URL = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}" 
+        # Update settings for test environment
+        @classmethod
+        def customise_sources(
+            cls,
+            init_settings,
+            env_settings,
+            file_secret_settings,
+        ):
+            # First get values from normal sources
+            result = super().customise_sources(
+                init_settings, env_settings, file_secret_settings
+            )
+            
+            # Then apply test-specific overrides
+            def test_override(settings_dict):
+                if settings_dict.get("TESTING", False):
+                    # Use shorter token expiration for tests
+                    settings_dict["ACCESS_TOKEN_EXPIRE_MINUTES"] = 5
+                    settings_dict["REFRESH_TOKEN_EXPIRE_DAYS"] = 1
+                    
+                    # Skip token verification in tests
+                    settings_dict["SKIP_TOKEN_VERIFICATION"] = True
+                    
+                    # Use in-memory SQLite for tests if not explicitly set
+                    if "DATABASE_URL" in settings_dict and settings_dict["DATABASE_URL"] and "sqlite" not in str(settings_dict["DATABASE_URL"]).lower() and os.environ.get("TEST_DATABASE_URL") is None:
+                        settings_dict["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+                    
+                    # Use mock Redis for tests if not explicitly set
+                    if "REDIS_URL" in settings_dict and settings_dict["REDIS_URL"] and os.environ.get("TEST_REDIS_URL") is None:
+                        settings_dict["REDIS_HOST"] = "localhost"
+                        settings_dict["REDIS_PORT"] = 6379
+                        settings_dict["REDIS_DB"] = 1  # Use different DB for tests
+                        settings_dict["REDIS_URL"] = f"redis://{settings_dict['REDIS_HOST']}:{settings_dict['REDIS_PORT']}/{settings_dict['REDIS_DB']}"
+                return settings_dict
+            
+            return lambda: test_override(result()) 
