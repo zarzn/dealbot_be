@@ -17,7 +17,7 @@ import time
 
 from jose import JWTError, jwt, ExpiredSignatureError
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import select, insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 
@@ -767,17 +767,42 @@ class AuthService:
             
             # Create user
             user_dict = user_data.model_dump()
+            
+            # Remove password from dict and add hashed password
+            user_dict.pop("password", None)
             user_dict["password"] = hashed_password
             
-            # Set default status if not provided
-            if "status" not in user_dict or not user_dict["status"]:
-                user_dict["status"] = UserStatus.ACTIVE
+            # Ensure status is a string value, not an enum object
+            if "status" in user_dict and hasattr(user_dict["status"], "value"):
+                user_dict["status"] = user_dict["status"].value
+            elif "status" not in user_dict or not user_dict["status"]:
+                user_dict["status"] = UserStatus.ACTIVE.value
                 
-            # Create user in database
-            user = await User.create(self.db, **user_dict)
-            
-            logger.info(f"User registered successfully: {user.email}")
-            return user
+            try:
+                # Create user directly
+                user = User(**user_dict)
+                self.db.add(user)
+                await self.db.flush()
+                await self.db.refresh(user)
+                
+                logger.info(f"User registered successfully: {user.email}")
+                return user
+            except Exception as inner_e:
+                logger.error(f"Error creating user object: {str(inner_e)}")
+                # Fallback to direct SQL insertion if ORM approach fails
+                stmt = insert(User.__table__).values(**user_dict).returning(User.__table__)
+                result = await self.db.execute(stmt)
+                user_row = result.fetchone()
+                if not user_row:
+                    raise Exception("Failed to insert user")
+                    
+                # Convert row to User object
+                user = await User.get_by_email(self.db, user_dict["email"])
+                if not user:
+                    raise Exception("Failed to retrieve created user")
+                    
+                logger.info(f"User registered successfully (fallback method): {user.email}")
+                return user
         except AuthenticationError:
             raise
         except Exception as e:
@@ -922,18 +947,32 @@ class AuthService:
             raise AuthenticationError(f"Email verification failed: {str(e)}")
 
     async def get_user_by_id(self, user_id: str) -> Optional[User]:
-        """Get user by ID."""
+        """Get user by ID.
+        
+        Args:
+            user_id: User ID
+            
+        Returns:
+            User or None if not found
+        """
         try:
-            result = await self.db.execute(
-                select(User).where(User.id == UUID(user_id))
-            )
+            # Convert string to UUID if needed
+            if isinstance(user_id, str):
+                try:
+                    user_id = UUID(user_id)
+                except ValueError:
+                    logger.error(f"Invalid user ID format: {user_id}")
+                    return None
+                
+            # Query the database
+            stmt = select(User).where(User.id == user_id)
+            result = await self.db.execute(stmt)
             user = result.scalar_one_or_none()
-            if not user:
-                raise UserNotFoundError(f"User not found: {user_id}")
+            
             return user
         except Exception as e:
-            logger.error(f"Error getting user by ID: {e}")
-            raise UserNotFoundError(f"User not found: {user_id}")
+            logger.error(f"Error retrieving user by ID {user_id}: {str(e)}")
+            return None
 
     async def is_token_blacklisted(self, token: str) -> bool:
         """Check if a token is blacklisted.

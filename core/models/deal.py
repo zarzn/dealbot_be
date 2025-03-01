@@ -119,12 +119,31 @@ class PriceHistoryResponse(PriceHistoryBase):
 
 class AIAnalysis(BaseModel):
     """AI analysis of a deal."""
+    deal_id: UUID
     score: float = Field(..., ge=0, le=1)
     confidence: float = Field(..., ge=0, le=1)
-    price_trend: str
-    price_prediction: Decimal
-    recommendations: List[str]
-    meta_data: Optional[Dict[str, Any]] = None
+    price_analysis: Dict[str, Any] = Field(default_factory=dict)
+    market_analysis: Dict[str, Any] = Field(default_factory=dict)
+    recommendations: List[str] = Field(default_factory=list)
+    analysis_date: datetime = Field(default_factory=datetime.utcnow)
+    expiration_analysis: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+class AIAnalysisResponse(BaseModel):
+    """API response model for AI analysis."""
+    deal_id: UUID
+    score: float = Field(..., ge=0, le=1)
+    confidence: float = Field(..., ge=0, le=1)
+    price_analysis: Dict[str, Any] = Field(default_factory=dict)
+    market_analysis: Dict[str, Any] = Field(default_factory=dict)
+    recommendations: List[str] = Field(default_factory=list)
+    analysis_date: datetime
+    expiration_analysis: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
 
 class DealBase(BaseModel):
     """Base deal model."""
@@ -284,7 +303,7 @@ class Deal(Base):
     scores = relationship("DealScore", back_populates="deal", cascade="all, delete-orphan")
     trackers = relationship("TrackedDeal", back_populates="deal", cascade="all, delete-orphan")
     goal_matches = relationship("DealMatch", back_populates="deal", cascade="all, delete-orphan")
-    tracked_by_users = relationship("TrackedDeal", back_populates="deal", cascade="all, delete-orphan")
+    tracked_by_users = relationship("TrackedDeal", back_populates="deal", cascade="all, delete-orphan", overlaps="trackers")
     price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
     price_trackers = relationship("PriceTracker", back_populates="deal", cascade="all, delete-orphan")
     price_predictions = relationship("PricePrediction", back_populates="deal", cascade="all, delete-orphan")

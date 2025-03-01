@@ -918,3 +918,67 @@ class DealRepository(BaseRepository[Deal]):
         except Exception as e:
             logger.error(f"Error checking if deal {deal_id} exists: {str(e)}")
             return False
+
+    async def get_by_user(
+        self,
+        user_id: UUID,
+        limit: int = 20,
+        offset: int = 0,
+        filters: Optional[Any] = None
+    ) -> List[Deal]:
+        """
+        Get deals for a specific user with optional filtering.
+        
+        Args:
+            user_id: The user ID
+            limit: Maximum number of deals to return
+            offset: Number of deals to skip
+            filters: Optional filters to apply
+            
+        Returns:
+            List of deals for the user
+        """
+        try:
+            # Build base query
+            query = select(Deal).where(Deal.user_id == user_id)
+            
+            # Apply filters if provided
+            if filters:
+                if hasattr(filters, 'category') and filters.category:
+                    query = query.filter(Deal.category == filters.category)
+                    
+                if hasattr(filters, 'price_min') and filters.price_min is not None:
+                    query = query.filter(Deal.price >= filters.price_min)
+                    
+                if hasattr(filters, 'price_max') and filters.price_max is not None:
+                    query = query.filter(Deal.price <= filters.price_max)
+                    
+                if hasattr(filters, 'sort_by') and filters.sort_by:
+                    if filters.sort_by == "price_asc":
+                        query = query.order_by(Deal.price.asc())
+                    elif filters.sort_by == "price_desc":
+                        query = query.order_by(Deal.price.desc())
+                    elif filters.sort_by == "date":
+                        query = query.order_by(Deal.created_at.desc())
+                    else:
+                        # Default sorting
+                        query = query.order_by(Deal.created_at.desc())
+                else:
+                    # Default sorting
+                    query = query.order_by(Deal.created_at.desc())
+            else:
+                # Default sorting
+                query = query.order_by(Deal.created_at.desc())
+            
+            # Apply pagination
+            query = query.limit(limit).offset(offset)
+            
+            # Execute query
+            result = await self.db.execute(query)
+            deals = result.scalars().all()
+            
+            return list(deals)
+            
+        except Exception as e:
+            logger.error(f"Failed to get deals for user {user_id}: {str(e)}")
+            raise DatabaseError(f"Failed to get deals for user: {str(e)}", "get_by_user")

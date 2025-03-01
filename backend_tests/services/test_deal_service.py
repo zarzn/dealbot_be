@@ -15,6 +15,10 @@ import asyncio
 from uuid import uuid4
 import time
 from core.models.deal import Deal, PriceHistory
+from sqlalchemy import select
+from core.models.deal import Deal
+from core.models.enums import DealSource, MarketCategory
+from core.services.deal_search import DealSearch
 
 pytestmark = pytest.mark.asyncio
 
@@ -524,3 +528,72 @@ async def test_deal_price_tracking(db_session, deal_service):
         deal_service._repository.get_by_id = original_get_by_id
         deal_service._repository.exists = original_exists
         deal_service._repository.update = original_update 
+
+@pytest.mark.asyncio
+async def test_search_deals_with_realtime_scraping_fallback(db_session, monkeypatch):
+    """Test that search_deals falls back to real-time scraping when no deals are found in the database."""
+    # Create a user
+    user = await UserFactory.create_async(db_session=db_session)
+    
+    # Create a market
+    market = await MarketFactory.create_async(
+        db_session=db_session,
+        name="Amazon",
+        type="amazon",
+        is_active=True
+    )
+    
+    # Create a search object
+    search = DealSearch(
+        query="laptop",
+        category=MarketCategory.ELECTRONICS.value
+    )
+    
+    # Mock the MarketIntegrationFactory.search_products method
+    async def mock_search_products(self, market, query, page=1):
+        # Return mock product data
+        return [
+            {
+                "title": "Test Laptop",
+                "name": "Test Laptop",
+                "description": "A great laptop for testing",
+                "price": 999.99,
+                "original_price": 1299.99,
+                "currency": "USD",
+                "url": "https://example.com/test-laptop",
+                "image_url": "https://example.com/test-laptop.jpg",
+                "seller": "Test Seller",
+                "rating": 4.5,
+                "review_count": 100
+            }
+        ]
+    
+    # Apply the mock
+    from core.integrations.market_factory import MarketIntegrationFactory
+    monkeypatch.setattr(MarketIntegrationFactory, "search_products", mock_search_products)
+    
+    # Initialize the service
+    deal_service = DealService(db_session)
+    
+    # Search for deals
+    results = await deal_service.search_deals(search, user.id)
+    
+    # Verify that we got results from the real-time scraping
+    assert len(results) > 0
+    assert results[0].title == "Test Laptop"
+    assert results[0].price == Decimal("999.99")
+    assert results[0].source == DealSource.API.value
+    
+    # Verify that the deal was saved to the database
+    saved_deal_query = select(Deal).where(Deal.title == "Test Laptop")
+    result = await db_session.execute(saved_deal_query)
+    saved_deal = result.scalar_one_or_none()
+    
+    assert saved_deal is not None
+    assert saved_deal.price == Decimal("999.99")
+    assert saved_deal.deal_metadata["search_query"] == "laptop"
+    
+    # Now search again - should find the deal in the database
+    results_second = await deal_service.search_deals(search, user.id)
+    assert len(results_second) > 0
+    assert results_second[0].title == "Test Laptop" 

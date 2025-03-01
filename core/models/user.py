@@ -287,7 +287,7 @@ class User(Base):
     auth_tokens = relationship("AuthToken", back_populates="user", cascade="all, delete-orphan")
     token_transactions = relationship("TokenTransaction", back_populates="user", cascade="all, delete-orphan")
     token_balance_history = relationship("TokenBalanceHistory", back_populates="user", cascade="all, delete-orphan")
-    token_balances = relationship("TokenBalance", back_populates="user", cascade="all, delete-orphan")
+    token_balances = relationship("TokenBalance", back_populates="user", cascade="all, delete-orphan", viewonly=True)  # Add viewonly=True to prevent conflicts
     token_wallets = relationship("TokenWallet", back_populates="user", cascade="all, delete-orphan")
     chat_messages = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
@@ -296,6 +296,10 @@ class User(Base):
     user_preferences = relationship("UserPreferences", back_populates="user", cascade="all, delete-orphan")
     price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
     price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
+    
+    # Add relationships from relationships.py to fix conflicts
+    preferences = relationship("UserPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan", overlaps="user_preferences")
+    token_wallet = relationship("TokenWallet", back_populates="user", uselist=False, cascade="all, delete-orphan", overlaps="token_wallets")
 
     @property
     def is_active(self) -> bool:

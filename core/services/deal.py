@@ -3,7 +3,7 @@
 This module provides deal-related services for the AI Agentic Deals System.
 """
 
-from typing import List, Optional, Dict, Any, Union, Callable, TypeVar, cast
+from typing import List, Optional, Dict, Any, Union, Callable, TypeVar, cast, Tuple
 from datetime import datetime, timedelta
 import logging
 import json
@@ -27,6 +27,7 @@ from sqlalchemy.orm import joinedload
 import numpy as np
 
 from core.models.user import User
+from core.models.market import Market
 from core.models.tracked_deal import TrackedDeal
 from core.models.deal import (
     Deal,
@@ -40,8 +41,10 @@ from core.models.deal import (
     DealFilter,
     DealSearch,
     PriceHistory,
-    AIAnalysis
+    AIAnalysis,
+    MarketCategory
 )
+from core.models.enums import MarketType
 from core.repositories.deal import DealRepository
 from core.utils.redis import get_redis_client
 from core.utils.llm import create_llm_chain
@@ -887,7 +890,14 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
         search: DealSearch,
         user_id: Optional[UUID] = None
     ) -> List[DealResponse]:
-        """Search for deals based on criteria."""
+        """Search for deals based on criteria.
+        
+        This method can be used by both authenticated and unauthenticated users.
+        Unauthenticated users will receive a simplified response.
+        
+        If no deals are found in the database, this method will attempt to fetch
+        deals in real-time from supported marketplaces using the scraping API.
+        """
         try:
             logger.info(f"Searching deals with criteria: {search}")
             
@@ -932,20 +942,238 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                 query = query.order_by(Deal.created_at.desc())
                 
             # Execute query
-            result = await self.session.execute(query)
+            result = await self.db.execute(query)
             deals = result.scalars().all()
+            
+            # If no deals found in database, try real-time scraping
+            if not deals and search.query:
+                logger.info(f"No deals found in database for query '{search.query}'. Attempting real-time scraping.")
+                
+                # Get markets from database
+                markets_query = select(Market).where(Market.is_active == True)
+                markets_result = await self.db.execute(markets_query)
+                markets = markets_result.scalars().all()
+                
+                # If no active markets found, create default ones
+                if not markets:
+                    logger.warning("No active markets found for real-time scraping. Creating default markets.")
+                    try:
+                        # Create default Amazon market
+                        amazon_market = Market(
+                            name="Amazon",
+                            type=MarketType.AMAZON.value.lower(),
+                            description="Amazon marketplace for real-time scraping",
+                            api_endpoint="https://www.amazon.com",
+                            api_key="",
+                            is_active=True,
+                            rate_limit=100,
+                            created_at=datetime.utcnow(),
+                            updated_at=datetime.utcnow()
+                        )
+                        self.db.add(amazon_market)
+                        
+                        # Create default Walmart market
+                        walmart_market = Market(
+                            name="Walmart",
+                            type=MarketType.WALMART.value.lower(),
+                            description="Walmart marketplace for real-time scraping",
+                            api_endpoint="https://www.walmart.com",
+                            api_key="",
+                            is_active=True,
+                            rate_limit=100,
+                            created_at=datetime.utcnow(),
+                            updated_at=datetime.utcnow()
+                        )
+                        self.db.add(walmart_market)
+                        
+                        await self.db.commit()
+                        
+                        # Refresh markets list
+                        markets = [amazon_market, walmart_market]
+                        logger.info("Created default markets for real-time scraping.")
+                    except Exception as e:
+                        logger.error(f"Failed to create default markets: {str(e)}")
+                        await self.db.rollback()
+                
+                if not markets:
+                    logger.warning("No active markets found for real-time scraping")
+                    return []
+                
+                # Initialize market factory for scraping
+                from core.integrations.market_factory import MarketIntegrationFactory
+                from core.utils.redis import get_redis_client
+                
+                redis_client = await get_redis_client()
+                market_factory = MarketIntegrationFactory(redis_client=redis_client)
+                
+                # Track scraped deals
+                scraped_deals = []
+                
+                # Try to scrape from each supported market
+                for market in markets:
+                    try:
+                        # Only try Amazon and Walmart for now as they're supported by the factory
+                        if market.type.lower() not in ["amazon", "walmart"]:
+                            continue
+                            
+                        logger.info(f"Attempting to scrape deals from {market.name} for query '{search.query}'")
+                        
+                        # Search for products in the market
+                        products = await market_factory.search_products(
+                            market=market.type.lower(),
+                            query=search.query,
+                            page=1
+                        )
+                        
+                        if not products:
+                            logger.info(f"No products found in {market.name} for query '{search.query}'")
+                            continue
+                            
+                        logger.info(f"Found {len(products)} products in {market.name} for query '{search.query}'")
+                        
+                        # Process each product and create a deal
+                        for product in products[:10]:  # Limit to 10 products per market
+                            try:
+                                # Extract required fields
+                                deal_data = {
+                                    'user_id': user_id,  # Use the current user's ID if available
+                                    'market_id': market.id,
+                                    'title': product.get('title', product.get('name', '')),
+                                    'description': product.get('description', ''),
+                                    'price': Decimal(str(product.get('price', 0))),
+                                    'currency': product.get('currency', 'USD'),
+                                    'url': product.get('url', ''),
+                                    'source': DealSource.API.value,
+                                    'image_url': product.get('image_url', ''),
+                                    'category': search.category or MarketCategory.ELECTRONICS.value,
+                                    'seller_info': {
+                                        'name': product.get('seller', 'Unknown'),
+                                        'rating': product.get('rating', 0),
+                                        'reviews': product.get('review_count', 0)
+                                    },
+                                    'deal_metadata': {
+                                        'source': market.type.lower(),
+                                        'scraped_at': datetime.utcnow().isoformat(),
+                                        'search_query': search.query
+                                    }
+                                }
+                                
+                                # Set original price if available
+                                if 'original_price' in product and product['original_price']:
+                                    deal_data['original_price'] = Decimal(str(product['original_price']))
+                                
+                                # Create the deal in the database
+                                deal = await self._create_deal_from_scraped_data(deal_data)
+                                if deal:
+                                    scraped_deals.append(deal)
+                                    
+                            except Exception as e:
+                                logger.error(f"Error processing scraped product: {str(e)}")
+                                continue
+                                
+                    except Exception as e:
+                        logger.error(f"Error scraping from {market.name}: {str(e)}")
+                        continue
+                
+                # If we found scraped deals, use those
+                if scraped_deals:
+                    logger.info(f"Successfully scraped {len(scraped_deals)} deals for query '{search.query}'")
+                    deals = scraped_deals
+                else:
+                    logger.warning(f"No deals found via real-time scraping for query '{search.query}'")
+                    # Return empty list with metadata indicating scraping was attempted
+                    return {
+                        "deals": [],
+                        "total": 0,
+                        "metadata": {
+                            "scraping_attempted": True,
+                            "query": search.query,
+                            "timestamp": datetime.utcnow().isoformat()
+                        }
+                    }
             
             # Convert to response models
             response_deals = []
             for deal in deals:
                 response_deal = await self._convert_to_response(deal, user_id)
+                
+                # For unauthenticated users, limit the information provided
+                if user_id is None:
+                    # Simplify the response for unauthenticated users
+                    # Remove sensitive or premium information
+                    response_deal.price_history = []
+                    response_deal.market_analysis = None
+                    # Provide a simplified deal score if available
+                    if response_deal.deal_score:
+                        response_deal.deal_score = {
+                            "overall": response_deal.deal_score.get("overall", 0),
+                            "is_good_deal": response_deal.deal_score.get("overall", 0) > 70
+                        }
+                
                 response_deals.append(response_deal)
                 
-            return response_deals
+            return {
+                "deals": response_deals,
+                "total": len(response_deals),
+                "metadata": {
+                    "scraping_attempted": bool(not deals and search.query),
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            }
             
         except Exception as e:
             logger.error(f"Error searching deals: {str(e)}")
             raise DealError(f"Failed to search deals: {str(e)}")
+            
+    async def _create_deal_from_scraped_data(self, deal_data: Dict[str, Any]) -> Optional[Deal]:
+        """Create a deal from scraped data.
+        
+        Args:
+            deal_data: Dictionary containing deal data from scraping
+            
+        Returns:
+            Created Deal object or None if creation failed
+        """
+        try:
+            # Check if a deal with this URL already exists
+            existing_deal_query = select(Deal).where(Deal.url == deal_data['url'])
+            existing_result = await self.db.execute(existing_deal_query)
+            existing_deal = existing_result.scalar_one_or_none()
+            
+            if existing_deal:
+                logger.info(f"Deal with URL {deal_data['url']} already exists, skipping creation")
+                return existing_deal
+                
+            # Create new deal
+            new_deal = Deal(
+                user_id=deal_data['user_id'],
+                market_id=deal_data['market_id'],
+                title=deal_data['title'],
+                description=deal_data.get('description', ''),
+                url=deal_data['url'],
+                price=deal_data['price'],
+                original_price=deal_data.get('original_price'),
+                currency=deal_data['currency'],
+                source=deal_data['source'],
+                image_url=deal_data.get('image_url'),
+                category=deal_data['category'],
+                seller_info=deal_data.get('seller_info'),
+                deal_metadata=deal_data.get('deal_metadata'),
+                found_at=datetime.utcnow(),
+                status=DealStatus.ACTIVE
+            )
+            
+            self.db.add(new_deal)
+            await self.db.commit()
+            await self.db.refresh(new_deal)
+            
+            logger.info(f"Created new deal from scraped data: {new_deal.id}")
+            return new_deal
+            
+        except Exception as e:
+            logger.error(f"Error creating deal from scraped data: {str(e)}")
+            await self.db.rollback()
+            return None
 
     async def _convert_to_response(self, deal: Deal, user_id: Optional[UUID] = None) -> DealResponse:
         """Convert a deal model to a response model"""
@@ -1521,7 +1749,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                 # Get the goal from the repository if we have a goal_id
                 try:
                     from core.repositories.goal import GoalRepository
-                    goal_repo = GoalRepository(self.session)
+                    goal_repo = GoalRepository(self.db)
                     goal = await goal_repo.get_by_id(deal.goal_id)
                     if goal:
                         goals.append(goal)
@@ -1532,7 +1760,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             # This is a simplified matching algorithm
             try:
                 from core.repositories.goal import GoalRepository
-                goal_repo = GoalRepository(self.session)
+                goal_repo = GoalRepository(self.db)
                 all_goals = await goal_repo.get_active_goals()
                 
                 for goal in all_goals:
@@ -1811,7 +2039,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                 ]
             
             # Commit changes
-            await self.session.commit()
+            await self.db.commit()
             
             logger.info(f"Successfully refreshed deal {deal_id}")
             
@@ -1846,7 +2074,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             
         except Exception as e:
             logger.error(f"Failed to refresh deal {deal_id}: {str(e)}")
-            await self.session.rollback()
+            await self.db.rollback()
             raise DealError(f"Failed to refresh deal: {str(e)}")
 
     async def get_deals(

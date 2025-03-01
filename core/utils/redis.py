@@ -1,5 +1,6 @@
 """Redis utilities."""
 
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Union
@@ -137,16 +138,23 @@ class RedisClient:
             client: Optional Redis client for testing
         """
         if self._client is None:
-            if client is not None:
-                self._client = client
-            else:
-                self._client = await get_redis_client()
+            try:
+                if client is not None:
+                    self._client = client
+                else:
+                    self._client = await get_redis_client()
+            except Exception as e:
+                logger.warning(f"Failed to initialize Redis client: {str(e)}")
+                self._client = None
         return self
 
     async def get(self, key: str) -> Any:
         """Get value from cache."""
         if self._client is None:
             await self.init()
+            if self._client is None:
+                logger.warning("Redis client initialization failed, cannot get cache")
+                return None
         try:
             value = await self._client.get(self._prefix + key)
             if value is None:
@@ -166,6 +174,9 @@ class RedisClient:
         """Set value in cache with optional expiration."""
         if self._client is None:
             await self.init()
+            if self._client is None:
+                logger.warning("Redis client initialization failed, cannot set cache")
+                return False
         try:
             if isinstance(value, (dict, list)):
                 value = json.dumps(value)
@@ -184,6 +195,9 @@ class RedisClient:
         """Delete key from cache."""
         if self._client is None:
             await self.init()
+            if self._client is None:
+                logger.warning("Redis client initialization failed, cannot delete cache")
+                return False
         try:
             return bool(await self._client.delete(self._prefix + key))
         except Exception as e:
@@ -194,6 +208,9 @@ class RedisClient:
         """Clear all cache keys matching a pattern."""
         if self._client is None:
             await self.init()
+            if self._client is None:
+                logger.warning("Redis client initialization failed, cannot clear cache pattern")
+                return False
         try:
             cursor = 0
             while True:
@@ -211,6 +228,9 @@ class RedisClient:
         """Increment a key by the given amount."""
         if self._client is None:
             await self.init()
+            if self._client is None:
+                logger.warning("Redis client initialization failed, cannot increment key")
+                return 0
         try:
             return await self._client.incrby(self._prefix + key, amount)
         except Exception as e:
@@ -221,6 +241,9 @@ class RedisClient:
         """Check Redis connection."""
         if self._client is None:
             await self.init()
+            if self._client is None:
+                logger.warning("Redis client initialization failed, cannot ping")
+                return False
         try:
             return await self._client.ping()
         except Exception as e:
@@ -240,12 +263,18 @@ class RedisClient:
         """Create a pipeline."""
         if self._client is None:
             await self.init()
+            if self._client is None:
+                logger.warning("Redis client initialization failed, cannot create pipeline")
+                return None
         return self._client.pipeline()
 
     async def lpush(self, key: str, *values: str) -> int:
         """Push values to the head of a list."""
         if self._client is None:
             await self.init()
+            if self._client is None:
+                logger.warning("Redis client initialization failed, cannot push to list")
+                return 0
         try:
             return await self._client.lpush(self._prefix + key, *values)
         except Exception as e:

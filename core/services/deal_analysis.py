@@ -18,7 +18,7 @@ import logging
 import asyncio
 from decimal import Decimal
 
-from core.models.deal import Deal, DealStatus, DealPriority
+from core.models.deal import Deal, DealStatus, DealPriority, AIAnalysis
 from core.models.goal import Goal, GoalStatus
 from core.utils.redis import get_redis_client
 from core.utils.logger import get_logger
@@ -810,3 +810,76 @@ class DealAnalysisService:
         except Exception as e:
             logger.error(f"Error calculating feature match score: {str(e)}")
             return 0.5  # Default score on error 
+
+    async def generate_simplified_analysis(self, deal: Deal) -> AIAnalysis:
+        """
+        Generate a simplified analysis for unauthorized users.
+        
+        Args:
+            deal: Deal to analyze
+            
+        Returns:
+            AIAnalysis with basic information
+            
+        Raises:
+            DealAnalysisError: If analysis fails
+        """
+        try:
+            # Calculate basic discount percentage
+            original_price = deal.original_price or deal.price
+            discount_percentage = 0
+            if original_price > 0:
+                discount_percentage = ((original_price - deal.price) / original_price) * 100
+                
+            # Calculate basic score based on discount
+            score = min(discount_percentage / 50, 1.0)  # 50% discount = score of 1.0
+            
+            # Generate basic recommendations
+            recommendations = []
+            
+            # Check if deal is expiring soon
+            if deal.expires_at and (deal.expires_at - datetime.utcnow()).days < 3:
+                recommendations.append("Deal expires soon - consider acting quickly.")
+                
+            # Add discount-based recommendation
+            if discount_percentage > 30:
+                recommendations.append("Significant discount compared to original price.")
+            elif discount_percentage > 10:
+                recommendations.append("Moderate discount available.")
+            else:
+                recommendations.append("Limited discount on this item.")
+                
+            # Add a generic recommendation
+            recommendations.append("Compare with similar products before purchasing.")
+            
+            # Create analysis result
+            return AIAnalysis(
+                deal_id=deal.id,
+                score=float(score),
+                confidence=0.7,  # Fixed confidence for simplified analysis
+                price_analysis={
+                    "discount_percentage": float(discount_percentage),
+                    "is_good_deal": score > 0.7
+                },
+                market_analysis={
+                    "competition": "Unknown",
+                    "availability": "Available" if deal.is_available else "Unknown"
+                },
+                recommendations=recommendations,
+                analysis_date=datetime.utcnow(),
+                expiration_analysis="Expires soon" if deal.expires_at and (deal.expires_at - datetime.utcnow()).days < 3 else "No expiration data"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error generating simplified analysis: {str(e)}", exc_info=True)
+            # Return a very basic analysis on error
+            return AIAnalysis(
+                deal_id=deal.id,
+                score=0.5,
+                confidence=0.5,
+                price_analysis={"is_good_deal": False},
+                market_analysis={},
+                recommendations=["Unable to analyze this deal."],
+                analysis_date=datetime.utcnow(),
+                expiration_analysis="Unknown"
+            ) 

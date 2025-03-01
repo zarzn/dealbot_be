@@ -81,7 +81,7 @@ async def lifespan(app: FastAPI):
         
         # Initialize Redis client
         logger.info("Initializing Redis client...")
-        get_redis_client()  # Synchronous call
+        await get_redis_client()  # Use await for async function
         logger.info("Redis client initialized")
         
         yield
@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
     finally:
         # Cleanup
         logger.info("Shutting down application...")
-        close_redis_client()  # Synchronous call
+        await close_redis_client()  # Use await for async function
         logger.info("Redis client closed")
 
 def create_app() -> FastAPI:

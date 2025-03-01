@@ -5,7 +5,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 import logging
 import json
 from datetime import datetime
-import jwt
+from jose import jwt, JWTError, ExpiredSignatureError
 from core.config import settings
 from core.utils.redis import get_redis_client
 from core.services.auth import verify_token, TokenRefreshError
@@ -82,9 +82,14 @@ async def get_websocket_user(websocket: WebSocket) -> str:
             return None
 
         try:
+            # Get JWT secret key using the correct method
+            secret_key = settings.JWT_SECRET_KEY
+            if hasattr(secret_key, 'get_secret_value'):
+                secret_key = secret_key.get_secret_value()
+                
             payload = jwt.decode(
                 token,
-                settings.SECRET_KEY.get_secret_value(),
+                secret_key,
                 algorithms=[settings.JWT_ALGORITHM]
             )
             user_id = payload.get("sub")
@@ -93,11 +98,11 @@ async def get_websocket_user(websocket: WebSocket) -> str:
                 return None
             return user_id
                 
-        except jwt.ExpiredSignatureError:
+        except ExpiredSignatureError:
             logger.error("Token has expired")
             return None
             
-        except jwt.JWTError as e:
+        except JWTError as e:
             logger.error(f"Token verification error: {str(e)}")
             return None
 

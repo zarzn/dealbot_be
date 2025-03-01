@@ -7,9 +7,12 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 from uuid import UUID
 import logging
+import json
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import DatabaseError, RepositoryError
+from core.utils.redis import get_redis_client
+
 logger = logging.getLogger(__name__)
 
 class AnalyticsRepository:
@@ -17,6 +20,75 @@ class AnalyticsRepository:
 
     def __init__(self, session: AsyncSession):
         self.session = session
+        self._redis = None
+
+    async def _get_redis(self):
+        """Get Redis client lazily."""
+        if self._redis is None:
+            self._redis = await get_redis_client()
+        return self._redis
+
+    async def get_deal_analysis(self, deal_id: UUID) -> Optional[Dict[str, Any]]:
+        """Get cached analysis for a deal.
+        
+        Args:
+            deal_id: The UUID of the deal
+            
+        Returns:
+            Dict containing deal analysis or None if not cached
+            
+        Raises:
+            DatabaseError: If there is an error retrieving the analysis
+        """
+        try:
+            redis = await self._get_redis()
+            if not redis:
+                return None
+                
+            # Try to get from cache
+            cache_key = f"deal:analysis:{deal_id}"
+            cached_data = await redis.get(cache_key)
+            
+            if not cached_data:
+                return None
+                
+            return json.loads(cached_data)
+        except Exception as e:
+            logger.error(f"Error getting deal analysis from cache: {str(e)}")
+            # Return None instead of raising to allow fallback to calculation
+            return None
+
+    async def save_deal_analysis(
+        self,
+        deal_id: UUID,
+        analysis_data: Dict[str, Any],
+        ttl: int = 3600  # Default 1 hour cache
+    ) -> None:
+        """Save deal analysis to cache.
+        
+        Args:
+            deal_id: The UUID of the deal
+            analysis_data: Dict containing analysis data
+            ttl: Time to live in seconds
+            
+        Raises:
+            DatabaseError: If there is an error saving the analysis
+        """
+        try:
+            redis = await self._get_redis()
+            if not redis:
+                return
+                
+            # Save to cache
+            cache_key = f"deal:analysis:{deal_id}"
+            await redis.set(
+                cache_key,
+                json.dumps(analysis_data),
+                ex=ttl
+            )
+        except Exception as e:
+            logger.error(f"Error saving deal analysis to cache: {str(e)}")
+            # Log but don't raise to avoid breaking the main flow
 
     async def get_market_analytics(self, market_id: UUID) -> Dict[str, Any]:
         """Get analytics for a specific market.

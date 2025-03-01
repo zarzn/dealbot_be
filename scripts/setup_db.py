@@ -11,34 +11,51 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import ProgrammingError
+from passlib.context import CryptContext
+from uuid import uuid4
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Password hashing context
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def get_password_hash(password: str) -> str:
+    """Generate password hash."""
+    return pwd_context.hash(password)
+
 def reset_database():
     """Reset the database by dropping and recreating it."""
     try:
-        # Connect to postgres database to drop/create deals database
-        engine = create_engine('postgresql://postgres:12345678@localhost:5432/postgres')
-        conn = engine.connect()
-        conn.execute(text("COMMIT"))  # Close any open transactions
-        
-        # Drop connections to deals database
-        conn.execute(text("""
-            SELECT pg_terminate_backend(pg_stat_activity.pid)
-            FROM pg_stat_activity
-            WHERE pg_stat_activity.datname IN ('deals', 'deals_test')
-            AND pid <> pg_backend_pid()
-        """))
+        # Use docker exec to run commands in the postgres container
+        subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-c', 
+             "SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname IN ('deals', 'deals_test') AND pid <> pg_backend_pid()"],
+            check=True
+        )
         
         # Drop and recreate databases
-        conn.execute(text("DROP DATABASE IF EXISTS deals"))
-        conn.execute(text("DROP DATABASE IF EXISTS deals_test"))
-        conn.execute(text("CREATE DATABASE deals"))
-        conn.execute(text("CREATE DATABASE deals_test"))
-        conn.close()
-        engine.dispose()
+        subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-c', 
+             "DROP DATABASE IF EXISTS deals"],
+            check=True
+        )
+        subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-c', 
+             "DROP DATABASE IF EXISTS deals_test"],
+            check=True
+        )
+        subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-c', 
+             "CREATE DATABASE deals"],
+            check=True
+        )
+        subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-c', 
+             "CREATE DATABASE deals_test"],
+            check=True
+        )
         
         logger.info("Database reset completed successfully")
         return True
@@ -52,40 +69,49 @@ def init_database():
     try:
         # Initialize both main and test databases
         for db_name in ['deals', 'deals_test']:
-            # Connect to database
-            engine = create_engine(f'postgresql://postgres:12345678@localhost:5432/{db_name}')
-            conn = engine.connect()
-            
             # Set timezone to UTC
-            conn.execute(text(f"SET timezone TO 'UTC'"))
-            conn.execute(text(f"ALTER DATABASE {db_name} SET timezone TO 'UTC'"))
+            subprocess.run(
+                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', db_name, '-c', 
+                 f"SET timezone TO 'UTC'"],
+                check=True
+            )
+            subprocess.run(
+                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', db_name, '-c', 
+                 f"ALTER DATABASE {db_name} SET timezone TO 'UTC'"],
+                check=True
+            )
             
             # Create required extensions
-            conn.execute(text("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\""))
+            subprocess.run(
+                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', db_name, '-c', 
+                 "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\""],
+                check=True
+            )
             
             # Create test table
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS test_table (
-                    id SERIAL PRIMARY KEY,
-                    name TEXT NOT NULL
-                )
-            """))
+            subprocess.run(
+                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', db_name, '-c', 
+                 "CREATE TABLE IF NOT EXISTS test_table (id SERIAL PRIMARY KEY, name TEXT NOT NULL)"],
+                check=True
+            )
             
             # Insert test data
-            conn.execute(text("INSERT INTO test_table (name) VALUES ('test') ON CONFLICT DO NOTHING"))
-            conn.execute(text("COMMIT"))
+            subprocess.run(
+                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', db_name, '-c', 
+                 "INSERT INTO test_table (name) VALUES ('test') ON CONFLICT DO NOTHING"],
+                check=True
+            )
             
             # List current tables
-            result = conn.execute(text("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public'
-            """))
-            tables = [row[0] for row in result]
+            result = subprocess.run(
+                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', db_name, '-c', 
+                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
             
-            logger.info(f"Current tables in {db_name} database: %s", ", ".join(tables))
-            conn.close()
-            engine.dispose()
+            logger.info(f"Current tables in {db_name} database: {result.stdout}")
         
         logger.info("Database initialization completed successfully")
         return True
@@ -97,21 +123,15 @@ def init_database():
 def run_migrations():
     """Run alembic migrations."""
     try:
-        # Get the current working directory
-        current_dir = os.getcwd()
-        
         # Run migrations for both main and test databases
         for db_name in ['deals', 'deals_test']:
-            # Set the database URL in environment
-            os.environ['DATABASE_URL'] = f'postgresql://postgres:12345678@localhost:5432/{db_name}'
-            
-            # Run alembic from the backend directory
+            # Run alembic inside the Docker container
             result = subprocess.run(
-                ['alembic', 'upgrade', 'head'],
+                ['docker', 'exec', 'deals_backend', 'bash', '-c', 
+                 f'cd /app && DATABASE_URL=postgresql://postgres:12345678@deals_postgres:5432/{db_name} alembic upgrade head'],
                 capture_output=True,
                 text=True,
-                check=True,
-                cwd=current_dir  # Use current directory instead of backend_dir
+                check=True
             )
             logger.info(f"Migrations for {db_name}:\n{result.stdout}")
             
@@ -123,6 +143,51 @@ def run_migrations():
         return False
     except Exception as e:
         logger.error(f"Failed to run migrations: {str(e)}")
+        return False
+
+def create_default_user():
+    """Create a default user in the database."""
+    try:
+        # Use docker exec to run SQL commands in the postgres container
+        # First check if user already exists
+        result = subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'deals', '-c', 
+             "SELECT id FROM users WHERE email = 'gluked@gmail.com'"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        # If user exists, skip creation
+        if "0 rows" not in result.stdout:
+            logger.info("Default user already exists, skipping creation")
+            return True
+        
+        # Create default user
+        hashed_password = get_password_hash("Qwerty123!")
+        user_id = str(uuid4())
+        
+        # Insert user into database
+        insert_query = f"""
+        INSERT INTO users (
+            id, email, name, password, status, preferences, notification_channels,
+            email_verified, created_at, updated_at
+        ) VALUES (
+            '{user_id}', 'gluked@gmail.com', 'Anton M', '{hashed_password}', 'active', '{{}}', '[]',
+            TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        """
+        
+        subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'deals', '-c', insert_query],
+            check=True
+        )
+        
+        logger.info("Default user created successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to create default user: {str(e)}")
         return False
 
 def setup_database():
@@ -145,6 +210,12 @@ def setup_database():
     logger.info("Step 3: Running migrations...")
     if not run_migrations():
         logger.error("Database migrations failed")
+        return False
+    
+    # Step 4: Create default user
+    logger.info("Step 4: Creating default user...")
+    if not create_default_user():
+        logger.error("Default user creation failed")
         return False
     
     logger.info("Database setup completed successfully!")

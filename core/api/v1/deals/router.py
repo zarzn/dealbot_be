@@ -1,11 +1,14 @@
 """Deals API module."""
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Body
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, Body, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
 from datetime import datetime, timedelta
 from decimal import Decimal
+import logging
+import time
+from pydantic import BaseModel
 
 from core.database import get_async_db_session as get_db
 from core.models.deal import (
@@ -18,7 +21,8 @@ from core.models.deal import (
     DealSearch,
     AIAnalysis,
     PriceHistory,
-    PriceHistoryResponse
+    PriceHistoryResponse,
+    AIAnalysisResponse
 )
 from core.models.enums import DealStatus, MarketType
 from core.models.user import User, UserInDB
@@ -26,15 +30,32 @@ from core.services.deal import DealService
 from core.services.analytics import AnalyticsService
 from core.services.recommendation import RecommendationService
 from core.services.token import TokenService
+from core.services.redis import get_redis_service, RedisService
+from core.utils.redis import get_redis_client
+from core.exceptions import RateLimitError, RateLimitExceededError
 from core.api.v1.dependencies import (
     get_deal_service,
     get_analytics_service,
     get_recommendation_service,
     get_token_service,
-    get_current_user
+    get_current_user,
+    get_current_user_optional
 )
+from core.repositories.deal import DealRepository
+from core.repositories.analytics import AnalyticsRepository
+from core.repositories.market import MarketRepository
+from core.services.deal_analysis import DealAnalysisService
+from core.services.market import MarketService
+from core.exceptions import NotFoundException, ValidationError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["deals"])
+
+# Rate limit constants for unauthorized users
+UNAUTH_SEARCH_LIMIT = 10  # 10 searches per minute
+UNAUTH_ANALYSIS_LIMIT = 20  # 20 analyses per minute
+RATE_LIMIT_WINDOW = 60  # 1 minute window
 
 async def validate_tokens(
     token_service: TokenService,
@@ -49,6 +70,67 @@ async def validate_tokens(
             status_code=402,
             detail=f"Token validation failed: {str(e)}"
         )
+
+async def check_rate_limit(
+    request: Request,
+    key_prefix: str,
+    limit: int,
+    window: int
+) -> None:
+    """
+    Check rate limit for unauthorized users.
+    
+    Args:
+        request: The request object
+        key_prefix: Prefix for the rate limit key
+        limit: Maximum number of requests allowed in the window
+        window: Time window in seconds
+        
+    Raises:
+        RateLimitExceededError: If the rate limit is exceeded
+    """
+    try:
+        # Get client IP
+        client_ip = request.client.host
+        
+        # Create rate limit key
+        rate_key = f"ratelimit:{key_prefix}:{client_ip}"
+        
+        # Get Redis client
+        redis = await get_redis_client()
+        if not redis:
+            # If Redis is not available, allow the request
+            return
+            
+        # Get current count
+        count = await redis.get(rate_key)
+        count = int(count) if count and count.isdigit() else 0
+        
+        # Check if limit exceeded
+        if count >= limit:
+            reset_time = datetime.utcnow() + timedelta(seconds=window)
+            raise RateLimitExceededError(
+                message=f"Rate limit exceeded: {limit} requests per {window} seconds",
+                limit=limit,
+                reset_at=reset_time
+            )
+            
+        # Increment count
+        pipe = redis.pipeline()
+        pipe.incr(rate_key)
+        
+        # Set expiry if this is the first request
+        if count == 0:
+            pipe.expire(rate_key, window)
+            
+        await pipe.execute()
+        
+    except RateLimitExceededError:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking rate limit: {str(e)}")
+        # If there's an error checking the rate limit, allow the request
+        return
 
 async def process_deals_background(background_tasks: BackgroundTasks, deals: List[Any], deal_service: DealService):
     """Process deals in background."""
@@ -98,11 +180,11 @@ async def get_deals(
 async def get_deal(
     deal_id: UUID,
     db: AsyncSession = Depends(get_db),
+    deal_service: DealService = Depends(get_deal_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
     """Get a specific deal"""
-    deal_service = DealService(db)
-    return await deal_service.get_deal(current_user.id, deal_id)
+    return await deal_service.get_deal(deal_id, current_user.id)
 
 @router.get("/{deal_id}/analytics", response_model=DealAnalytics)
 async def get_deal_analytics(
@@ -358,23 +440,94 @@ async def stop_tracking_deal(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/{deal_id}/analysis", response_model=AIAnalysis)
+@router.get("/analysis/{deal_id}", response_model=AIAnalysisResponse)
 async def get_deal_analysis(
+    request: Request,
     deal_id: UUID,
-    analytics_service: AnalyticsService = Depends(get_analytics_service),
-    token_service: TokenService = Depends(get_token_service),
-    current_user: UserInDB = Depends(get_current_user)
+    current_user: Optional[User] = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db)
 ):
-    """Get AI analysis for a specific deal"""
+    """
+    Get AI analysis for a deal.
+    
+    This endpoint can be accessed by both authenticated and unauthenticated users.
+    Unauthenticated users are subject to rate limiting.
+    """
     try:
-        await validate_tokens(token_service, current_user.id, "deal_analysis")
+        # Check rate limit for unauthenticated users
+        if current_user is None:
+            await check_rate_limit(
+                request, 
+                f"unauth:analysis", 
+                UNAUTH_ANALYSIS_LIMIT, 
+                RATE_LIMIT_WINDOW
+            )
+        
+        # Get user ID if authenticated
+        user_id = current_user.id if current_user else None
+        
+        # Initialize repositories
+        deal_repository = DealRepository(db)
+        analytics_repository = AnalyticsRepository(db)
+        
+        # Initialize services
+        deal_service = DealService(db, deal_repository)
+        deal_analysis_service = DealAnalysisService(
+            db, 
+            MarketService(db, MarketRepository(db)),
+            deal_service
+        )
+        analytics_service = AnalyticsService(
+            analytics_repository=analytics_repository,
+            deal_repository=deal_repository
+        )
+        
+        # Get analysis from analytics service
         analysis = await analytics_service.get_deal_analysis(
             deal_id=deal_id,
-            user_id=current_user.id
+            user_id=user_id,
+            deal_analysis_service=deal_analysis_service
         )
-        return analysis
+        
+        if not analysis:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Analysis for deal {deal_id} not found"
+            )
+            
+        # Convert to response model
+        return AIAnalysisResponse(
+            deal_id=analysis.deal_id,
+            score=analysis.score,
+            confidence=analysis.confidence,
+            price_analysis=analysis.price_analysis,
+            market_analysis=analysis.market_analysis,
+            recommendations=analysis.recommendations,
+            analysis_date=analysis.analysis_date,
+            expiration_analysis=analysis.expiration_analysis
+        )
+        
+    except RateLimitExceededError as e:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: {str(e)}"
+        )
+    except NotFoundException as e:
+        raise HTTPException(
+            status_code=404,
+            detail=str(e)
+        )
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=str(e)
+        )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error getting deal analysis: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get deal analysis: {str(e)}"
+        )
 
 @router.get("/{deal_id}/similar", response_model=List[DealResponse])
 async def get_similar_deals(
@@ -548,30 +701,69 @@ async def compare_deals(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.post("/search", response_model=List[DealResponse])
+# Define a response model for search results with metadata
+class SearchResponse(BaseModel):
+    deals: List[DealResponse]
+    total: int
+    metadata: Optional[Dict[str, Any]] = None
+
+@router.post("/search", response_model=SearchResponse)
 async def search_deals(
+    request: Request,
     search: DealSearch,
-    background_tasks: BackgroundTasks,
-    deal_service: DealService = Depends(get_deal_service),
-    token_service: TokenService = Depends(get_token_service),
-    current_user: Optional[UserInDB] = Depends(get_current_user),
-) -> List[DealResponse]:
+    current_user: Optional[User] = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Search for deals based on criteria
-    """
-    # Validate token usage if user is authenticated
-    if current_user:
-        await validate_tokens(token_service, current_user.id, "deal_search")
-        
-    # Set up background processing
-    deal_service.set_background_tasks(background_tasks)
+    Search for deals based on criteria.
     
-    # Perform search
-    deals = await deal_service.search_deals(
-        search,
-        user_id=current_user.id if current_user else None
-    )
-    return deals
+    This endpoint can be accessed by both authenticated and unauthenticated users.
+    Unauthenticated users are subject to rate limiting.
+    
+    If no deals are found in the database matching the search criteria, the system
+    will automatically attempt to fetch deals in real-time from supported marketplaces
+    using the scraping API. These newly scraped deals will be stored in the database
+    for future searches.
+    """
+    try:
+        # Check rate limit for unauthenticated users
+        if current_user is None:
+            await check_rate_limit(
+                request, 
+                f"unauth:search", 
+                UNAUTH_SEARCH_LIMIT, 
+                RATE_LIMIT_WINDOW
+            )
+        
+        # Get user ID if authenticated
+        user_id = current_user.id if current_user else None
+        
+        # Initialize repositories and services
+        deal_repository = DealRepository(db)
+        deal_service = DealService(db, deal_repository)
+        
+        # Search deals
+        result = await deal_service.search_deals(search, user_id)
+        
+        # Check if result is a dictionary with metadata
+        if isinstance(result, dict) and "deals" in result:
+            # Return the full response including metadata
+            return result
+        
+        # For backward compatibility, if result is a list, wrap it
+        return {"deals": result, "total": len(result), "metadata": {}}
+        
+    except RateLimitExceededError as e:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error searching deals: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to search deals: {str(e)}"
+        )
 
 @router.post("", response_model=DealResponse, status_code=status.HTTP_201_CREATED)
 async def create_deal(

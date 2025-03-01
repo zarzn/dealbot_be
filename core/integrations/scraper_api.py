@@ -97,12 +97,17 @@ class ScraperAPIService:
             url = target_url
 
         # Check cache if TTL provided
-        if cache_ttl:
-            cache_key = f"scraper_api:{url}:{str(params)}"
-            cached_response = await self.redis_client.get(cache_key)
-            if cached_response:
-                logger.debug(f"Cache hit for {url}")
-                return cached_response
+        cached_response = None
+        if cache_ttl and self.redis_client:
+            try:
+                cache_key = f"scraper_api:{url}:{str(params)}"
+                cached_response = await self.redis_client.get(cache_key)
+                if cached_response:
+                    logger.debug(f"Cache hit for {url}")
+                    return cached_response
+            except Exception as e:
+                logger.warning(f"Redis cache error (ignoring and continuing): {str(e)}")
+                # Continue without caching if Redis fails
 
         async with self.semaphore:
             for attempt in range(retries):
@@ -133,12 +138,16 @@ class ScraperAPIService:
                                     )
 
                                 # Cache successful response if TTL provided
-                                if cache_ttl:
-                                    await self.redis_client.set(
-                                        cache_key,
-                                        result,
-                                        expire=cache_ttl
-                                    )
+                                if cache_ttl and self.redis_client:
+                                    try:
+                                        await self.redis_client.set(
+                                            cache_key,
+                                            result,
+                                            expire=cache_ttl
+                                        )
+                                    except Exception as e:
+                                        logger.warning(f"Redis cache saving error (ignoring and continuing): {str(e)}")
+                                        # Continue without caching if Redis fails
 
                                 # Track credit usage
                                 await self._track_credit_usage('ecommerce')
@@ -222,13 +231,21 @@ class ScraperAPIService:
     
     async def _track_credit_usage(self, request_type: str = 'ecommerce'):
         """Track API credit usage."""
-        credits = 5 if request_type == 'ecommerce' else 1
-        date_key = datetime.utcnow().strftime('%Y-%m')
-        
-        async with self.redis_client.pipeline() as pipe:
-            pipe.incrby(f'scraper_api:credits:{date_key}', credits)
-            pipe.expire(f'scraper_api:credits:{date_key}', 60 * 60 * 24 * 35)  # 35 days
-            await pipe.execute()
+        if not self.redis_client:
+            logger.warning("Redis client not available, skipping credit tracking")
+            return
+            
+        try:
+            credits = 5 if request_type == 'ecommerce' else 1
+            date_key = datetime.utcnow().strftime('%Y-%m')
+            
+            async with self.redis_client.pipeline() as pipe:
+                pipe.incrby(f'scraper_api:credits:{date_key}', credits)
+                pipe.expire(f'scraper_api:credits:{date_key}', 60 * 60 * 24 * 35)  # 35 days
+                await pipe.execute()
+        except Exception as e:
+            logger.warning(f"Redis credit tracking error (ignoring and continuing): {str(e)}")
+            # Continue without tracking if Redis fails
 
     async def get_credit_usage(self, date_key: Optional[str] = None) -> Optional[int]:
         """Get API credit usage for a given month.
@@ -239,11 +256,19 @@ class ScraperAPIService:
         Returns:
             Number of credits used or None if no data found.
         """
-        if date_key is None:
-            date_key = datetime.utcnow().strftime('%Y-%m')
+        if not self.redis_client:
+            logger.warning("Redis client not available, cannot get credit usage")
+            return None
             
-        credits = await self.redis_client.get(f'scraper_api:credits:{date_key}')
-        return int(credits) if credits is not None else None
+        try:
+            if date_key is None:
+                date_key = datetime.utcnow().strftime('%Y-%m')
+                
+            credits = await self.redis_client.get(f'scraper_api:credits:{date_key}')
+            return int(credits) if credits is not None else None
+        except Exception as e:
+            logger.warning(f"Redis credit usage retrieval error: {str(e)}")
+            return None
     
     async def search_amazon(
         self,

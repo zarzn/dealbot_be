@@ -15,12 +15,20 @@ from core.services.deal_analysis import DealAnalysisService
 from core.services.auth import get_current_user, get_current_active_user
 from core.services.agent import AgentService
 from core.services.recommendation import RecommendationService
+from core.models.user import User
+from core.dependencies import get_optional_user
 
 from core.repositories.market import MarketRepository
 from core.repositories.deal import DealRepository
 from core.repositories.goal import GoalRepository
 from core.repositories.token import TokenRepository
 from core.repositories.analytics import AnalyticsRepository
+
+async def get_current_user_optional(
+    db: AsyncSession = Depends(get_db)
+) -> Optional[User]:
+    """Get current user if authenticated, otherwise return None."""
+    return await get_optional_user(db=db)
 
 async def get_token_service(db: AsyncSession = Depends(get_db)) -> TokenService:
     """Get token service instance."""
