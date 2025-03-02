@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any
 from uuid import UUID, uuid4
 import logging
 import json
+from enum import Enum
 
 from pydantic import BaseModel, Field, validator, confloat
 from sqlalchemy import (
@@ -24,6 +25,14 @@ from core.models.base import Base
 from core.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
+
+class ScoreType(str, Enum):
+    """Score type enumeration."""
+    AI = "ai"
+    USER = "user"
+    SYSTEM = "system"
+    COMBINED = "combined"
+    MARKET = "market"
 
 class DealMatch(Base):
     """Model for matching deals to goals."""

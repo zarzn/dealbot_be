@@ -36,4 +36,27 @@ class AgentFactory(IAgentFactory):
         elif agent_type == "market":
             return MarketSearchService(market_repository=config.get("market_repository"))
         else:
-            raise AgentInitializationError(f"Unsupported agent type: {agent_type}") 
+            raise AgentInitializationError(f"Unsupported agent type: {agent_type}")
+
+async def create_agent(
+    agent_type: str,
+    use_crew: bool = False,
+    config: Optional[Dict[str, Any]] = None
+) -> IAgent:
+    """Standalone function to create an agent of specified type.
+    
+    This is a convenience function that uses the AgentFactory class.
+    
+    Args:
+        agent_type: Type of agent to create
+        use_crew: Whether to use CrewAI implementation
+        config: Optional configuration for the agent
+        
+    Returns:
+        IAgent: Created agent instance
+        
+    Raises:
+        AgentInitializationError: If agent type is not supported
+    """
+    factory = AgentFactory()
+    return await factory.create_agent(agent_type, use_crew, config) 

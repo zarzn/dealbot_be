@@ -40,43 +40,53 @@ pip install -r requirements.txt
 #### Environment Configuration
 1. Copy environment template:
 ```powershell
-Copy-Item .env.development .env
+Copy-Item .env.example .env.development
 ```
 
-2. Configure environment variables in `.env`:
+2. Update environment variables in `.env.development` as needed. The file includes:
 ```env
+# Application Configuration
+PROJECT_NAME="AI Agentic Deals System"
+VERSION="1.0.0"
+DEBUG=true
+ENVIRONMENT="development"
+
 # Database Configuration
-DATABASE_URL=postgresql+asyncpg://postgres:password@deals_postgres:5432/deals
 POSTGRES_USER=postgres
-POSTGRES_PASSWORD=password
+POSTGRES_PASSWORD=12345678
 POSTGRES_DB=deals
 POSTGRES_HOST=deals_postgres
 POSTGRES_PORT=5432
 
 # Redis Configuration
 REDIS_URL=redis://deals_redis:6379/0
+REDIS_HOST=deals_redis
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=your_redis_password
+REDIS_SSL=false
 
-# API Keys
-WALMART_API_KEY=your_walmart_api_key
-DEEPSEEK_API_KEY=your_deepseek_api_key
-OPENAI_API_KEY=your_openai_api_key
+# API Keys (use dummy values for development)
+AMAZON_ACCESS_KEY=dummy_key
+AMAZON_SECRET_KEY=dummy_secret
+WALMART_CLIENT_ID=dummy_id
+WALMART_CLIENT_SECRET=dummy_secret
+DEEPSEEK_API_KEY=dummy_key
+OPENAI_API_KEY=dummy_key
+```
 
-# JWT Configuration
-JWT_SECRET=your_jwt_secret
-ENCRYPTION_KEY=your_encryption_key
+3. For testing, create a test environment file:
+```powershell
+Copy-Item .env.example .env.test
+```
 
-# Blockchain Configuration
-SOL_NETWORK_RPC=your_solana_rpc_url
-TOKEN_CONTRACT_ADDRESS=your_token_contract_address
-TOKEN_REQUIRED_BALANCE=1.0
-TOKEN_SEARCH_COST=0.1
-
-# Agent Configuration
-AGENT_MEMORY_LIMIT=512MB
-AGENT_TIMEOUT=30
-AGENT_MAX_RETRIES=3
-AGENT_BATCH_SIZE=100
-AGENT_QUEUE_PREFIX=agent
+4. Update `.env.test` with test-specific values:
+```env
+ENVIRONMENT=test
+DEBUG=true
+POSTGRES_DB=deals_test
+POSTGRES_HOST=localhost
+REDIS_HOST=localhost
 ```
 
 ### 3. Frontend Setup

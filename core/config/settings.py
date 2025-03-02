@@ -77,18 +77,26 @@ from pydantic_settings import BaseSettings
 # Get the base directory
 _BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
+# Debug print statements
+print("DEBUG: Environment variables in settings.py:")
+print(f"DEBUG: host: {os.environ.get('host')}")
+print(f"DEBUG: hosts: {os.environ.get('hosts')}")
+print(f"DEBUG: REDIS_HOST: {os.environ.get('REDIS_HOST')}")
+print(f"DEBUG: REDIS_URL: {os.environ.get('REDIS_URL')}")
+print(f"DEBUG: REDIS_PASSWORD: {os.environ.get('REDIS_PASSWORD')}")
+
 class Settings(BaseSettings):
     """Application settings.
     
     This class defines all configuration settings for the application.
     Settings are loaded from environment variables and .env files.
     """
-    
+
     # Token expiration times
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30)
     REFRESH_TOKEN_EXPIRE_DAYS: int = Field(default=7)
     PASSWORD_RESET_TOKEN_EXPIRE_HOURS: int = Field(default=24)
-    
+
     # Application settings
     APP_NAME: str = Field(default="AI Agentic Deals", description="Application name")
     APP_VERSION: str = Field(default="1.0.0", description="Application version")
@@ -96,15 +104,15 @@ class Settings(BaseSettings):
     APP_HOST: str = Field(default="0.0.0.0", description="Application host")
     APP_PORT: int = Field(default=8000, description="Application port")
     APP_WORKERS: int = Field(default=4, description="Number of application workers")
-    
+
     # Testing settings
     TESTING: bool = Field(default=True, description="Testing mode")
     SKIP_TOKEN_VERIFICATION: bool = Field(default=False, description="Skip token verification")
     TEST_USER_ID: str = Field(default="00000000-0000-4000-a000-000000000000", description="Test user ID")
-    
+
     # Base directory
     BASE_DIR: str = str(_BASE_DIR)
-    
+
     # Logging settings
     LOG_LEVEL: Union[str, int] = Field(default=logging.INFO, description="Logging level")
     LOG_FORMAT: str = Field(default="%(asctime)s %(levelname)s %(message)s", description="Log format")
@@ -117,7 +125,7 @@ class Settings(BaseSettings):
         default=["/health", "/metrics"],
         description="Paths to exclude from logging"
     )
-    
+
     # Database settings
     DATABASE_URL: Optional[PostgresDsn] = Field(
         default="postgresql+asyncpg://postgres:12345678@deals_postgres:5432/deals",
@@ -128,7 +136,7 @@ class Settings(BaseSettings):
     POSTGRES_DB: str = Field(default="deals")
     POSTGRES_HOST: str = Field(default="localhost")
     POSTGRES_PORT: str = Field(default="5432")
-    
+
     # Database pool settings
     DB_POOL_SIZE: int = Field(default=5, description="Database pool size")
     DB_MAX_OVERFLOW: int = Field(default=10, description="Maximum pool overflow")
@@ -138,7 +146,7 @@ class Settings(BaseSettings):
     DB_RETRY_DELAY: float = Field(default=1.0, description="Delay between retries in seconds")
     DB_IDLE_TIMEOUT: int = Field(default=300, description="Idle connection timeout in seconds")
     DB_ECHO: bool = Field(default=True, description="Enable SQL query logging")
-    
+
     # Redis settings
     REDIS_URL: RedisDsn = Field(default="redis://deals_redis:6379/0")
     REDIS_HOST: str = Field(default="redis")
@@ -165,17 +173,18 @@ class Settings(BaseSettings):
     REDIS_RETRY_DELAY: float = Field(default=1.0)
     REDIS_RETRY_MAX_DELAY: float = Field(default=5.0)
     REDIS_RETRY_JITTER: bool = Field(default=True)
-    
+    hosts: List[str] = Field(default=["localhost"])
+
     # JWT settings
     JWT_SECRET_KEY: SecretStr = Field(default="test-secret-key")
     JWT_SECRET: SecretStr = Field(default="test-jwt-secret-key")
     JWT_ALGORITHM: str = Field(default="HS256")
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=30)
     JWT_REFRESH_TOKEN_EXPIRE_MINUTES: int = Field(default=7 * 24 * 60)
-    
+
     # NextAuth settings
     NEXTAUTH_SECRET: SecretStr = Field(default="test-nextauth-secret-key")
-    
+
     # API settings
     API_V1_STR: str = Field(default="/api/v1")
     API_V1_PREFIX: str = Field(default="/api/v1")
@@ -188,7 +197,7 @@ class Settings(BaseSettings):
     API_OPENAPI_URL: str = Field(default="/openapi.json")
     API_ROOT_PATH: str = Field(default="")
     API_DEBUG: bool = Field(default=False)
-    
+
     # Security settings
     SECRET_KEY: SecretStr = Field(default="test-secret-key")
     CORS_ORIGINS: List[str] = Field(default=["*"])
@@ -199,7 +208,7 @@ class Settings(BaseSettings):
         },
         description="Headers to be masked in logs"
     )
-    
+
     # Authentication settings
     AUTH_EXCLUDE_PATHS: List[str] = Field(
         default=[
@@ -216,13 +225,13 @@ class Settings(BaseSettings):
             "/api/v1/metrics"
         ]
     )
-    
+
     # Rate limiting settings
     RATE_LIMIT_PER_SECOND: int = Field(default=30)
     RATE_LIMIT_PER_MINUTE: int = Field(default=500)
     RATE_LIMIT_WINDOW: int = Field(default=60)  # Window in seconds
     RATE_LIMIT_BURST: int = Field(default=50)  # Burst limit
-    
+
     # External API settings
     SCRAPER_API_KEY: SecretStr = Field(default="test-scraper-key")
     SCRAPER_API_BASE_URL: str = Field(default="https://api.scraperapi.com")
@@ -231,7 +240,7 @@ class Settings(BaseSettings):
     SCRAPER_API_MONTHLY_LIMIT: int = Field(default=10000)
     SCRAPER_API_TIMEOUT: int = Field(default=30)
     SCRAPER_API_CACHE_TTL: int = Field(default=3600)
-    
+
     # Market integration settings
     AMAZON_ACCESS_KEY: Optional[SecretStr] = Field(default=None, description="Amazon API access key")
     AMAZON_SECRET_KEY: Optional[SecretStr] = Field(default=None, description="Amazon API secret key")
@@ -241,19 +250,19 @@ class Settings(BaseSettings):
     WALMART_CLIENT_SECRET: Optional[SecretStr] = Field(default=None, description="Walmart API client secret")
     MARKET_DEFAULT_RATE_LIMIT: int = Field(default=50, description="Default market rate limit")
     MARKET_TIMEOUT: int = Field(default=30, description="Market request timeout in seconds")
-    
+
     # LLM settings
     DEEPSEEK_API_KEY: SecretStr = Field(default="test-deepseek-key")
     OPENAI_API_KEY: SecretStr = Field(default="test-openai-key")
     LLM_MODEL: str = Field(default="deepseek", description="Default LLM model to use")
     LLM_TEMPERATURE: float = Field(default=0.7, description="LLM temperature setting")
     LLM_MAX_TOKENS: int = Field(default=1000, description="Maximum tokens per LLM request")
-    
+
     # Social auth settings
     FACEBOOK_APP_TOKEN: str = Field(default="test-facebook-app-token")
     GOOGLE_CLIENT_ID: str = Field(default="test-google-client-id")
     GOOGLE_CLIENT_SECRET: str = Field(default="test-google-client-secret")
-    
+
     # Email settings
     EMAIL_TEMPLATES_DIR: str = str(_BASE_DIR / "core" / "templates" / "email")
     EMAIL_SUBJECT_PREFIX: str = Field(default="[AI Agentic Deals]")
@@ -273,18 +282,18 @@ class Settings(BaseSettings):
     EMAIL_TIMEOUT: int = Field(default=30, description="Email timeout in seconds")
     EMAIL_RETRY_COUNT: int = Field(default=3, description="Number of times to retry sending email")
     EMAIL_RETRY_DELAY: int = Field(default=1, description="Delay between retries in seconds")
-    
+
     # Performance settings
     SLOW_REQUEST_THRESHOLD: float = Field(default=1.0)  # seconds
     COMPRESSION_MINIMUM_SIZE: int = Field(default=500)  # bytes
-    
+
     # Cache settings
     MARKET_CACHE_TTL: int = Field(default=3600)
     PRODUCT_CACHE_TTL: int = Field(default=1800)
     TOKEN_CACHE_TTL: int = Field(default=3000)
     BALANCE_CACHE_TTL: int = Field(default=1800, description="Token balance cache TTL in seconds")
     GOAL_CACHE_TTL: int = Field(default=3600, description="Goal cache TTL in seconds")
-    
+
     # Celery settings
     CELERY_BROKER_URL: Optional[str] = Field(default=None, description="Celery broker URL")
     CELERY_RESULT_BACKEND: Optional[str] = Field(default=None, description="Celery result backend")
@@ -294,14 +303,14 @@ class Settings(BaseSettings):
     CELERY_TIMEZONE: str = Field(default="UTC", description="Celery timezone")
     CELERY_TASK_TIME_LIMIT: int = Field(default=30 * 60, description="Task time limit in seconds")
     CELERY_TASK_SOFT_TIME_LIMIT: int = Field(default=25 * 60, description="Task soft time limit in seconds")
-    
+
     # Agent settings
     AGENT_MEMORY_LIMIT: int = Field(default=512, description="Agent memory limit in MB")
     AGENT_TIMEOUT: int = Field(default=30, description="Agent timeout in seconds")
     AGENT_MAX_RETRIES: int = Field(default=3, description="Maximum agent retry attempts")
     AGENT_BATCH_SIZE: int = Field(default=100, description="Agent batch processing size")
     AGENT_QUEUE_PREFIX: str = Field(default="agent", description="Agent queue prefix")
-    
+
     # File upload settings
     MAX_UPLOAD_SIZE: int = Field(default=5 * 1024 * 1024, description="Maximum upload size in bytes")
     ALLOWED_UPLOAD_EXTENSIONS: List[str] = Field(
@@ -309,15 +318,15 @@ class Settings(BaseSettings):
         description="Allowed upload file extensions"
     )
     UPLOAD_DIR: str = Field(default="uploads", description="Upload directory path")
-    
+
     # Monitoring settings
     SENTRY_DSN: Optional[str] = Field(default=None, description="Sentry DSN for error tracking")
     PROMETHEUS_ENABLED: bool = Field(default=True, description="Enable Prometheus metrics")
     HEALTH_CHECK_ENABLED: bool = Field(default=True, description="Enable health checks")
-    
+
     # Debug settings
     DEBUG: bool = Field(default=False)
-    
+
     # Blockchain settings
     SOL_NETWORK_RPC: str = Field(
         default="https://api.mainnet-beta.solana.com",
@@ -331,7 +340,7 @@ class Settings(BaseSettings):
         default="confirmed",
         description="Solana commitment level for transactions"
     )
-    
+
     # Token settings
     TOKEN_CONTRACT_ADDRESS: str = Field(
         default="your_token_program_id",
@@ -349,7 +358,7 @@ class Settings(BaseSettings):
         default=9,
         description="Token decimal places"
     )
-    
+
     # Goal settings
     MAX_GOAL_PRICE: float = Field(
         default=10000.0,
@@ -359,13 +368,13 @@ class Settings(BaseSettings):
         default=90,
         description="Maximum allowed deadline in days from now"
     )
-    
+
     # Security settings
     SSL_REQUIRED: bool = Field(
         default=True,
         description="Require SSL for all connections"
     )
-    
+
     # Market rate limits
     AMAZON_RATE_LIMIT: int = Field(
         default=50,
@@ -379,7 +388,7 @@ class Settings(BaseSettings):
         default=50,
         description="eBay API rate limit per minute"
     )
-    
+
     # Firebase Cloud Messaging settings
     FCM_PROJECT_ID: str = Field(
         default="test-fcm-project",
@@ -425,7 +434,7 @@ class Settings(BaseSettings):
         default=500,
         description="Maximum number of messages per FCM batch"
     )
-    
+
     @model_validator(mode='before')
     @classmethod
     def build_database_url(cls, values: Dict[str, Any]) -> Dict[str, Any]:
@@ -445,13 +454,19 @@ class Settings(BaseSettings):
     @classmethod
     def build_redis_url(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Build Redis URL from components if not provided."""
+        # Fix for Redis validation error: ensure only one of host or hosts is set
+        if 'host' in values and 'hosts' in values:
+            # If both are set, prioritize hosts and remove host
+            del values['host']
+            print(f"DEBUG: In build_redis_url: Removed 'host' to avoid Redis validation error")
+        
         if not values.get("REDIS_URL"):
             # Build Redis URL from components
             redis_host = values.get("REDIS_HOST", "localhost")
             redis_port = values.get("REDIS_PORT", 6379)
             redis_db = values.get("REDIS_DB", 0)
             redis_password = values.get("REDIS_PASSWORD")
-            
+
             if redis_password:
                 values["REDIS_URL"] = f"redis://:{redis_password}@{redis_host}:{redis_port}/{redis_db}"
             else:
@@ -482,12 +497,50 @@ class Settings(BaseSettings):
         """Get Celery result backend URL."""
         return self.CELERY_RESULT_BACKEND or str(self.REDIS_URL)
 
+    @model_validator(mode='before')
+    @classmethod
+    def set_host_and_hosts(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        """Set host and hosts fields from environment variables."""
+        # Print debug information
+        print(f"DEBUG: In set_host_and_hosts validator")
+        print(f"DEBUG: Environment host: {os.environ.get('host')}")
+        print(f"DEBUG: Environment hosts: {os.environ.get('hosts')}")
+        
+        # Ensure we have at least one of host or hosts
+        if 'host' not in values and 'hosts' not in values:
+            # If neither is set, use default hosts
+            values['hosts'] = ["localhost"]
+            print(f"DEBUG: Neither host nor hosts set, using default hosts: {values['hosts']}")
+        
+        # If both are set, prioritize hosts and remove host to avoid validation errors
+        if 'host' in values and 'hosts' in values:
+            del values['host']
+            print(f"DEBUG: Both host and hosts were set, removed host to avoid validation errors")
+        
+        # Set host from environment if not already set
+        if 'host' not in values and os.environ.get('host') and 'hosts' not in values:
+            values['host'] = os.environ.get('host')
+            print(f"DEBUG: Set host to {values['host']}")
+        
+        # Set hosts from environment if not already set
+        if 'hosts' not in values and os.environ.get('hosts'):
+            import json
+            try:
+                hosts_value = json.loads(os.environ.get('hosts', '["localhost"]'))
+                values['hosts'] = hosts_value
+                print(f"DEBUG: Set hosts to {values['hosts']}")
+            except json.JSONDecodeError:
+                values['hosts'] = ["localhost"]
+                print(f"DEBUG: Failed to parse hosts, using default")
+        
+        return values
+
     class Config:
         """Pydantic model configuration."""
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
-        
+
         # Update settings for test environment
         @classmethod
         def customise_sources(
@@ -500,21 +553,21 @@ class Settings(BaseSettings):
             result = super().customise_sources(
                 init_settings, env_settings, file_secret_settings
             )
-            
+
             # Then apply test-specific overrides
             def test_override(settings_dict):
                 if settings_dict.get("TESTING", False):
                     # Use shorter token expiration for tests
                     settings_dict["ACCESS_TOKEN_EXPIRE_MINUTES"] = 5
                     settings_dict["REFRESH_TOKEN_EXPIRE_DAYS"] = 1
-                    
+
                     # Skip token verification in tests
                     settings_dict["SKIP_TOKEN_VERIFICATION"] = True
-                    
+
                     # Use in-memory SQLite for tests if not explicitly set
                     if "DATABASE_URL" in settings_dict and settings_dict["DATABASE_URL"] and "sqlite" not in str(settings_dict["DATABASE_URL"]).lower() and os.environ.get("TEST_DATABASE_URL") is None:
                         settings_dict["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
-                    
+
                     # Use mock Redis for tests if not explicitly set
                     if "REDIS_URL" in settings_dict and settings_dict["REDIS_URL"] and os.environ.get("TEST_REDIS_URL") is None:
                         settings_dict["REDIS_HOST"] = "localhost"
@@ -522,5 +575,5 @@ class Settings(BaseSettings):
                         settings_dict["REDIS_DB"] = 1  # Use different DB for tests
                         settings_dict["REDIS_URL"] = f"redis://{settings_dict['REDIS_HOST']}:{settings_dict['REDIS_PORT']}/{settings_dict['REDIS_DB']}"
                 return settings_dict
-            
+
             return lambda: test_override(result()) 

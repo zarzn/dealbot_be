@@ -1,229 +1,223 @@
-# Testing Documentation
+# Testing Guide
 
 ## Overview
-The testing suite is designed to ensure the reliability and correctness of the AI Agentic Deals System. It follows a comprehensive testing strategy with different types of tests organized in a clear structure.
 
-## Test Structure
-```
-backend/backend_tests/
-├── core/           # Core functionality tests
-├── features/       # Feature-specific tests
-├── integration/    # Integration tests
-├── services/       # Service layer tests
-├── utils/          # Utility function tests
-├── factories/      # Test data factories
-│   ├── base.py    # Base factory configuration
-│   ├── user.py    # User data factory
-│   ├── goal.py    # Goal data factory
-│   ├── deal.py    # Deal data factory
-│   ├── market.py  # Market data factory
-│   └── token.py   # Token data factory
-└── conftest.py    # Test configuration and fixtures
-```
+This document outlines the testing strategy and procedures for the AI Agentic Deals System.
 
-## Test Configuration
+## Test Environment
 
-### Database Configuration
-- Test database uses PostgreSQL with asyncpg driver
-- Separate test database: `deals_test`
-- Clean database state for each test
-- Automatic schema creation and cleanup
-- Transaction-based test isolation
+The system uses a dedicated test environment configuration defined in `.env.test`. This environment is separate from development and production to ensure test isolation.
 
-### Redis Configuration
-- Separate Redis database (DB 1) for testing
-- Clean Redis state for each test
-- Proper connection pooling and cleanup
-- Automatic flush between tests
+### Test Environment Configuration
 
-### Test Client Setup
-- FastAPI TestClient integration
-- Dependency injection overrides
-- Clean application state between tests
-- Proper session management
+The test environment uses:
+- Database name: `deals_test`
+- Database host: `localhost`
+- Redis host: `localhost`
+- Debug mode: enabled
+- Mock API keys for testing
 
-## Test Fixtures
+To set up the test environment:
 
-### Database Fixtures
-```python
-@pytest.fixture(scope="session")
-async def test_db():
-    # Provides test database engine
-    # Handles schema creation and cleanup
+1. Copy the example environment file:
+   ```bash
+   cp .env.example .env.test
+   ```
 
-@pytest.fixture(scope="function")
-async def db_session(test_db):
-    # Provides isolated database session
-    # Handles transaction management
-    # Automatic rollback after each test
-```
-
-### Redis Fixtures
-```python
-@pytest.fixture(scope="function")
-async def redis():
-    # Provides isolated Redis connection
-    # Handles connection management
-    # Automatic cleanup after each test
-```
-
-### Application Fixtures
-```python
-@pytest.fixture(scope="function")
-async def client(db_session):
-    # Provides configured test client
-    # Handles dependency overrides
-    # Clean state for each test
-```
-
-## Test Factories
-
-### Base Factory
-- Provides common factory functionality
-- Handles session management
-- Supports async operations
-- Manages sequence generation
-
-### Entity Factories
-
-#### UserFactory
-- Creates test user data
-- Handles password hashing
-- Generates unique emails
-- Manages referral codes
-
-#### GoalFactory
-- Creates test goal data
-- Links to user accounts
-- Handles goal constraints
-- Manages goal status
-
-#### DealFactory
-- Creates test deal data
-- Links to goals and markets
-- Handles price calculations
-- Manages deal status
-
-#### MarketFactory
-- Creates test market data
-- Handles market types
-- Manages API configurations
-- Sets rate limits
-
-#### TokenFactory
-- Creates test token data
-- Handles different token types
-- Manages token status
-- Sets expiration times
+2. Update the values for testing:
+   ```env
+   ENVIRONMENT=test
+   DEBUG=true
+   POSTGRES_DB=deals_test
+   POSTGRES_HOST=localhost
+   REDIS_HOST=localhost
+   ```
 
 ## Test Categories
 
 ### Unit Tests
-- Located in `core/` and `utils/`
-- Test individual components
-- No external dependencies
+- Test individual components in isolation
+- Mock external dependencies
 - Fast execution
+- Located in `tests/unit/`
 
 ### Integration Tests
-- Located in `integration/`
-- Test component interactions
-- Use test containers
-- Database integration
-- Redis integration
+- Test interactions between components
+- May use test containers
+- Located in `tests/integration/`
 
-### Feature Tests
-- Located in `features/`
-- Test complete features
-- End-to-end workflows
-- Business logic validation
+### End-to-End Tests
+- Test complete workflows
+- Simulate user interactions
+- Located in `tests/e2e/`
 
-### Service Tests
-- Located in `services/`
-- Test service layer
-- External service integration
-- API integrations
+## Test Organization
+
+Tests are organized to match the source code structure:
+
+```
+tests/
+  ├── unit/
+  │   ├── api/
+  │   ├── models/
+  │   ├── services/
+  │   └── utils/
+  ├── integration/
+  │   ├── api/
+  │   ├── database/
+  │   └── services/
+  └── e2e/
+      ├── api/
+      └── workflows/
+```
 
 ## Test Execution
 
-### Running Tests
+### Running All Tests
 ```bash
-# Run all tests
-pytest backend/backend_tests
-
-# Run specific test categories
-pytest backend/backend_tests/core        # Unit tests
-pytest backend/backend_tests/integration # Integration tests
-pytest backend/backend_tests/features    # Feature tests
-
-# Run with coverage
-pytest --cov=backend backend/backend_tests
+pytest
 ```
 
-### Test Markers
-- `@pytest.mark.unit`: Unit tests
-- `@pytest.mark.integration`: Integration tests
-- `@pytest.mark.feature`: Feature tests
-- `@pytest.mark.slow`: Slow tests
-- `@pytest.mark.api`: API tests
+### Running Specific Test Categories
+```bash
+# Unit tests
+pytest tests/unit
 
-## Best Practices
+# Integration tests
+pytest tests/integration
 
-### Test Organization
-1. Follow test isolation principle
-2. One test file per source file
-3. Clear test naming convention
-4. Proper use of fixtures
-5. Clean state between tests
+# End-to-end tests
+pytest tests/e2e
+```
 
-### Test Data
-1. Use factories for test data
-2. Avoid hard-coded values
-3. Clear data setup and cleanup
-4. Realistic test scenarios
-5. Handle edge cases
+### Running Tests with Coverage
+```bash
+pytest --cov=core
+```
 
-### Assertions
-1. Use specific assertions
-2. Clear failure messages
-3. Check both positive and negative cases
-4. Validate state changes
-5. Verify side effects
+## Test Configuration
 
-### Performance
-1. Fast test execution
-2. Proper use of test scopes
-3. Efficient database operations
-4. Minimal external dependencies
-5. Parallel test execution where possible
+The test configuration is defined in `pytest.ini`:
 
-## CI/CD Integration
+```ini
+[pytest]
+testpaths = tests
+python_files = test_*.py
+python_classes = Test*
+python_functions = test_*
+markers =
+    unit: Unit tests (run first)
+    integration: Integration tests (run second)
+    e2e: End-to-end tests (run last)
+```
 
-### Test Pipeline
-1. Run unit tests on every commit
-2. Run integration tests on PR
-3. Run full suite before deploy
-4. Generate coverage reports
-5. Enforce minimum coverage
+## Test Database
 
-### Quality Gates
-1. 100% pass rate required
-2. Minimum 80% coverage
-3. No new issues in SonarQube
-4. Performance benchmarks met
-5. All critical paths tested
+Tests use a dedicated test database:
 
-## Monitoring and Reporting
+1. The database is created automatically during test setup
+2. Each test runs in a transaction that is rolled back after the test
+3. The database is cleaned up after all tests are complete
 
-### Test Reports
-- HTML test reports
-- Coverage reports
-- Performance metrics
-- Failure analysis
-- Trend monitoring
+## Test Fixtures
 
-### Maintenance
-1. Regular test suite review
-2. Remove obsolete tests
-3. Update test data
-4. Maintain documentation
-5. Monitor test performance 
+Common test fixtures are defined in `conftest.py`:
+
+```python
+@pytest.fixture(scope="session")
+async def db():
+    """Create a test database and return a session."""
+    # Set up test database
+    async with db_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    
+    # Yield a session
+    async with db_session() as session:
+        yield session
+    
+    # Clean up test database
+    async with db_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+```
+
+## Mock LLM for Testing
+
+Tests use a mock LLM implementation to avoid external API calls:
+
+```python
+@pytest.fixture
+def mock_llm():
+    """Return a mock LLM for testing."""
+    return MockLLM()
+```
+
+## Test Data
+
+Test data is created using factory patterns:
+
+```python
+@pytest.fixture
+def user_factory():
+    """Factory for creating test users."""
+    def _create_user(email="test@example.com", name="Test User"):
+        return User(email=email, name=name)
+    return _create_user
+```
+
+## Test Isolation
+
+Each test is isolated to prevent interference:
+
+1. Database transactions are rolled back after each test
+2. Redis data is flushed after each test
+3. External services are mocked
+
+## Continuous Integration
+
+Tests are run automatically in the CI/CD pipeline:
+
+1. Unit tests run on every commit
+2. Integration tests run on pull requests
+3. End-to-end tests run before deployment
+
+## Test Coverage
+
+The project aims for high test coverage:
+
+- Unit tests: 90%+ coverage
+- Integration tests: 80%+ coverage
+- End-to-end tests: Cover all critical paths
+
+## Testing Best Practices
+
+1. Write tests before implementation (TDD)
+2. Keep tests small and focused
+3. Use descriptive test names
+4. Avoid test interdependence
+5. Mock external dependencies
+6. Test edge cases and error conditions
+7. Maintain test documentation
+
+## Troubleshooting Tests
+
+### Database Connection Issues
+1. Verify test database configuration in `.env.test`
+2. Check that PostgreSQL is running
+3. Ensure the test database exists
+
+### Redis Connection Issues
+1. Verify Redis configuration in `.env.test`
+2. Check that Redis is running
+3. Ensure Redis is accessible
+
+### Mock Configuration Issues
+1. Verify mock implementations
+2. Check that all external services are properly mocked
+3. Ensure test environment is properly isolated
+
+## References
+
+- [pytest Documentation](https://docs.pytest.org/)
+- [SQLAlchemy Testing](https://docs.sqlalchemy.org/en/14/orm/session_basics.html#session-frequently-asked-questions)
+- [FastAPI Testing](https://fastapi.tiangolo.com/tutorial/testing/)
+- [Factory Boy Documentation](https://factoryboy.readthedocs.io/) 

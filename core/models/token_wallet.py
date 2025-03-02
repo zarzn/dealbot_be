@@ -7,13 +7,16 @@ user token wallets in the AI Agentic Deals System.
 from datetime import datetime
 from typing import Optional, Dict, Any
 from uuid import UUID, uuid4
+from decimal import Decimal, ROUND_DOWN
+from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import Column, String, Boolean, DateTime, text, ForeignKey
+from sqlalchemy import Column, String, Boolean, DateTime, text, ForeignKey, Numeric, Enum as SQLEnum, Index
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.sql import expression
 from sqlalchemy.orm import relationship
 
 from core.models.base import Base
+from core.models.enums import TransactionType, TransactionStatus
 
 class TokenWallet(Base):
     """Token wallet model"""
@@ -31,9 +34,39 @@ class TokenWallet(Base):
 
     # Relationships
     user = relationship("User", back_populates="token_wallets")
+    transactions = relationship("TokenTransaction", back_populates="wallet")
 
     def __repr__(self):
         return f"<TokenWallet {self.address}>"
+
+class TokenTransaction(Base):
+    """Token transaction model for wallet operations."""
+    __tablename__ = "wallet_transactions"
+    __table_args__ = (
+        Index('ix_wallet_transactions_wallet_id', 'wallet_id'),
+        Index('ix_wallet_transactions_user_id', 'user_id'),
+        Index('ix_wallet_transactions_created_at', 'created_at'),
+        {'extend_existing': True}
+    )
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    wallet_id = Column(PG_UUID(as_uuid=True), ForeignKey("token_wallets.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    type = Column(SQLEnum(TransactionType, values_callable=lambda x: [e.value.lower() for e in x]), nullable=False)
+    amount = Column(Numeric(18, 8), nullable=False)
+    status = Column(SQLEnum(TransactionStatus, values_callable=lambda x: [e.value.lower() for e in x]), nullable=False, default=TransactionStatus.PENDING)
+    tx_hash = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    transaction_metadata = Column(JSONB, nullable=True)
+
+    # Relationships
+    wallet = relationship("TokenWallet", back_populates="transactions")
+    user = relationship("User", back_populates="wallet_transactions")
+
+    def __repr__(self):
+        return f"<TokenTransaction {self.type} {self.amount} ({self.status})>"
 
 class TokenWalletCreate(BaseModel):
     """Schema for creating a wallet"""

@@ -24,6 +24,51 @@ from core.models.token_balance import TokenBalance
 from core.models.token_balance_history import TokenBalanceHistory
 from core.models.token_transaction import TokenTransaction, TransactionType, TransactionStatus
 from core.models.token_wallet import TokenWallet, TokenWalletCreate, TokenWalletUpdate, TokenWalletResponse, WalletConnectRequest
+from core.models.enums import TokenType, TokenStatus, TokenScope
+
+class Token(Base):
+    """Token model for authentication tokens."""
+    __tablename__ = "tokens"
+    __table_args__ = (
+        Index('ix_tokens_user_id', 'user_id'),
+        Index('ix_tokens_expires_at', 'expires_at'),
+        {'extend_existing': True}
+    )
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id = Column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    token = Column(String(255), nullable=False, unique=True, index=True)
+    token_type = Column(SQLEnum(TokenType, values_callable=lambda x: [e.value.lower() for e in x]), nullable=False)
+    status = Column(SQLEnum(TokenStatus, values_callable=lambda x: [e.value.lower() for e in x]), nullable=False, default=TokenStatus.ACTIVE)
+    scope = Column(SQLEnum(TokenScope, values_callable=lambda x: [e.value.lower() for e in x]), nullable=False, default=TokenScope.FULL)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    client_info = Column(JSONB, nullable=True)
+    
+    # Relationships
+    user = relationship("User", back_populates="tokens")
+    
+    def __repr__(self):
+        return f"<Token {self.token_type} for user {self.user_id}>"
+    
+    def is_expired(self) -> bool:
+        """Check if token is expired."""
+        return datetime.utcnow() > self.expires_at
+    
+    def is_valid(self) -> bool:
+        """Check if token is valid."""
+        return (
+            self.status == TokenStatus.ACTIVE and
+            not self.is_expired() and
+            self.revoked_at is None
+        )
+    
+    def revoke(self) -> None:
+        """Revoke the token."""
+        self.status = TokenStatus.REVOKED
+        self.revoked_at = datetime.utcnow()
 
 class TokenPrice(Base):
     """Token price model"""

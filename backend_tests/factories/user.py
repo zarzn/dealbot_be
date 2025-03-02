@@ -1,55 +1,87 @@
+"""User factory for tests."""
+
+import uuid
+import json
 from typing import Optional
-from factory import Faker
-from .base import BaseFactory
+from datetime import datetime
+
 from core.models.user import User
 from core.models.enums import UserStatus
-from core.services.auth import get_password_hash
-from uuid import uuid4
-import bcrypt
 
-class UserFactory(BaseFactory):
-    class Meta:
-        model = User
-
-    _sequence = 1
-
-    @classmethod
-    def _get_next_sequence(cls):
-        value = cls._sequence
-        cls._sequence += 1
-        return value
-
-    @classmethod
-    async def create_async(cls, db_session=None, **kwargs):
-        """Create a new user instance with a valid email and password.
-        
-        Args:
-            db_session: Database session (required)
-            **kwargs: Additional user attributes
+class UserFactory:
+    """Factory for creating test users."""
+    
+    @staticmethod
+    def create(
+        db_session,
+        email: Optional[str] = None,
+        name: Optional[str] = None,
+        password: str = "hashed_password_for_tests",
+        status: str = UserStatus.ACTIVE.value.lower(),
+        email_verified: bool = True,
+        preferences: Optional[dict] = None
+    ) -> User:
+        """Create a test user."""
+        # Ensure preferences is properly formatted for SQLAlchemy
+        if preferences is None:
+            preferences = {"test": True}
             
-        Returns:
-            User: The created user instance
-            
-        Raises:
-            ValueError: If db_session is not provided
-        """
-        if db_session is None:
-            raise ValueError("db_session is required for create_async")
+        # Create the user with proper fields
+        user = User(
+            id=uuid.uuid4(),
+            email=email or f"test-{uuid.uuid4()}@example.com",
+            name=name or "Test User",
+            password=password,
+            status=status,
+            email_verified=email_verified,
+            preferences=preferences
+        )
         
-        if 'email' not in kwargs:
-            # Use UUID to ensure uniqueness
-            unique_id = str(uuid4())[:8]
-            kwargs['email'] = f'test_{unique_id}@example.com'
+        db_session.add(user)
+        return user
+    
+    @staticmethod
+    async def create_and_commit(
+        db_session,
+        email: Optional[str] = None,
+        name: Optional[str] = None,
+        password: str = "hashed_password_for_tests",
+        status: str = UserStatus.ACTIVE.value.lower(),
+        email_verified: bool = True,
+        preferences: Optional[dict] = None
+    ) -> User:
+        """Create a test user and commit to the database."""
+        user = UserFactory.create(
+            db_session=db_session,
+            email=email,
+            name=name,
+            password=password,
+            status=status,
+            email_verified=email_verified,
+            preferences=preferences
+        )
         
-        if 'password' not in kwargs:
-            # Set a default password for testing
-            kwargs['password'] = 'testpassword123'
+        await db_session.commit()
+        await db_session.refresh(user)
+        return user
         
-        # Use the same password hashing function as the auth service
-        plain_password = kwargs['password']
-        kwargs['password'] = get_password_hash(plain_password)
-        
-        if 'status' not in kwargs:
-            kwargs['status'] = UserStatus.ACTIVE.value
-
-        return await super().create_async(db_session=db_session, **kwargs)
+    @staticmethod
+    async def create_async(
+        db_session,
+        email: Optional[str] = None,
+        name: Optional[str] = None,
+        password: str = "hashed_password_for_tests",
+        status: str = UserStatus.ACTIVE.value.lower(),
+        email_verified: bool = True,
+        preferences: Optional[dict] = None
+    ) -> User:
+        """Create a test user asynchronously."""
+        return await UserFactory.create_and_commit(
+            db_session=db_session,
+            email=email,
+            name=name,
+            password=password,
+            status=status,
+            email_verified=email_verified,
+            preferences=preferences
+        )

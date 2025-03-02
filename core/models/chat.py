@@ -17,7 +17,14 @@ from sqlalchemy.orm import relationship, Mapped, mapped_column
 from sqlalchemy.sql import expression, text
 
 from core.models.base import Base
+from core.models.enums import MessageRole
 from core.exceptions import ChatError
+
+class ChatStatus(str, Enum):
+    """Chat status types."""
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+    DELETED = "deleted"
 
 class MessageRole(str, Enum):
     """Message role types."""
@@ -32,6 +39,30 @@ class MessageStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+class Chat(Base):
+    """Chat conversation database model."""
+    __tablename__ = "chats"
+    __table_args__ = (
+        Index('ix_chats_user', 'user_id'),
+        Index('ix_chats_created', 'created_at'),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False, default="New Chat")
+    status: Mapped[ChatStatus] = mapped_column(SQLEnum(ChatStatus), default=ChatStatus.ACTIVE)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=expression.text("CURRENT_TIMESTAMP"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=expression.text("CURRENT_TIMESTAMP"), onupdate=expression.text("CURRENT_TIMESTAMP"))
+    chat_metadata: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
+
+    # Relationships
+    user = relationship("User", back_populates="chats")
+    messages = relationship("ChatMessage", back_populates="chat", cascade="all, delete-orphan")
+
+    def __repr__(self) -> str:
+        """String representation of the chat."""
+        return f"<Chat {self.title} ({self.status})>"
+
 class ChatMessage(Base):
     """Chat message database model."""
     __tablename__ = "chat_messages"
@@ -43,7 +74,7 @@ class ChatMessage(Base):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    conversation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    conversation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("chats.id", ondelete="CASCADE"), nullable=False)
     role: Mapped[MessageRole] = mapped_column(SQLEnum(MessageRole), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[MessageStatus] = mapped_column(SQLEnum(MessageStatus), default=MessageStatus.PENDING)
@@ -54,6 +85,7 @@ class ChatMessage(Base):
 
     # Relationships
     user = relationship("User", back_populates="chat_messages")
+    chat = relationship("Chat", back_populates="messages")
 
     def __repr__(self) -> str:
         """String representation of the chat message."""
