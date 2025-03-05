@@ -1,0 +1,239 @@
+Starting tests at 2025-03-05 00:27:14.941344
+Python path: ['C:\\Users\\GLuK Laptop\\AppData\\Local\\Temp', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\backend', 'C:\\Program Files\\Python311\\python311.zip', 'C:\\Program Files\\Python311\\DLLs', 'C:\\Program Files\\Python311\\Lib', 'C:\\Program Files\\Python311', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\venv', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\venv\\Lib\\site-packages', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\venv\\Lib\\site-packages\\win32', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\venv\\Lib\\site-packages\\win32\\lib', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\venv\\Lib\\site-packages\\Pythonwin']
+DEBUG: Environment variables in settings.py:
+DEBUG: host: localhost
+DEBUG: hosts: ["localhost"]
+DEBUG: REDIS_HOST: localhost
+DEBUG: REDIS_URL: redis://localhost:6379/0
+DEBUG: REDIS_PASSWORD: 
+DEBUG: In build_redis_url validator
+DEBUG: In build_redis_url: Removed 'host' to avoid Redis validation error
+DEBUG: In build_database_url validator
+DEBUG: Using default host: deals_postgres
+DEBUG: Building URL with HOST=deals_postgres, PORT=5432, USER=postgres, DB=agentic_deals
+DEBUG: Using asyncpg driver for normal operation
+DEBUG: Built DATABASE_URL with host=deals_postgres, port=5432
+Import error while patching database connection: cannot import name 'get_settings' from 'core.config.settings' (C:\Active Projects\AI AGENTIC DEALS SYSTEM\backend\core\config\settings.py)
+Python path: ['C:\\Users\\GLuK Laptop\\AppData\\Local\\Temp', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\backend', 'C:\\Program Files\\Python311\\python311.zip', 'C:\\Program Files\\Python311\\DLLs', 'C:\\Program Files\\Python311\\Lib', 'C:\\Program Files\\Python311', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\venv', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\venv\\Lib\\site-packages', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\venv\\Lib\\site-packages\\win32', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\venv\\Lib\\site-packages\\win32\\lib', 'C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\venv\\Lib\\site-packages\\Pythonwin']
+Successfully imported db_connection_patch
+Loading patch settings from: C:\Active Projects\AI AGENTIC DEALS SYSTEM\backend\patch_settings.py
+Loading test environment from: C:\Active Projects\AI AGENTIC DEALS SYSTEM\backend\.env.test
+Environment variables set for testing
+Settings module patched successfully
+Fixing the Base class registry issue...
+
+Registered tables in DatabaseBase.metadata:
+
+Registered tables in ModelsBase.metadata:
+  - agents
+  - auth_tokens
+  - chat_contexts
+  - chat_messages
+  - chats
+  - deal_interactions
+  - deal_matches
+  - deal_scores
+  - deal_tokens
+  - deals
+  - goals
+  - markets
+  - model_metrics
+  - notifications
+  - price_histories
+  - price_points
+  - price_predictions
+  - price_trackers
+  - token_balance_history
+  - token_balances
+  - token_prices
+  - token_pricing
+  - token_transactions
+  - token_wallets
+  - tokens
+  - tracked_deals
+  - user_preferences
+  - users
+  - wallet_transactions
+
+The 'agents' table is not registered with DatabaseBase.metadata
+Fixing by copying model metadata from ModelsBase to DatabaseBase...
+  - Added auth_tokens to DatabaseBase.metadata
+  - Added deal_tokens to DatabaseBase.metadata
+  - Added price_histories to DatabaseBase.metadata
+  - Added deals to DatabaseBase.metadata
+  - Added price_points to DatabaseBase.metadata
+  - Added price_trackers to DatabaseBase.metadata
+  - Added token_transactions to DatabaseBase.metadata
+  - Added token_balance_history to DatabaseBase.metadata
+  - Added token_wallets to DatabaseBase.metadata
+  - Added wallet_transactions to DatabaseBase.metadata
+  - Added token_balances to DatabaseBase.metadata
+  - Added tokens to DatabaseBase.metadata
+  - Added token_prices to DatabaseBase.metadata
+  - Added chat_contexts to DatabaseBase.metadata
+  - Added notifications to DatabaseBase.metadata
+  - Added user_preferences to DatabaseBase.metadata
+  - Added users to DatabaseBase.metadata
+  - Added price_predictions to DatabaseBase.metadata
+  - Added model_metrics to DatabaseBase.metadata
+  - Added markets to DatabaseBase.metadata
+  - Added goals to DatabaseBase.metadata
+  - Added token_pricing to DatabaseBase.metadata
+  - Added deal_matches to DatabaseBase.metadata
+  - Added deal_scores to DatabaseBase.metadata
+  - Added chats to DatabaseBase.metadata
+  - Added chat_messages to DatabaseBase.metadata
+  - Added deal_interactions to DatabaseBase.metadata
+  - Added tracked_deals to DatabaseBase.metadata
+  - Added agents to DatabaseBase.metadata
+
+Verification: 'agents' table is now registered with DatabaseBase.metadata
+
+Updated tables in DatabaseBase.metadata:
+  - agents
+  - auth_tokens
+  - chat_contexts
+  - chat_messages
+  - chats
+  - deal_interactions
+  - deal_matches
+  - deal_scores
+  - deal_tokens
+  - deals
+  - goals
+  - markets
+  - model_metrics
+  - notifications
+  - price_histories
+  - price_points
+  - price_predictions
+  - price_trackers
+  - token_balance_history
+  - token_balances
+  - token_prices
+  - token_pricing
+  - token_transactions
+  - token_wallets
+  - tokens
+  - tracked_deals
+  - user_preferences
+  - users
+  - wallet_transactions
+
+Verification: 'chat_contexts' table is now registered with DatabaseBase.metadata
+
+Base class registry issues should now be fixed.
+Successfully imported DatabaseBase
+Registered tables in DatabaseBase.metadata:
+  - agents
+  - auth_tokens
+  - chat_contexts
+  - chat_messages
+  - chats
+  - deal_interactions
+  - deal_matches
+  - deal_scores
+  - deal_tokens
+  - deals
+  - goals
+  - markets
+  - model_metrics
+  - notifications
+  - price_histories
+  - price_points
+  - price_predictions
+  - price_trackers
+  - token_balance_history
+  - token_balances
+  - token_prices
+  - token_pricing
+  - token_transactions
+  - token_wallets
+  - tokens
+  - tracked_deals
+  - user_preferences
+  - users
+  - wallet_transactions
+Running tests from: C:\Active Projects\AI AGENTIC DEALS SYSTEM\backend\backend_tests
+Test marker: service
+Report will be saved to: C:\Active Projects\AI AGENTIC DEALS SYSTEM\backend\scripts\test_results\Service_report.html
+Running pytest with args: ['C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\backend\\backend_tests', '-v', '-m', 'service', '--html=C:\\Active Projects\\AI AGENTIC DEALS SYSTEM\\backend\\scripts\\test_results\\Service_report.html', '--self-contained-html', '--timeout=60', '-xvs']
+DEBUG: Environment variables in settings.py:
+DEBUG: host: localhost
+DEBUG: hosts: ["localhost"]
+DEBUG: REDIS_HOST: localhost
+DEBUG: REDIS_URL: redis://localhost:6379/0
+DEBUG: REDIS_PASSWORD: 
+DEBUG: In build_redis_url validator
+DEBUG: In build_redis_url: Removed 'host' to avoid Redis validation error
+DEBUG: In build_database_url validator
+DEBUG: Building URL with HOST=localhost, PORT=5432, USER=postgres, DB=deals_test
+DEBUG: Using asyncpg driver for normal operation
+DEBUG: Built DATABASE_URL with host=localhost, port=5432
+Loading test environment from: C:\Active Projects\AI AGENTIC DEALS SYSTEM\.env.test
+Environment variables set for testing
+Settings module patched successfully
+Loading test environment from: C:\Active Projects\AI AGENTIC DEALS SYSTEM\backend\.env.test
+DEBUG: Environment variables in settings.py:
+DEBUG: host: localhost
+DEBUG: hosts: ["localhost"]
+DEBUG: REDIS_HOST: localhost
+DEBUG: REDIS_URL: redis://localhost:6379/0
+DEBUG: REDIS_PASSWORD: 
+DEBUG: In build_redis_url validator
+DEBUG: In build_redis_url: Removed 'host' to avoid Redis validation error
+DEBUG: In build_database_url validator
+DEBUG: Building URL with HOST=localhost, PORT=5432, USER=postgres, DB=deals_test
+DEBUG: Using asyncpg driver for normal operation
+DEBUG: Built DATABASE_URL with host=localhost, port=5432
+ERROR:prophet.plot:Importing plotly failed. Interactive plots will not work.
+Loading test environment from: C:\Active Projects\AI AGENTIC DEALS SYSTEM\backend\.env.test
+[1m============================= test session starts =============================[0m
+platform win32 -- Python 3.11.4, pytest-7.4.4, pluggy-1.5.0 -- C:\Active Projects\AI AGENTIC DEALS SYSTEM\venv\Scripts\python.exe
+cachedir: .pytest_cache
+metadata: {'Python': '3.11.4', 'Platform': 'Windows-10-10.0.22631-SP0', 'Packages': {'pytest': '7.4.4', 'pluggy': '1.5.0'}, 'Plugins': {'anchorpy': '0.18.0', 'anyio': '3.7.1', 'Faker': '22.5.1', 'asyncio': '0.21.1', 'cov': '4.1.0', 'html': '4.1.1', 'metadata': '3.1.1', 'mock': '3.12.0', 'timeout': '2.3.1', 'xdist': '3.6.1', 'xprocess': '0.18.1', 'time-machine': '2.16.0'}}
+rootdir: C:\Active Projects\AI AGENTIC DEALS SYSTEM\backend
+configfile: pytest.ini
+plugins: anchorpy-0.18.0, anyio-3.7.1, Faker-22.5.1, asyncio-0.21.1, cov-4.1.0, html-4.1.1, metadata-3.1.1, mock-3.12.0, timeout-2.3.1, xdist-3.6.1, xprocess-0.18.1, time-machine-2.16.0
+asyncio: mode=Mode.AUTO
+timeout: 60.0s
+timeout method: thread
+timeout func_only: False
+[1mcollecting ... [0mDEBUG: Environment variables in settings.py:
+DEBUG: host: localhost
+DEBUG: hosts: ["localhost"]
+DEBUG: REDIS_HOST: localhost
+DEBUG: REDIS_URL: redis://localhost:6379/0
+DEBUG: REDIS_PASSWORD: 
+DEBUG: In build_redis_url validator
+DEBUG: In build_redis_url: Removed 'host' to avoid Redis validation error
+DEBUG: In build_database_url validator
+DEBUG: Building URL with HOST=localhost, PORT=5432, USER=postgres, DB=deals_test
+DEBUG: Using asyncpg driver for normal operation
+DEBUG: Built DATABASE_URL with host=localhost, port=5432
+collected 324 items / 162 deselected / 162 selected
+
+..\..\..\backend_tests\services\test_agent_service.py::test_create_goal_analyst [31mERROR[0m
+
+=================================== ERRORS ====================================
+[31m[1m_________________ ERROR at setup of test_create_goal_analyst __________________[0m
+[1m[31m..\..\..\backend_tests\services\test_agent_service.py[0m:33: in mock_agent_repository
+    mock_repo.get.return_value = [94mNone[39;49;00m[90m[39;49;00m
+        mock_repo  = <AsyncMock spec='AgentRepository' id='2430158987728'>
+[1m[31mC:\Program Files\Python311\Lib\unittest\mock.py[0m:653: in __getattr__
+    [94mraise[39;49;00m [96mAttributeError[39;49;00m([33m"[39;49;00m[33mMock object has no attribute [39;49;00m[33m%r[39;49;00m[33m"[39;49;00m % name)[90m[39;49;00m
+[1m[31mE   AttributeError: Mock object has no attribute 'get'[0m
+        name       = 'get'
+        self       = <AsyncMock spec='AgentRepository' id='2430158987728'>
+============================ slowest 10 durations =============================
+0.11s setup    backend_tests/services/test_agent_service.py::test_create_goal_analyst
+0.00s teardown backend_tests/services/test_agent_service.py::test_create_goal_analyst
+- Generated html report: file:///C:/Active%20Projects/AI%20AGENTIC%20DEALS%20SYSTEM/backend/scripts/test_results/Service_report.html -
+[36m[1m=========================== short test summary info ===========================[0m
+[31mERROR[0m ..\..\..\backend_tests\services\test_agent_service.py::[1mtest_create_goal_analyst[0m - AttributeError: Mock object has no attribute 'get'
+[31m!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!![0m
+[31m====================== [33m162 deselected[0m, [31m[1m1 error[0m[31m in 1.99s[0m[31m =======================[0m
+pytest-xprocess reminder::Be sure to terminate the started process by running 'pytest --xkill' if you have not explicitly done so in your fixture with 'xprocess.getinfo(<process_name>).terminate()'.
+Finished tests at 2025-03-05 00:27:24.907901
+Duration: 9.97 seconds
+Exit code: 1

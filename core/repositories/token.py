@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 from uuid import UUID
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, and_, or_, desc, func
@@ -262,7 +263,7 @@ class TokenRepository:
     async def update_user_balance(
         self,
         user_id: str,
-        amount: float
+        amount: Decimal
     ) -> TokenBalance:
         """Update user's token balance.
         
@@ -275,7 +276,6 @@ class TokenRepository:
             
         Raises:
             DatabaseError: If there is an error updating the balance
-            InsufficientBalanceError: If the resulting balance would be negative
         """
         try:
             result = await self.session.execute(
@@ -288,8 +288,7 @@ class TokenRepository:
             if not balance:
                 balance = TokenBalance(
                     user_id=user_id,
-                    balance=amount,
-                    last_updated=datetime.now(timezone.utc)
+                    balance=amount
                 )
                 self.session.add(balance)
             else:
@@ -297,7 +296,6 @@ class TokenRepository:
                 if new_balance < 0:
                     raise InsufficientBalanceError("Insufficient balance for operation")
                 balance.balance = new_balance
-                balance.last_updated = datetime.now(timezone.utc)
             
             await self.session.commit()
             await self.session.refresh(balance)
@@ -532,7 +530,6 @@ class TokenRepository:
             # Update balance
             old_balance = balance.balance
             balance.balance -= amount
-            balance.last_updated = datetime.now(timezone.utc)
             
             # Record balance history
             history = TokenBalanceHistory(

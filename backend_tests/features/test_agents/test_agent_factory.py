@@ -46,17 +46,12 @@ def sample_agent_context():
     """Create a sample agent context for testing."""
     return AgentContext(
         user_id="test_user_123",
-        market_type=MarketType.CRYPTO,
-        deal_id="test_deal_456",
-        deal_status=DealStatus.ACTIVE,
-        conversation_history=[
-            {"role": "user", "content": "I want to analyze Bitcoin market trends"},
-            {"role": "assistant", "content": "I'll help you analyze Bitcoin market trends"}
-        ],
+        session_id="test_session_456",
         metadata={
-            "session_id": "test_session_789",
-            "client_ip": "127.0.0.1",
-            "user_preferences": {"risk_tolerance": "medium"}
+            "market_type": MarketType.CRYPTO.value,
+            "deal_id": "test_deal_456",
+            "goal_id": "test_goal_789",
+            "status": DealStatus.ACTIVE.value
         }
     )
 

@@ -69,33 +69,161 @@ from httpx import AsyncClient
 
 # Create Redis mock module if it doesn't exist
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock
 
 # Create a mock Redis implementation
-class RedisMock(MagicMock):
-    async def get(self, *args, **kwargs):
+class RedisMock(AsyncMock):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.data = {}
+        
+    async def get(self, key, *args, **kwargs):
+        if key in self.data:
+            return self.data[key]
         return None
     
-    async def set(self, *args, **kwargs):
+    async def set(self, key, value, *args, **kwargs):
+        self.data[key] = value
         return True
     
     async def delete(self, *args, **kwargs):
-        return 0
+        keys = args
+        deleted = 0
+        for key in keys:
+            if key in self.data:
+                del self.data[key]
+                deleted += 1
+        return deleted
     
-    async def exists(self, *args, **kwargs):
-        return False
+    async def exists(self, key, *args, **kwargs):
+        return key in self.data
     
     async def flushdb(self, *args, **kwargs):
+        self.data.clear()
         return True
     
     async def close(self, *args, **kwargs):
         return None
     
-    async def blacklist_token(self, *args, **kwargs):
+    async def blacklist_token(self, token, expire, *args, **kwargs):
+        key = f"blacklist:{token}"
+        self.data[key] = "1"
         return True
     
-    async def is_token_blacklisted(self, *args, **kwargs):
-        return False
+    async def is_token_blacklisted(self, token, *args, **kwargs):
+        key = f"blacklist:{token}"
+        return key in self.data
+        
+    async def setex(self, key, seconds, value, *args, **kwargs):
+        self.data[key] = value
+        return True
+        
+    async def expire(self, key, seconds, *args, **kwargs):
+        return True
+        
+    async def scan(self, cursor=0, match=None, count=None):
+        if match:
+            import re
+            pattern = match.replace("*", ".*")
+            matched_keys = [k for k in self.data.keys() if re.match(pattern, k)]
+            return 0, matched_keys
+        return 0, list(self.data.keys())
+        
+    async def keys(self, pattern="*"):
+        import re
+        pattern = pattern.replace("*", ".*")
+        return [k for k in self.data.keys() if re.match(pattern, k)]
+        
+    async def incrby(self, key, amount=1):
+        if key not in self.data:
+            self.data[key] = "0"
+        value = int(self.data[key]) + amount
+        self.data[key] = str(value)
+        return value
+        
+    async def pipeline(self):
+        return self
+        
+    async def execute(self):
+        return []
+        
+    async def hset(self, name, key=None, value=None, mapping=None):
+        if name not in self.data:
+            self.data[name] = {}
+        if mapping:
+            self.data[name].update(mapping)
+        else:
+            self.data[name][key] = value
+        return True
+        
+    async def hget(self, name, key):
+        if name in self.data and key in self.data[name]:
+            return self.data[name][key]
+        return None
+        
+    async def hgetall(self, name):
+        if name in self.data:
+            return self.data[name]
+        return {}
+        
+    async def hdel(self, name, *keys):
+        if name not in self.data:
+            return 0
+        deleted = 0
+        for key in keys:
+            if key in self.data[name]:
+                del self.data[name][key]
+                deleted += 1
+        return deleted
+        
+    async def sadd(self, name, *values):
+        if name not in self.data:
+            self.data[name] = set()
+        for value in values:
+            self.data[name].add(value)
+        return len(values)
+        
+    async def srem(self, name, *values):
+        if name not in self.data:
+            return 0
+        removed = 0
+        for value in values:
+            if value in self.data[name]:
+                self.data[name].remove(value)
+                removed += 1
+        return removed
+        
+    async def smembers(self, name):
+        if name in self.data:
+            return self.data[name]
+        return set()
+        
+    async def lpush(self, name, *values):
+        if name not in self.data:
+            self.data[name] = []
+        for value in values:
+            self.data[name].insert(0, value)
+        return len(self.data[name])
+        
+    async def rpush(self, name, *values):
+        if name not in self.data:
+            self.data[name] = []
+        for value in values:
+            self.data[name].append(value)
+        return len(self.data[name])
+        
+    async def lrange(self, name, start, end):
+        if name not in self.data:
+            return []
+        return self.data[name][start:end if end != -1 else None]
+        
+    async def ping(self):
+        return True
+        
+    def __await__(self):
+        async def _await_impl():
+            return self
+        return _await_impl().__await__()
 
 redis_mock = RedisMock()
 
@@ -107,6 +235,24 @@ def patch_redis_service():
 from core.database import Base, get_session
 from core.main import app
 from core.services.redis import get_redis_service, RedisService
+
+# Import all models to ensure they're registered with Base.metadata
+from core.models.deal_token import DealToken
+from core.models.user import User
+from core.models.deal import Deal
+from core.models.market import Market
+from core.models.goal import Goal
+from core.models.auth_token import AuthToken
+from core.models.token import Token
+from core.models.token_transaction import TokenTransaction
+from core.models.token_balance import TokenBalance
+from core.models.token_balance_history import TokenBalanceHistory
+from core.models.token_pricing import TokenPricing
+from core.models.token_wallet import TokenWallet, WalletTransaction
+from core.models.notification import Notification
+from core.models.chat import Chat, ChatMessage
+from core.models.chat_context import ChatContext
+from core.models.agent import Agent
 
 # Test database URL
 TEST_DATABASE_URL = f"postgresql+asyncpg://{os.environ.get('POSTGRES_USER')}:{os.environ.get('POSTGRES_PASSWORD')}@{os.environ.get('POSTGRES_HOST')}:{os.environ.get('POSTGRES_PORT')}/{os.environ.get('POSTGRES_DB')}"

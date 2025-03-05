@@ -42,16 +42,21 @@ async def mock_redis_service():
     mock_redis = AsyncMock()
     mock_redis.get.return_value = None
     mock_redis.set.return_value = True
+    mock_redis.ping.return_value = True
+    mock_redis.delete.return_value = True
+    mock_redis.exists.return_value = False
     return mock_redis
 
 @pytest.fixture
 async def agent_service(mock_agent_repository, mock_redis_service):
     """Create an agent service with mock dependencies."""
-    with patch("core.services.agent.get_redis_service", return_value=mock_redis_service):
-        service = AgentService(db=mock_agent_repository.session)
-        # Replace the repository with our mock
+    async def mock_get_redis_service():
+        return mock_redis_service
+        
+    with patch("core.services.agent.get_redis_service", side_effect=mock_get_redis_service):
+        service = AgentService(AsyncMock())
         service.repository = mock_agent_repository
-        return service
+        yield service
 
 @service_test
 async def test_create_goal_analyst(agent_service, mock_agent_repository):

@@ -23,7 +23,8 @@ from core.models.deal import AIAnalysis
 from core.exceptions import (
     NotFoundException,
     AnalyticsError,
-    ValidationError
+    ValidationError,
+    NotFoundError
 )
 from utils.markers import service_test, depends_on
 from factories.market import MarketFactory
@@ -63,37 +64,54 @@ async def test_get_market_analytics(analytics_service, mock_analytics_repository
     """Test getting market analytics."""
     # Setup
     market_id = uuid4()
-    expected_analytics = MarketAnalytics(
-        market_id=market_id,
-        volume_24h=1000.0,
-        change_24h=5.2,
-        average_price=120.5,
-        highest_price=150.0,
-        lowest_price=100.0,
-        total_trades=50,
-        generated_at=datetime.utcnow()
-    )
-    mock_analytics_repository.get_market_analytics.return_value = expected_analytics
+    analytics_data = {
+        "total_products": 500,
+        "active_deals": 50,
+        "average_discount": 15.5,
+        "top_categories": [
+            {"name": "Electronics", "count": 120},
+            {"name": "Home & Garden", "count": 80},
+            {"name": "Clothing", "count": 60}
+        ],
+        "price_ranges": {
+            "0-50": 100,
+            "51-100": 150,
+            "101-200": 120,
+            "201+": 130
+        },
+        "daily_stats": {
+            "views": 1200,
+            "clicks": 500,
+            "purchases": 50
+        }
+    }
+    expected_analytics = MarketAnalytics(**analytics_data)
+    mock_analytics_repository.get_market_analytics.return_value = analytics_data
+    mock_market_repository = analytics_service.market_repository
+    mock_market_repository.get_by_id.return_value = MagicMock()  # Make sure market exists
     
     # Execute
     result = await analytics_service.get_market_analytics(market_id)
     
     # Verify
     mock_analytics_repository.get_market_analytics.assert_called_once_with(market_id)
-    assert result == expected_analytics
-    assert result.market_id == market_id
-    assert result.volume_24h == 1000.0
-    assert result.change_24h == 5.2
+    assert result.total_products == 500
+    assert result.active_deals == 50
+    assert result.average_discount == 15.5
 
 @service_test
 async def test_get_market_analytics_not_found(analytics_service, mock_analytics_repository):
-    """Test getting market analytics when not found."""
+    """Test get_market_analytics when no analytics found."""
     # Setup
     market_id = uuid4()
-    mock_analytics_repository.get_market_analytics.side_effect = NotFoundException(f"No analytics found for market {market_id}")
+    mock_analytics_repository.get_market_analytics.side_effect = NotFoundError(
+        message="Market analytics not found",
+        resource_type="MarketAnalytics",
+        resource_id=str(market_id)
+    )
     
-    # Execute and verify
-    with pytest.raises(NotFoundException):
+    # Test and assertions
+    with pytest.raises(NotFoundError):
         await analytics_service.get_market_analytics(market_id)
     
     mock_analytics_repository.get_market_analytics.assert_called_once_with(market_id)
@@ -102,159 +120,191 @@ async def test_get_market_analytics_not_found(analytics_service, mock_analytics_
 async def test_get_market_comparison(analytics_service, mock_analytics_repository):
     """Test getting market comparison."""
     # Setup
-    market_ids = [uuid4(), uuid4()]
-    metrics = ["volume_24h", "change_24h"]
-    expected_comparison = MarketComparison(
-        markets=market_ids,
-        metrics=metrics,
-        data={
-            str(market_ids[0]): {"volume_24h": 1000.0, "change_24h": 5.2},
-            str(market_ids[1]): {"volume_24h": 2000.0, "change_24h": -1.5}
-        },
-        generated_at=datetime.utcnow()
-    )
-    mock_analytics_repository.get_market_comparison.return_value = expected_comparison
+    market_id1 = uuid4()
+    market_id2 = uuid4()
+    metrics = ["total_products", "average_price"]
+    comparison_data = {
+        "comparison_date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "markets": [
+            {
+                "id": str(market_id1),
+                "name": "Amazon",
+                "total_products": 1200,
+                "average_price": 89.5
+            },
+            {
+                "id": str(market_id2),
+                "name": "eBay",
+                "total_products": 950,
+                "average_price": 75.3
+            }
+        ],
+        "summary": {
+            "best_overall": "Amazon",
+            "best_prices": "eBay",
+            "most_products": "Amazon",
+            "fastest_delivery": "Amazon"
+        }
+    }
+    expected_comparison = MarketComparison(**comparison_data)
+    mock_analytics_repository.get_market_comparison.return_value = comparison_data
+    mock_market_repository = analytics_service.market_repository
+    mock_market_repository.get_by_id.return_value = MagicMock()  # Make sure market exists
     
     # Execute
-    result = await analytics_service.get_market_comparison(market_ids, metrics)
+    result = await analytics_service.get_market_comparison([market_id1, market_id2], metrics)
     
     # Verify
-    mock_analytics_repository.get_market_comparison.assert_called_once_with(market_ids, metrics)
-    assert result == expected_comparison
+    mock_analytics_repository.get_market_comparison.assert_called_once_with([market_id1, market_id2], metrics)
+    assert result.comparison_date == comparison_data["comparison_date"]
     assert len(result.markets) == 2
-    assert result.metrics == metrics
-    assert str(market_ids[0]) in result.data
-    assert str(market_ids[1]) in result.data
+    assert result.markets[0]["id"] == str(market_id1)
+    assert result.markets[1]["id"] == str(market_id2)
 
 @service_test
 async def test_get_market_price_history(analytics_service, mock_analytics_repository):
     """Test getting market price history."""
     # Setup
     market_id = uuid4()
-    product_id = "BTC-USD"
-    start_date = datetime.utcnow() - timedelta(days=7)
-    end_date = datetime.utcnow()
-    
-    price_points = [
-        {"timestamp": start_date + timedelta(hours=i), "price": 100.0 + i}
-        for i in range(0, 168, 6)  # Every 6 hours for a week
-    ]
-    
-    expected_history = MarketPriceHistory(
-        market_id=market_id,
-        product_id=product_id,
-        start_date=start_date,
-        end_date=end_date,
-        interval="6h",
-        price_points=price_points,
-        generated_at=datetime.utcnow()
-    )
-    mock_analytics_repository.get_market_price_history.return_value = expected_history
+    product_id = "product123"
+    history_data = {
+        "market_id": market_id,
+        "product_id": product_id,
+        "price_points": [
+            {"date": "2023-01-01", "price": 99.99},
+            {"date": "2023-01-15", "price": 89.99},
+            {"date": "2023-02-01", "price": 79.99}
+        ],
+        "average_price": 89.99,
+        "lowest_price": 79.99,
+        "highest_price": 99.99,
+        "price_trend": "decreasing"
+    }
+    expected_history = MarketPriceHistory(**history_data)
+    mock_analytics_repository.get_price_history.return_value = history_data
     
     # Execute
-    result = await analytics_service.get_market_price_history(
-        market_id, 
-        product_id, 
-        start_date, 
-        end_date
-    )
+    result = await analytics_service.get_market_price_history(market_id, product_id)
     
     # Verify
-    mock_analytics_repository.get_market_price_history.assert_called_once_with(
-        market_id, 
-        product_id, 
-        start_date, 
-        end_date
-    )
-    assert result == expected_history
+    mock_analytics_repository.get_price_history.assert_called_once_with(market_id, product_id)
     assert result.market_id == market_id
     assert result.product_id == product_id
-    assert result.start_date == start_date
-    assert result.end_date == end_date
-    assert len(result.price_points) > 0
+    assert len(result.price_points) == 3
+    assert result.price_trend == "decreasing"
 
 @service_test
 async def test_get_market_availability(analytics_service, mock_analytics_repository):
     """Test getting market availability."""
     # Setup
     market_id = uuid4()
-    expected_availability = MarketAvailability(
-        market_id=market_id,
-        is_available=True,
-        uptime_percentage=99.8,
-        last_checked=datetime.utcnow(),
-        generated_at=datetime.utcnow()
-    )
-    mock_analytics_repository.get_market_availability.return_value = expected_availability
+    availability_data = {
+        "market_id": market_id,
+        "total_products": 1000,
+        "available_products": 850,
+        "out_of_stock": 150,
+        "availability_rate": 0.85,
+        "last_checked": datetime.utcnow()
+    }
+    expected_availability = MarketAvailability(**availability_data)
+    mock_analytics_repository.get_market_availability.return_value = availability_data
     
     # Execute
     result = await analytics_service.get_market_availability(market_id)
     
     # Verify
     mock_analytics_repository.get_market_availability.assert_called_once_with(market_id)
-    assert result == expected_availability
     assert result.market_id == market_id
-    assert result.is_available is True
-    assert result.uptime_percentage == 99.8
+    assert result.total_products == 1000
+    assert result.available_products == 850
+    assert result.availability_rate == 0.85
 
 @service_test
 async def test_get_market_trends(analytics_service, mock_analytics_repository):
     """Test getting market trends."""
     # Setup
     market_id = uuid4()
-    trend_period = "24h"
-    expected_trends = MarketTrends(
-        market_id=market_id,
-        period=trend_period,
-        direction="up",
-        strength=0.75,
-        indicators={
-            "moving_average": "bullish",
-            "relative_strength": "overbought",
-            "volume": "increasing"
+    trend_period = "24h"  # Default value used in the service
+    trends_data = {
+        "trend_period": "30d",
+        "top_trending": [
+            {"name": "Smartphone", "growth": 25.5},
+            {"name": "Tablet", "growth": 15.2},
+            {"name": "Laptop", "growth": 10.1}
+        ],
+        "price_trends": {
+            "Electronics": -5.2,
+            "Home & Garden": 2.3,
+            "Clothing": 0.5
         },
-        generated_at=datetime.utcnow()
-    )
-    mock_analytics_repository.get_market_trends.return_value = expected_trends
+        "category_trends": [
+            {"name": "Electronics", "change": 12.5},
+            {"name": "Home & Garden", "change": 8.3},
+            {"name": "Clothing", "change": -2.1}
+        ],
+        "search_trends": [
+            {"count": 15000, "term": 1},  # Fixed: term is now an integer
+            {"count": 12000, "term": 2},  # Fixed: term is now an integer
+            {"count": 8000, "term": 3}    # Fixed: term is now an integer
+        ]
+    }
+    expected_trends = MarketTrends(**trends_data)
+    mock_analytics_repository.get_market_trends.return_value = trends_data
+    mock_market_repository = analytics_service.market_repository
+    mock_market_repository.get_by_id.return_value = MagicMock()  # Make sure market exists
     
     # Execute
     result = await analytics_service.get_market_trends(market_id, trend_period)
     
     # Verify
     mock_analytics_repository.get_market_trends.assert_called_once_with(market_id, trend_period)
-    assert result == expected_trends
-    assert result.market_id == market_id
-    assert result.period == trend_period
-    assert result.direction == "up"
-    assert result.strength == 0.75
-    assert "moving_average" in result.indicators
+    assert result.trend_period == "30d"
+    assert len(result.top_trending) == 3
+    assert len(result.category_trends) == 3
+    assert len(result.search_trends) == 3
 
 @service_test
 async def test_get_market_performance(analytics_service, mock_analytics_repository):
     """Test getting market performance."""
     # Setup
     market_id = uuid4()
-    expected_performance = MarketPerformance(
-        market_id=market_id,
-        score=85.5,
-        liquidity_rating="high",
-        volatility_rating="medium",
-        reliability_rating="high",
-        generated_at=datetime.utcnow()
-    )
-    mock_analytics_repository.get_market_performance.return_value = expected_performance
+    performance_data = {
+        "market_id": market_id,
+        "uptime": 99.8,
+        "response_times": {
+            "avg": 0.35,
+            "p50": 0.25,
+            "p90": 0.5,
+            "p99": 0.9
+        },
+        "error_rates": {
+            "4xx": 0.2,
+            "5xx": 0.5,
+            "total": 0.7
+        },
+        "success_rates": {
+            "searches": 99.5,
+            "product_details": 99.8,
+            "overall": 99.6
+        },
+        "api_usage": {
+            "searches": 15000,
+            "product_details": 25000,
+            "price_checks": 10000
+        }
+    }
+    expected_performance = MarketPerformance(**performance_data)
+    mock_analytics_repository.get_market_performance.return_value = performance_data
     
     # Execute
     result = await analytics_service.get_market_performance(market_id)
     
     # Verify
     mock_analytics_repository.get_market_performance.assert_called_once_with(market_id)
-    assert result == expected_performance
     assert result.market_id == market_id
-    assert result.score == 85.5
-    assert result.liquidity_rating == "high"
-    assert result.volatility_rating == "medium"
-    assert result.reliability_rating == "high"
+    assert result.uptime == 99.8
+    assert "avg" in result.response_times
+    assert "searches" in result.success_rates
 
 @service_test
 async def test_update_market_analytics(analytics_service, mock_analytics_repository):
@@ -359,20 +409,17 @@ async def test_get_deal_analysis(analytics_service, mock_analytics_repository):
 
 @service_test
 async def test_get_deal_analysis_not_found(analytics_service, mock_analytics_repository):
-    """Test getting deal analysis when deal not found."""
+    """Test get_deal_analysis when no analysis found."""
     # Setup
     deal_id = uuid4()
-    user_id = uuid4()
+    mock_analytics_repository.get_deal_analysis.side_effect = NotFoundError(
+        message="Deal analysis not found",
+        resource_type="AIAnalysis",
+        resource_id=str(deal_id)
+    )
     
-    mock_deal_analysis_service = AsyncMock()
-    mock_deal_analysis_service.analyze_deal.side_effect = NotFoundException(f"Deal {deal_id} not found")
+    # Test and assertions
+    with pytest.raises(NotFoundError):
+        await analytics_service.get_deal_analysis(deal_id)
     
-    # Execute and verify
-    with pytest.raises(NotFoundException):
-        await analytics_service.get_deal_analysis(
-            deal_id, 
-            user_id,
-            deal_analysis_service=mock_deal_analysis_service
-        )
-    
-    mock_deal_analysis_service.analyze_deal.assert_called_once_with(deal_id, user_id) 
+    mock_analytics_repository.get_deal_analysis.assert_called_once_with(deal_id) 

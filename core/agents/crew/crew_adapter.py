@@ -7,7 +7,7 @@ allowing us to use CrewAI agents while maintaining our performance optimizations
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from crewai import Agent as CrewAgent, Task as CrewTask, Crew, Process
-from langchain.tools import BaseTool
+from langchain_community.tools import BaseTool
 
 from core.agents.base.agent_interface import (
     IAgent,

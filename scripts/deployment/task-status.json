@@ -1,0 +1,97 @@
+{
+    "tasks": [
+        {
+            "attachments": [
+                {
+                    "id": "b2307798-9b65-46d1-811d-765be6f544a7",
+                    "type": "ElasticNetworkInterface",
+                    "status": "ATTACHED",
+                    "details": [
+                        {
+                            "name": "subnetId",
+                            "value": "subnet-0dc4dac7f6734df01"
+                        },
+                        {
+                            "name": "networkInterfaceId",
+                            "value": "eni-06e34d7f454d3cfc8"
+                        },
+                        {
+                            "name": "macAddress",
+                            "value": "12:bd:8c:12:f7:05"
+                        },
+                        {
+                            "name": "privateDnsName",
+                            "value": "ip-172-31-82-161.ec2.internal"
+                        },
+                        {
+                            "name": "privateIPv4Address",
+                            "value": "172.31.82.161"
+                        }
+                    ]
+                }
+            ],
+            "attributes": [
+                {
+                    "name": "ecs.cpu-architecture",
+                    "value": "x86_64"
+                }
+            ],
+            "availabilityZone": "us-east-1d",
+            "capacityProviderName": "FARGATE",
+            "clusterArn": "arn:aws:ecs:us-east-1:586794462529:cluster/agentic-deals-cluster",
+            "connectivity": "CONNECTED",
+            "connectivityAt": "2025-03-04T14:52:22.541000+08:00",
+            "containers": [
+                {
+                    "containerArn": "arn:aws:ecs:us-east-1:586794462529:container/agentic-deals-cluster/ab7bbb9a05424e6d8d10b149107b445d/4b6ced40-949b-4c84-bae8-b8814fdd49d3",
+                    "taskArn": "arn:aws:ecs:us-east-1:586794462529:task/agentic-deals-cluster/ab7bbb9a05424e6d8d10b149107b445d",
+                    "name": "agentic-deals-app",
+                    "image": "586794462529.dkr.ecr.us-east-1.amazonaws.com/agentic-deals-backend:latest",
+                    "imageDigest": "sha256:7a7eb8673f8dc273c443de360bad28ad67ea45e997eb8418eb9cae11fd1cd522",
+                    "runtimeId": "ab7bbb9a05424e6d8d10b149107b445d-1005966766",
+                    "lastStatus": "PENDING",
+                    "networkBindings": [],
+                    "networkInterfaces": [
+                        {
+                            "attachmentId": "b2307798-9b65-46d1-811d-765be6f544a7",
+                            "privateIpv4Address": "172.31.82.161"
+                        }
+                    ],
+                    "healthStatus": "UNKNOWN",
+                    "cpu": "0"
+                }
+            ],
+            "cpu": "512",
+            "createdAt": "2025-03-04T14:52:17.552000+08:00",
+            "desiredStatus": "RUNNING",
+            "enableExecuteCommand": false,
+            "group": "service:agentic-deals-service",
+            "healthStatus": "UNKNOWN",
+            "lastStatus": "PENDING",
+            "launchType": "FARGATE",
+            "memory": "1024",
+            "overrides": {
+                "containerOverrides": [
+                    {
+                        "name": "agentic-deals-app"
+                    }
+                ],
+                "inferenceAcceleratorOverrides": []
+            },
+            "platformVersion": "1.4.0",
+            "platformFamily": "Linux",
+            "startedBy": "ecs-svc/9876847231040058053",
+            "tags": [],
+            "taskArn": "arn:aws:ecs:us-east-1:586794462529:task/agentic-deals-cluster/ab7bbb9a05424e6d8d10b149107b445d",
+            "taskDefinitionArn": "arn:aws:ecs:us-east-1:586794462529:task-definition/agentic-deals-tasks:32",
+            "version": 4,
+            "ephemeralStorage": {
+                "sizeInGiB": 20
+            },
+            "fargateEphemeralStorage": {
+                "sizeInGiB": 20
+            }
+        }
+    ],
+    "failures": []
+}

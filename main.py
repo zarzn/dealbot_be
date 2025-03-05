@@ -1,6 +1,8 @@
 """Main application module."""
 
 import logging
+import logging.handlers
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,29 +10,66 @@ from sqlalchemy.orm import configure_mappers
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from fastapi.responses import JSONResponse
+from sqlalchemy.sql import text
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    force=True  # Force reconfiguration of the root logger
-)
+from core.config import settings
 
-# Configure SQLAlchemy logging
-loggers = {
-    'sqlalchemy': logging.ERROR,
-    'sqlalchemy.engine': logging.ERROR,
-    'sqlalchemy.pool': logging.ERROR,
-    'sqlalchemy.dialects': logging.ERROR,
-    'sqlalchemy.orm': logging.ERROR
-}
+# Configure environment-specific logging
+def setup_logging():
+    """Set up logging configuration based on environment."""
+    # Create logs directory if it doesn't exist
+    os.makedirs("logs", exist_ok=True)
+    
+    # Determine log level based on environment
+    if str(settings.APP_ENVIRONMENT).lower() == "production":
+        root_level = logging.WARNING
+        log_format = '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+        # In production, use rotating file handler to manage log size
+        handlers = [
+            logging.handlers.RotatingFileHandler(
+                "logs/app.log",
+                maxBytes=10485760,  # 10 MB
+                backupCount=5,
+                encoding="utf-8"
+            )
+        ]
+    else:
+        # More verbose logging for development/test
+        root_level = logging.INFO
+        log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        handlers = [logging.StreamHandler()]
 
-for logger_name, level in loggers.items():
-    logger = logging.getLogger(logger_name)
-    logger.setLevel(level)
-    logger.propagate = False
+    # Configure root logger
+    logging.basicConfig(
+        level=root_level,
+        format=log_format,
+        handlers=handlers,
+        force=True  # Force reconfiguration
+    )
 
+    # Configure module-specific log levels
+    loggers = {
+        'sqlalchemy': logging.ERROR,
+        'sqlalchemy.engine': logging.ERROR,
+        'sqlalchemy.pool': logging.ERROR,
+        'sqlalchemy.dialects': logging.ERROR,
+        'sqlalchemy.orm': logging.ERROR,
+        'urllib3': logging.WARNING,
+        'asyncio': logging.WARNING,
+        'fastapi': logging.WARNING if str(settings.APP_ENVIRONMENT).lower() == "production" else logging.INFO,
+        'uvicorn': logging.WARNING if str(settings.APP_ENVIRONMENT).lower() == "production" else logging.INFO,
+        'aiohttp': logging.WARNING,
+    }
+
+    for logger_name, level in loggers.items():
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(level)
+        logger.propagate = False
+
+# Setup logging
+setup_logging()
 logger = logging.getLogger(__name__)
+logger.info(f"Application starting in {settings.APP_ENVIRONMENT} environment")
 
 # Import all models to ensure they are registered with SQLAlchemy
 from core.models import (
@@ -61,8 +100,8 @@ from core.api.v1.price_prediction.router import router as price_prediction_route
 
 # Import websocket handlers
 from core.api.v1.notifications.websocket import handle_websocket
+from core.api.websocket import router as websocket_router
 
-from core.config import settings
 from core.utils.redis import get_redis_client, close_redis_client
 
 @asynccontextmanager
@@ -144,8 +183,11 @@ def create_app() -> FastAPI:
     app.include_router(price_tracking_router, prefix=f"{settings.API_V1_PREFIX}/price-tracking", tags=["Price Tracking"])
     app.include_router(price_prediction_router, prefix=f"{settings.API_V1_PREFIX}/price-prediction", tags=["Price Prediction"])
     app.include_router(health_router, prefix=f"{settings.API_V1_PREFIX}/health", tags=["System"])
+    
+    # Include WebSocket router
+    app.include_router(websocket_router, tags=["WebSocket"])
 
-    # WebSocket endpoint
+    # Legacy WebSocket endpoint
     app.websocket("/notifications/ws")(handle_websocket)
 
     @app.get("/")
@@ -154,8 +196,85 @@ def create_app() -> FastAPI:
         return {
             "status": "ok",
             "version": settings.APP_VERSION,
-            "environment": settings.ENVIRONMENT
+            "environment": str(settings.APP_ENVIRONMENT)
         }
+
+    # Health endpoint moved to app.py which redirects to /api/v1/health/health
+
+    # Add a more comprehensive health check endpoint
+    @app.get("/api/v1/health")
+    async def api_health():
+        """API health check that verifies connectivity to dependencies.
+        
+        This endpoint checks database and Redis connectivity.
+        """
+        from core.database import get_async_db_session as get_db
+        from core.services.redis import get_redis_service
+        import asyncio
+        
+        health_status = {
+            "status": "healthy",
+            "checks": {
+                "database": {"status": "unknown", "message": "Not checked"},
+                "redis": {"status": "unknown", "message": "Not checked"},
+            },
+            "version": settings.APP_VERSION,
+            "environment": str(settings.APP_ENVIRONMENT)
+        }
+        
+        # Check database connection
+        try:
+            db_session = next(get_db())
+            with db_session.connect() as conn:
+                result = conn.execute(text("SELECT 1"))
+                if result.scalar() == 1:
+                    health_status["checks"]["database"] = {
+                        "status": "healthy",
+                        "message": "Connected successfully"
+                    }
+                else:
+                    health_status["checks"]["database"] = {
+                        "status": "unhealthy",
+                        "message": "Database query failed"
+                    }
+        except Exception as e:
+            health_status["checks"]["database"] = {
+                "status": "unhealthy",
+                "message": f"Database connection error: {str(e)}"
+            }
+            health_status["status"] = "unhealthy"
+        
+        # Check Redis connection
+        try:
+            redis = await get_redis_service()
+            if await redis.ping():
+                health_status["checks"]["redis"] = {
+                    "status": "healthy",
+                    "message": "Connected successfully"
+                }
+            else:
+                health_status["checks"]["redis"] = {
+                    "status": "unhealthy",
+                    "message": "Redis ping failed"
+                }
+                health_status["status"] = "unhealthy"
+        except Exception as e:
+            health_status["checks"]["redis"] = {
+                "status": "unhealthy",
+                "message": f"Redis connection error: {str(e)}"
+            }
+            health_status["status"] = "unhealthy"
+        
+        return health_status
+
+    @app.get("/api/v1/health/health")
+    async def simple_api_health():
+        """Simple API health check that always returns healthy.
+        
+        This is an alternative to the more comprehensive health check
+        and is useful for basic health monitoring.
+        """
+        return {"status": "healthy"}
 
     return app
 
@@ -165,5 +284,10 @@ app = create_app()
 @event.listens_for(Engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     """Set SQLite pragmas on connection."""
-    if hasattr(dbapi_connection, "execute"):
+    # Only run for SQLite connections, not PostgreSQL
+    if hasattr(dbapi_connection, "execute") and settings.DATABASE_URL and 'sqlite' in str(settings.DATABASE_URL).lower():
         dbapi_connection.execute("PRAGMA foreign_keys=ON")
+        dbapi_connection.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging for better concurrency
+        dbapi_connection.execute("PRAGMA synchronous=NORMAL")  # Balance between durability and speed
+        dbapi_connection.execute("PRAGMA cache_size=-64000")  # Use up to 64MB memory for caching (negative value is in KB)
+        dbapi_connection.execute("PRAGMA temp_store=MEMORY")  # Store temporary tables and indices in memory

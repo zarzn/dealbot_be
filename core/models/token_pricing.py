@@ -24,7 +24,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.sql import func, expression
+from sqlalchemy.sql import func, expression, select
 from core.models.base import Base
 from core.exceptions import ValidationError, TokenError
 
@@ -100,19 +100,23 @@ class TokenPricing(Base):
     async def get_active_pricing(cls, db) -> list['TokenPricing']:
         """Get all active pricing records"""
         now = datetime.utcnow()
-        return await db.query(cls)\
-            .filter(cls.is_active == True)\
-            .filter(cls.valid_from <= now)\
-            .filter((cls.valid_to == None) | (cls.valid_to >= now))\
-            .all()
+        stmt = select(cls).where(
+            cls.is_active == True,
+            cls.valid_from <= now,
+            (cls.valid_to == None) | (cls.valid_to >= now)
+        )
+        result = await db.execute(stmt)
+        return result.scalars().all()
 
     @classmethod
     async def get_by_service_type(cls, db, service_type: ServiceType) -> Optional['TokenPricing']:
         """Get active pricing for a specific service type"""
         now = datetime.utcnow()
-        return await db.query(cls)\
-            .filter(cls.service_type == service_type)\
-            .filter(cls.is_active == True)\
-            .filter(cls.valid_from <= now)\
-            .filter((cls.valid_to == None) | (cls.valid_to >= now))\
-            .first()
+        stmt = select(cls).where(
+            cls.service_type == service_type,
+            cls.is_active == True,
+            cls.valid_from <= now,
+            (cls.valid_to == None) | (cls.valid_to >= now)
+        ).order_by(cls.valid_from.desc())  # Get the most recently valid pricing
+        result = await db.execute(stmt)
+        return result.scalars().first()  # Changed from scalar_one_or_none to first to handle multiple results

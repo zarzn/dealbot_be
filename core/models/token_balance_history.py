@@ -41,13 +41,16 @@ class TokenBalanceHistoryBase(BaseModel):
 
     @field_validator('balance_after')
     @classmethod
-    def validate_balance_after(cls, v: Decimal, values: dict) -> Decimal:
-        if 'balance_before' in values:
-            balance_before = Decimal(str(values['balance_before'])).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
-            change_amount = Decimal(str(values['change_amount'])).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
+    def validate_balance_after(cls, v: Decimal, info) -> Decimal:
+        # Handle ValidationInfo object in Pydantic v2
+        data = getattr(info, 'data', {})
+        
+        if 'balance_before' in data and 'change_amount' in data and 'change_type' in data:
+            balance_before = Decimal(str(data['balance_before'])).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
+            change_amount = Decimal(str(data['change_amount'])).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
             v = Decimal(str(v)).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
             
-            if values['change_type'] == TransactionType.DEDUCTION:
+            if data['change_type'] == TransactionType.DEDUCTION:
                 expected_balance = balance_before - change_amount
             else:
                 expected_balance = balance_before + change_amount
@@ -108,9 +111,9 @@ class TokenBalanceHistory(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"), onupdate=text("now()"))
 
     # Relationships
-    user = relationship("User", back_populates="token_balance_history")
-    token_balance = relationship("TokenBalance", back_populates="history")
-    transaction = relationship("TokenTransaction", back_populates="balance_history")
+    user = relationship("User", back_populates="token_balance_history", lazy="selectin")
+    token_balance = relationship("TokenBalance", back_populates="history", lazy="selectin")
+    transaction = relationship("TokenTransaction", back_populates="balance_history", lazy="selectin")
 
     def __init__(self, **kwargs):
         """Initialize token balance history with validation."""

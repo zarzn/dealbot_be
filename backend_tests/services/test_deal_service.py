@@ -9,16 +9,15 @@ from factories.user import UserFactory
 from factories.deal import DealFactory
 from factories.goal import GoalFactory
 from factories.market import MarketFactory
-from utils.markers import service_test, depends_on
+from backend_tests.utils.markers import service_test, depends_on
 from backend_tests.mocks.redis_mock import redis_mock
 import asyncio
 from uuid import uuid4
 import time
-from core.models.deal import Deal, PriceHistory
+from core.models.deal import Deal, PriceHistory, DealSearch
 from sqlalchemy import select
 from core.models.deal import Deal
 from core.models.enums import DealSource, MarketCategory
-from core.services.deal_search import DealSearch
 
 pytestmark = pytest.mark.asyncio
 

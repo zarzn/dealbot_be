@@ -28,12 +28,6 @@ app.add_middleware(
 # Add API router
 app.include_router(api_router, prefix=settings.API_PREFIX)
 
-# Add health check endpoint
-@app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {"status": "ok"}
-
 # Add startup and shutdown events
 @app.on_event("startup")
 async def startup_event():

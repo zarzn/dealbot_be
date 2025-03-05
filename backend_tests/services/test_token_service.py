@@ -10,11 +10,12 @@ from core.exceptions import (
     TokenBalanceError,
     TokenTransactionError,
     ValidationError,
-    InsufficientBalanceError
+    InsufficientBalanceError,
+    TokenValidationError
 )
 from factories.user import UserFactory
 from factories.token import TokenTransactionFactory, TokenBalanceFactory
-from utils.markers import service_test, depends_on
+from backend_tests.utils.markers import service_test, depends_on
 
 pytestmark = pytest.mark.asyncio
 
@@ -26,9 +27,13 @@ def token_service(db_session, redis_client):
 @service_test
 @depends_on("core.test_models.test_token_balance.test_token_transaction_creation")
 async def test_get_balance(db_session, token_service):
-    """Test getting user token balance."""
+    """Test getting a user's token balance."""
     user = await UserFactory.create_async(db_session=db_session)
     initial_balance = user.token_balance
+    
+    # Initialize initial_balance to 0 if it's None
+    if initial_balance is None:
+        initial_balance = Decimal("0.0")
     
     # Add some tokens
     await TokenTransactionFactory.create_async(
@@ -82,9 +87,8 @@ async def test_insufficient_balance(db_session, token_service):
     to_user = await UserFactory.create_async(db_session=db_session)
     
     # Try to transfer more than available
-    # The exception might be either directly InsufficientBalanceError or TokenTransactionError
-    # with the InsufficientBalanceError message in it
-    with pytest.raises((InsufficientBalanceError, TokenTransactionError)) as excinfo:
+    # Expect TokenBalanceError specifically
+    with pytest.raises(TokenBalanceError) as excinfo:
         await token_service.transfer(
             from_user_id=from_user.id,
             to_user_id=to_user.id,
@@ -301,7 +305,7 @@ async def test_token_transaction_validation(token_service, db_session):
     """Test transaction validation."""
     user = await UserFactory.create_async(db_session=db_session)
     
-    with pytest.raises(ValidationError):
+    with pytest.raises(TokenValidationError):
         await token_service.create_transaction(
             user_id=user.id,
             amount=Decimal('-1.0'),  # Negative amount should fail
@@ -309,7 +313,7 @@ async def test_token_transaction_validation(token_service, db_session):
             status=TokenTransactionStatus.COMPLETED.value
         )
         
-    with pytest.raises(ValidationError):
+    with pytest.raises(TokenValidationError):
         await token_service.create_transaction(
             user_id=user.id,
             amount=Decimal('0.000000001'),  # Too many decimal places

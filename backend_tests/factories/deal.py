@@ -113,6 +113,10 @@ class DealFactory(BaseFactory):
         if original_price and original_price <= price:
             kwargs['original_price'] = price + Decimal('0.01')  # Final safety check ensuring 0.01 difference
 
+        # Ensure category is always set to a valid value (not None)
+        if 'category' not in kwargs or kwargs['category'] is None:
+            kwargs['category'] = MarketCategory.ELECTRONICS.value
+
         # Validate status
         status = kwargs.get('status', cls.status)
         if status not in [s.value for s in DealStatus]:

@@ -1,245 +1,254 @@
-# Deployment Guide
+# Deployment Guide for AI Agentic Deals System
 
-This guide provides instructions for deploying the AI Agentic Deals System in different environments.
-
-## Deployment Environments
-
-The system supports three deployment environments:
-
-1. **Development** - For local development and testing
-2. **Testing** - For automated tests and CI/CD pipelines
-3. **Production** - For live deployment
+This guide provides step-by-step instructions for deploying the AI Agentic Deals System in various environments.
 
 ## Prerequisites
 
+Before deploying the system, ensure you have the following:
+
+- Git client
 - Docker and Docker Compose
-- Git
-- Access to required API keys
+- Access to required API keys:
+  - DeepSeek API key (primary)
+  - OpenAI API key (fallback)
+- PostgreSQL database
+- Redis instance
 - SSL certificates for production
 
-## Environment Configuration
+## Environment Setup
 
-### Environment Files
+### Environment Variables
 
-Each environment uses a specific environment file:
+The system uses the following environment files:
 
-- Development: `.env.development`
-- Testing: `.env.test`
-- Production: `.env.production`
+- `.env.development` - Development environment
+- `.env.test` - Testing environment
+- `.env.production` - Production environment
 
-All environment files follow the structure defined in `.env.example`.
+Copy the appropriate example file and update it with your configuration:
 
-### Setting Up Environment Files
+```bash
+# For development
+cp .env.example .env.development
 
-1. Copy the example environment file:
-   ```bash
-   # For development
-   cp .env.example .env.development
-   
-   # For production
-   cp .env.example .env.production
-   
-   # For testing
-   cp .env.example .env.test
-   ```
-
-2. Update the values in each environment file according to the environment requirements.
+# For production
+cp .env.example .env.production
+```
 
 ### Critical Environment Variables
 
-#### Database Configuration
-```
-POSTGRES_USER="postgres"                # PostgreSQL username
-POSTGRES_PASSWORD="your_password"       # PostgreSQL password
-POSTGRES_DB="deals"                     # PostgreSQL database name
-POSTGRES_HOST="deals_postgres"          # PostgreSQL host
-```
+| Variable | Description | Example |
+| --- | --- | --- |
+| `APP_ENVIRONMENT` | Environment name | `development`, `test`, `production` |
+| `DEBUG` | Debug mode | `true` for development, `false` for production |
+| `SECRET_KEY` | Security key for JWT | Generate securely, keep private |
+| `POSTGRES_HOST` | Database host | `localhost` or `postgres` in Docker |
+| `POSTGRES_PORT` | Database port | `5432` |
+| `POSTGRES_DB` | Database name | `deals_production` |
+| `POSTGRES_USER` | Database user | `postgres` |
+| `POSTGRES_PASSWORD` | Database password | Strong password, keep private |
+| `REDIS_HOST` | Redis host | `localhost` or `redis` in Docker |
+| `REDIS_PORT` | Redis port | `6379` |
+| `DEEPSEEK_API_KEY` | DeepSeek API key | Your API key |
+| `OPENAI_API_KEY` | OpenAI API key | Your API key |
 
-#### Redis Configuration
-```
-REDIS_HOST="deals_redis"                # Redis host
-REDIS_PORT="6379"                       # Redis port
-REDIS_PASSWORD="your_redis_password"    # Redis password
-REDIS_SSL="false"                       # Set to true for SSL connection
-```
+## Deployment Options
 
-#### Security Configuration
-```
-SECRET_KEY="your_secret_key"            # Application secret key
-JWT_SECRET="your_jwt_secret"            # JWT token secret
-```
+### 1. Docker Deployment (Recommended)
 
-#### API Keys
-```
-DEEPSEEK_API_KEY="your_deepseek_key"    # DeepSeek API key
-OPENAI_API_KEY="your_openai_key"        # OpenAI API key
-```
+Docker deployment is the recommended approach for all environments as it ensures consistency across development, testing, and production.
 
-## Docker Deployment
+Refer to the [Docker Deployment Guide](docker.md) for detailed instructions.
 
-### Development Deployment
+### 2. Manual Deployment
 
-1. Navigate to the backend directory:
+#### Backend Deployment
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/your-org/ai-agentic-deals-system.git
+   cd ai-agentic-deals-system
+   ```
+
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   # On Windows
+   .\venv\Scripts\activate
+   # On Linux/Mac
+   source venv/bin/activate
+   ```
+
+3. Install dependencies:
+   ```bash
+   pip install -r backend/requirements.txt
+   ```
+
+4. Set up the environment file:
+   ```bash
+   cp .env.example .env.production
+   # Edit .env.production with your configuration
+   ```
+
+5. Initialize the database (first run only):
    ```bash
    cd backend
+   python setup_db.py --environment production
    ```
 
-2. Start the development environment:
-   ```bash
-   docker-compose up -d
-   ```
-
-3. Verify services are running:
-   ```bash
-   docker-compose ps
-   ```
-
-4. Access the API at http://localhost:8000
-
-### Production Deployment
-
-1. Navigate to the backend directory:
+6. Start the backend server:
    ```bash
    cd backend
+   uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
    ```
 
-2. Create necessary directories:
+7. Start Celery workers (in a separate terminal):
    ```bash
-   mkdir -p certs
-   mkdir -p init-scripts
+   cd backend
+   celery -A core.celery_app worker --loglevel=info
    ```
 
-3. Set up SSL certificates for Redis:
+8. Start Celery beat (in a separate terminal):
    ```bash
-   # Copy your SSL certificates to the certs directory
-   cp /path/to/your/certificates/* certs/
+   cd backend
+   celery -A core.celery_app beat --loglevel=info
    ```
 
-4. Start the production environment:
+#### Frontend Deployment
+
+1. Install dependencies:
    ```bash
-   docker-compose -f docker-compose.prod.yml up -d
+   cd frontend
+   npm install
    ```
 
-5. Verify services are running:
+2. Build the frontend:
    ```bash
-   docker-compose -f docker-compose.prod.yml ps
+   npm run build
    ```
 
-6. Access the API through Nginx at your domain
+3. Serve the built files using a web server like Nginx.
 
-## Database Migration
+## Production Deployment Considerations
 
-After deploying the application, run database migrations:
+### Database Migration
 
-```bash
-# Inside the backend container
-docker-compose exec backend alembic upgrade head
+Before deploying a new version in production:
 
-# For production
-docker-compose -f docker-compose.prod.yml exec backend alembic upgrade head
-```
+1. Backup the existing database:
+   ```bash
+   pg_dump -U postgres -F c -b -v -f backup_$(date +%Y%m%d%H%M%S).dump deals_production
+   ```
 
-## Scaling
+2. Apply migrations carefully, testing first in a staging environment.
 
-The production configuration supports scaling:
+### Health Check Configuration
 
-```bash
-# Scale backend service to 5 instances
-docker-compose -f docker-compose.prod.yml up -d --scale backend=5
-```
+Configure health checks for your production environment:
 
-## Monitoring
+1. Database health check: `/api/health/database`
+2. Redis health check: `/api/health/redis`
+3. API health check: `/api/health`
 
-The production deployment includes monitoring tools:
+### Performance Optimization
 
-- **Prometheus**: Collects metrics from services
-- **Grafana**: Visualizes metrics and provides dashboards
+For production deployment, consider the following optimizations:
 
-Access Grafana at http://your-domain.com:3000 (default credentials: admin/admin)
+1. **Database Optimization**:
+   - Increase pool size in production (20-30)
+   - Set appropriate timeouts
+   - Configure PostgreSQL for your server resources
 
-## Backup and Restore
+2. **Worker Configuration**:
+   - Adjust number of Celery workers based on CPU cores
+   - Configure task queues for priority tasks
 
-### Database Backup
+3. **Caching Configuration**:
+   - Enable Redis cache for production
+   - Set appropriate TTL for cached items
+   - Configure cache invalidation strategies
 
-```bash
-# Development
-docker-compose exec postgres pg_dump -U postgres deals > backup.sql
+### High Availability Setup
 
-# Production
-docker-compose -f docker-compose.prod.yml exec postgres pg_dump -U ${POSTGRES_USER} ${POSTGRES_DB} > backup.sql
-```
+For mission-critical deployments:
 
-### Database Restore
+1. Use load balancing with multiple backend instances
+2. Set up database replication
+3. Configure Redis sentinel or cluster
+4. Implement regular backups
+5. Set up monitoring and alerting
 
-```bash
-# Development
-cat backup.sql | docker-compose exec -T postgres psql -U postgres deals
+## Monitoring and Logging
 
-# Production
-cat backup.sql | docker-compose -f docker-compose.prod.yml exec -T postgres psql -U ${POSTGRES_USER} ${POSTGRES_DB}
-```
+### Logging Configuration
 
-## Logging
+Production logs are configured in `main.py` with the following settings:
 
-View logs for services:
+- Log level: WARNING (to reduce noise)
+- Log rotation: Enabled (10MB file size, 5 backup files)
+- Structured logging format for improved analysis
 
-```bash
-# All services
-docker-compose logs
+### Monitoring Integration
 
-# Specific service
-docker-compose logs backend
+Configure monitoring for your production deployment:
 
-# Production
-docker-compose -f docker-compose.prod.yml logs backend
-```
-
-## Troubleshooting
-
-### Common Issues
-
-#### Database Connection Issues
-1. Verify database container is running
-2. Check database logs
-3. Verify environment variables in the appropriate .env file
-
-#### Redis Connection Issues
-1. Verify Redis container is running
-2. Check Redis logs
-3. Verify environment variables in the appropriate .env file
-
-#### API Key Issues
-1. Verify API keys are correctly set in the environment file
-2. Check API service status
-3. Verify API key permissions and quotas
+1. Set up Prometheus metrics at `/metrics`
+2. Configure Grafana dashboards for visualization
+3. Implement alert policies for critical issues
 
 ## Security Considerations
 
-1. Use strong, unique passwords for all services
-2. Regularly rotate secrets and API keys
-3. Use SSL/TLS for all connections in production
-4. Implement proper access controls
-5. Regularly update all containers and dependencies
-6. Monitor for suspicious activities
+1. Always use HTTPS in production
+2. Secure all API endpoints with proper authentication
+3. Rotate API keys and credentials regularly
+4. Implement rate limiting for API endpoints
+5. Use secure headers and CORS configuration
+6. Enable database encryption for sensitive data
+7. Implement proper error handling to prevent information leakage
+8. Configure firewall rules to restrict access
 
-## Maintenance
+## Deployment Checklist
 
-### Regular Updates
-1. Pull latest code changes
-2. Update dependencies
-3. Rebuild and restart containers
-4. Run database migrations
+Before final deployment, verify:
 
-### Health Checks
-1. Monitor service health
-2. Check resource usage
-3. Verify API endpoints
-4. Test critical functionality
+- [ ] All environment variables are correctly set
+- [ ] Database migrations have been tested
+- [ ] API keys are valid and have appropriate permissions
+- [ ] SSL certificates are installed and valid
+- [ ] Health checks pass for all components
+- [ ] Logging is properly configured
+- [ ] Monitoring is set up and functional
+- [ ] Backups are configured and tested
+- [ ] Security measures are in place
+- [ ] Load testing has been performed
 
-## References
+## Rollback Procedure
 
-- [Docker Compose Documentation](https://docs.docker.com/compose/)
-- [PostgreSQL Documentation](https://www.postgresql.org/docs/)
-- [Redis Documentation](https://redis.io/documentation)
-- [FastAPI Deployment](https://fastapi.tiangolo.com/deployment/)
-- [Nginx Documentation](https://nginx.org/en/docs/) 
+If deployment fails or causes issues:
+
+1. Restore the previous database backup
+2. Revert to the previous code version
+3. Restart all services
+4. Verify system health
+5. Investigate the root cause before attempting redeployment
+
+## Support and Troubleshooting
+
+For deployment issues, refer to:
+
+- System logs in `/var/log/deals/`
+- Database logs
+- Docker logs using `docker logs container_name`
+- Application logs in the configured log directory
+
+Contact technical support at: support@example.com
+
+## Maintenance Windows
+
+Schedule regular maintenance during low-usage periods:
+
+- Database maintenance: Weekly (Sunday, 2-4 AM)
+- System updates: Monthly (First Sunday, 2-6 AM)
+- Security patches: As needed
+
+Notify users at least 48 hours before scheduled maintenance. 

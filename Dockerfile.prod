@@ -34,6 +34,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libpq5 \
         curl \
+        netcat-openbsd \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -43,6 +44,10 @@ RUN pip install --no-cache-dir /wheels/*
 
 # Copy project files
 COPY . .
+
+# Copy and set entrypoint script
+COPY scripts/deployment/entrypoint.prod.sh /app/scripts/entrypoint.sh
+RUN chmod +x /app/scripts/entrypoint.sh
 
 # Create non-root user
 RUN adduser --disabled-password --gecos '' appuser \
@@ -61,9 +66,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Expose port
 EXPOSE 8000
 
-# Copy and set entrypoint script
-COPY scripts/entrypoint.prod.sh /app/scripts/entrypoint.sh
-RUN chmod +x /app/scripts/entrypoint.sh
-
-ENTRYPOINT ["entrypoint.sh"]
+ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4", "--proxy-headers"] 

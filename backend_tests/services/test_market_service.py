@@ -4,7 +4,7 @@ from core.services.redis import get_redis_service
 from core.models.enums import MarketType, MarketStatus
 from core.exceptions import MarketError, ValidationError
 from factories.market import MarketFactory
-from utils.markers import service_test, depends_on
+from backend_tests.utils.markers import service_test, depends_on
 
 pytestmark = pytest.mark.asyncio
 

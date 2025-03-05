@@ -36,24 +36,27 @@ async def redis_mock():
 @pytest.fixture
 async def redis_service(redis_mock):
     """Get Redis service with mock Redis client."""
-    with patch('core.services.redis.RedisService._create_redis_client', return_value=redis_mock):
-        service = RedisService()
-        yield service
-        await service.close()
+    with patch('core.services.redis.RedisService._get_pool', return_value=AsyncMock()):
+        with patch('core.services.redis.Redis', return_value=redis_mock):
+            service = RedisService()
+            await service.init(client=redis_mock)
+            yield service
+            await service.close()
 
 @pytest.mark.asyncio
 @pytest.mark.service
 async def test_redis_service_initialization():
     """Test Redis service initialization."""
-    with patch('core.services.redis.RedisService._create_redis_client', 
-              new_callable=AsyncMock) as mock_create_client:
-        mock_client = AsyncMock()
-        mock_create_client.return_value = mock_client
-        
-        # Test service initialization
-        service = RedisService()
-        assert service.client == mock_client
-        mock_create_client.assert_called_once()
+    with patch('core.services.redis.RedisService._get_pool', 
+              return_value=AsyncMock()) as mock_get_pool:
+        with patch('core.services.redis.Redis', 
+                  return_value=AsyncMock()) as mock_redis:
+            
+            # Test service initialization
+            service = RedisService()
+            await service.init()
+            assert service._client is not None
+            mock_get_pool.assert_called_once()
 
 @pytest.mark.asyncio
 @pytest.mark.service

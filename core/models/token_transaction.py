@@ -122,8 +122,8 @@ class TokenTransaction(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Relationships
-    user = relationship("User", back_populates="token_transactions")
-    balance_history = relationship("TokenBalanceHistory", back_populates="transaction")
+    user = relationship("User", back_populates="token_transactions", lazy="selectin")
+    balance_history = relationship("TokenBalanceHistory", back_populates="transaction", lazy="selectin")
 
     def __repr__(self) -> str:
         return f"<TokenTransaction(id={self.id}, type={self.type}, amount={self.amount})>"
@@ -210,7 +210,9 @@ class TokenTransaction(Base):
     @classmethod
     async def get_by_user(cls, db, user_id: UUID) -> list['TokenTransaction']:
         """Get all transactions for a user"""
-        return await db.query(cls).filter(cls.user_id == user_id).all()
+        stmt = select(cls).where(cls.user_id == user_id)
+        result = await db.execute(stmt)
+        return result.scalars().all()
 
     @classmethod
     async def update_status(
@@ -221,7 +223,10 @@ class TokenTransaction(Base):
         tx_hash: Optional[str] = None
     ) -> 'TokenTransaction':
         """Update transaction status with validation"""
-        transaction = await db.query(cls).filter(cls.id == transaction_id).first()
+        stmt = select(cls).where(cls.id == transaction_id)
+        result = await db.execute(stmt)
+        transaction = result.scalar_one_or_none()
+        
         if not transaction:
             raise ValueError("Transaction not found")
             

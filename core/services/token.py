@@ -1,7 +1,7 @@
 """Token service implementation"""
 from abc import ABC, abstractmethod
 from decimal import Decimal
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import timedelta
 from tenacity import (
@@ -23,7 +23,8 @@ from core.models.token import (
     TokenTransaction,
     TransactionStatus as TokenTransactionStatus,
     TransactionType as TokenTransactionType,
-    TransactionType
+    TransactionType,
+    TransactionStatus
 )
 from core.models.token_pricing import TokenPricing
 from core.models.token_balance_history import TokenBalanceHistory
@@ -157,7 +158,7 @@ class SolanaTokenService(ITokenService):
             # Return 0 if balance is None
             if balance is None:
                 return Decimal("0.0")
-            return balance
+            return Decimal(str(balance.balance))
         except Exception as e:
             logger.error(f"Failed to check balance for user {user_id}: {str(e)}")
             raise TokenBalanceError(
@@ -236,87 +237,54 @@ class SolanaTokenService(ITokenService):
             )
 
     async def deduct_tokens(
-        self,
-        user_id: str,
-        amount: Decimal,
-        reason: str
-    ) -> TokenTransaction:
-        """Deduct tokens from user's balance"""
-        if amount <= 0:
-            logger.error(f"Invalid token deduction amount: {amount}")
-            raise TokenValidationError(
-                field="amount",
-                reason="Amount must be positive",
-                details={"amount": amount}
-            )
-        
+        self, user_id: str, amount: Decimal, reason: str = ""
+    ) -> Dict[str, Any]:
+        """Deduct tokens from a user's balance"""
         try:
-            transaction = await self.repository.deduct_tokens(user_id, amount, reason)
-            logger.info(f"Successfully deducted {amount} tokens from user {user_id}")
-            return transaction
-        except TokenBalanceError:
-            logger.error(f"Insufficient balance for user {user_id}")
-            raise
-        except Exception as e:
-            logger.error(f"Failed to deduct tokens for user {user_id}: {str(e)}")
-            raise TokenTransactionError(
-                transaction_id="deduct_tokens",
-                operation="deduct_tokens", 
-                reason=f"Failed to deduct tokens: {str(e)}",
-                details={"user_id": user_id, "amount": str(amount), "reason": reason}
+            # Check if user has enough balance
+            current_balance = await self.check_balance(user_id)
+            if current_balance < amount:
+                raise TokenBalanceError(
+                    operation="deduct_tokens",
+                    reason=f"Insufficient balance for deduction. Required: {amount}, Available: {current_balance}",
+                    balance=current_balance
+                )
+
+            # Create transaction - use positive amount for the transaction record
+            # but specify the transaction type as DEDUCTION
+            transaction = await self.repository.create_transaction(
+                user_id=user_id,
+                transaction_type=TransactionType.DEDUCTION.value,
+                amount=amount,  # Use positive amount to satisfy the database constraint
+                status=TransactionStatus.COMPLETED.value,
+                meta_data={"reason": reason}
             )
 
-    async def deduct_tokens_for_operation(
-        self,
-        user_id: str,
-        operation: str,
-        **kwargs
-    ) -> TokenTransaction:
-        """Deduct tokens for a specific operation.
-        
-        Args:
-            user_id: The ID of the user
-            operation: The operation type (e.g., market_search)
-            **kwargs: Additional operation-specific parameters
-            
-        Returns:
-            The created transaction record
-            
-        Raises:
-            TokenValidationError: If validation fails
-            TokenBalanceError: If insufficient balance
-        """
-        try:
-            # Get pricing for the operation
-            pricing = await self.get_pricing_info(operation)
-            if not pricing:
-                logger.warning(f"No pricing found for operation {operation}, skipping token deduction")
-                # Create a dummy transaction for tracking purposes
-                return TokenTransaction(
-                    id=uuid4(),
-                    user_id=user_id,
-                    type=TransactionType.DEDUCTION.value,
-                    amount=Decimal('0'),
-                    status=TokenTransactionStatus.COMPLETED.value,
-                    meta_data={"operation": operation, "reason": f"No pricing for {operation}", **kwargs}
-                )
-            
-            # Deduct tokens based on the pricing
-            reason = f"{operation} operation"
-            if 'market_id' in kwargs:
-                reason += f" for market {kwargs['market_id']}"
-            
-            return await self.deduct_tokens(user_id, pricing.token_cost, reason)
-            
-        except TokenBalanceError:
+            # Update user's balance - use negative amount for the balance update
+            updated_balance = await self.repository.update_user_balance(user_id, -amount)
+
+            # Clear balance cache
+            if self._redis:
+                cache_key = f"token:balance:{user_id}"
+                await self._redis.delete(cache_key)
+
+            return {
+                "success": True,
+                "transaction_id": transaction.id if transaction else "",
+                "user_id": user_id,
+                "amount": amount,
+                "reason": reason,
+                "new_balance": Decimal(str(updated_balance.balance)) if hasattr(updated_balance, 'balance') else updated_balance
+            }
+        except TokenBalanceError as e:
+            logger.error(f"Token balance error during deduction: {str(e)}")
             raise
         except Exception as e:
-            logger.error(f"Failed to deduct tokens for operation {operation}: {str(e)}")
+            logger.error(f"Failed to deduct tokens: {str(e)}")
             raise TokenTransactionError(
-                transaction_id="deduct_tokens_for_operation",
-                operation=operation,
-                reason=f"Failed to deduct tokens for operation: {str(e)}",
-                details={"user_id": user_id, "operation": operation, **kwargs}
+                transaction_id="",
+                operation="deduct_tokens",
+                reason=f"Failed to deduct tokens: {str(e)}"
             )
 
     async def add_reward(
@@ -327,422 +295,342 @@ class SolanaTokenService(ITokenService):
     ) -> TokenTransaction:
         """Add reward tokens to user's balance"""
         if amount <= 0:
-            logger.error(f"Invalid reward amount: {amount}")
+            logger.error(f"Invalid token reward amount: {amount}")
             raise TokenValidationError(
+                message="Amount must be positive",
                 field="amount",
-                reason="Amount must be positive",
-                details={"amount": amount}
+                value=amount
             )
         
         try:
-            transaction = await self.repository.add_reward(user_id, amount, reason)
-            logger.info(f"Successfully added {amount} tokens to user {user_id}")
+            # Create reward transaction
+            transaction = await self.repository.create_transaction(
+                user_id=user_id,
+                amount=amount,
+                transaction_type=TransactionType.REWARD.value,
+                status=TransactionStatus.COMPLETED.value,
+                meta_data={"reason": reason}
+            )
+            
+            # Clear cache
+            await self.clear_balance_cache(user_id)
+            
+            logger.info(f"Added {amount} reward tokens to user {user_id} for {reason}")
             return transaction
         except Exception as e:
-            logger.error(f"Failed to add reward for user {user_id}: {str(e)}")
+            logger.error(f"Failed to add reward tokens for user {user_id}: {str(e)}")
             raise TokenTransactionError(
-                transaction_id="add_reward",
+                transaction_id=None,
                 operation="add_reward",
-                reason=str(e),
-                details={
-                    "user_id": user_id,
-                    "amount": str(amount),
-                    "reward_reason": reason
-                }
+                reason=f"Failed to add reward tokens: {str(e)}",
+                details={"user_id": user_id, "amount": amount, "reason": reason}
             )
 
-    async def rollback_transaction(self, tx_id: str) -> bool:
-        """Rollback a failed transaction"""
+    def validate_wallet_address(self, address: str) -> bool:
+        """Validate Solana wallet address format"""
         try:
-            result = await self.repository.rollback_transaction(tx_id)
-            logger.info(f"Successfully rolled back transaction {tx_id}")
-            return result
-        except Exception as e:
-            logger.error(f"Failed to rollback transaction {tx_id}: {str(e)}")
-            raise TokenTransactionError(
-                transaction_id=tx_id,
-                operation="rollback_transaction",
-                reason=f"Failed to rollback transaction: {str(e)}",
-                details={"transaction_id": tx_id}
-            )
+            # Solana addresses are base58 encoded and 32 bytes long
+            decoded = b58decode(address)
+            return len(decoded) == 32
+        except Exception:
+            return False
 
-    async def disconnect_wallet(self, user_id: str) -> bool:
-        """Disconnect user's wallet"""
+    async def _verify_wallet_exists(self, address: str) -> bool:
+        """Verify wallet exists on Solana network"""
         try:
-            result = await self.repository.disconnect_wallet(user_id)
-            logger.info(f"Successfully disconnected wallet for user {user_id}")
-            return result
+            response = await self.client.get_account_info(address)
+            return response.value is not None
         except Exception as e:
-            logger.error(f"Failed to disconnect wallet for user {user_id}: {str(e)}")
-            raise TokenTransactionError(
-                transaction_id="disconnect_wallet",
-                operation="disconnect_wallet",
-                reason=f"Failed to disconnect wallet: {str(e)}",
-                details={"user_id": user_id}
-            )
+            logger.error(f"Error verifying wallet {address}: {str(e)}")
+            return False
 
     async def validate_operation(
         self,
         user_id: str,
         operation: str
     ) -> None:
-        """Validate if user can perform an operation.
-        
-        Args:
-            user_id: The ID of the user
-            operation: The operation to validate
-            
-        Raises:
-            TokenValidationError: If validation fails
-            TokenBalanceError: If insufficient balance
-        """
+        """Validate if user can perform an operation"""
         try:
-            # Get operation cost
+            # Get pricing for operation
             pricing = await self.get_pricing_info(operation)
             if not pricing:
                 logger.warning(f"No pricing found for operation {operation}")
-                return  # No pricing means no cost
-                
-            # Check user balance
+                return
+            
+            # Get user balance
             balance = await self.check_balance(user_id)
-            if balance < pricing.token_cost:
+            
+            # Check if user has enough tokens
+            if balance < pricing.cost:
+                logger.error(f"Insufficient balance for operation {operation}: {balance} < {pricing.cost}")
                 raise TokenBalanceError(
-                    operation="validate_operation",
-                    reason=f"Insufficient balance for operation {operation}. Required: {pricing.token_cost}, Available: {balance}",
+                    operation=operation,
+                    reason="Insufficient balance for operation",
                     balance=balance
                 )
-                
-            logger.debug(f"Operation {operation} validated for user {user_id}")
-            
         except TokenBalanceError:
             raise
         except Exception as e:
             logger.error(f"Failed to validate operation {operation} for user {user_id}: {str(e)}")
             raise TokenValidationError(
                 field="operation",
-                reason=f"Operation validation failed: {str(e)}",
+                reason=f"Failed to validate operation: {str(e)}",
                 details={"user_id": user_id, "operation": operation}
             )
 
-    def validate_wallet_address(self, address: str) -> bool:
-        """Validate Solana wallet address format"""
-        try:
-            # Decode base58 address
-            decoded = b58decode(address)
-            # Solana addresses are 32 bytes
-            return len(decoded) == 32
-        except Exception:
-            return False
-
-    async def _verify_wallet_exists(self, wallet_address: str) -> bool:
-        """Verify wallet exists on Solana network"""
-        try:
-            response = await self.client.get_account_info(wallet_address)
-            return response.value is not None
-        except Exception as e:
-            logger.error(f"Failed to verify wallet {wallet_address}: {str(e)}")
-            return False
-
     async def get_balance(self, user_id: str) -> Decimal:
-        """Get user's token balance.
+        """Get user's token balance with caching"""
+        # Try to get from cache first
+        if self._redis:
+            cache_key = f"token:balance:{user_id}"
+            cached = await self._redis.get(cache_key)
+            if cached:
+                try:
+                    return Decimal(cached)
+                except (ValueError, TypeError):
+                    # Invalid cache value, continue to fetch from DB
+                    pass
         
-        Args:
-            user_id: User ID
-            
-        Returns:
-            Decimal: User's current token balance
-            
-        Raises:
-            TokenBalanceError: If retrieval fails
-        """
-        try:
-            # Try to get from cache first if redis is available
-            if self._redis:
-                cached_balance = await self._redis.get(f"balance:{user_id}")
-                if cached_balance:
-                    # Check if cached_balance is a string or bytes
-                    if isinstance(cached_balance, bytes):
-                        balance = Decimal(cached_balance.decode())
-                    else:
-                        balance = Decimal(str(cached_balance))
-                    logger.debug(f"Retrieved cached balance for user {user_id}: {balance}")
-                    return balance
-            
-            # Get from repository
-            balance_obj = await self.repository.get_user_balance(user_id)
-            
-            # Extract the actual balance value
-            if balance_obj is None:
-                balance = Decimal('0')
-            elif hasattr(balance_obj, 'balance'):
-                balance = Decimal(str(balance_obj.balance))
-            else:
-                balance = Decimal(str(balance_obj))
-            
-            # Cache the result if redis is available
-            if self._redis and balance_obj:
-                await self._redis.setex(
-                    f"balance:{user_id}",
-                    settings.BALANCE_CACHE_TTL,
-                    str(balance)
-                )
-            
-            logger.debug(f"Retrieved balance for user {user_id}: {balance_obj}")
-            return balance
-        except Exception as e:
-            logger.error(f"Failed to get balance for user {user_id}: {str(e)}")
-            raise TokenBalanceError(
-                operation="get_balance",
-                reason=f"Failed to get balance: {str(e)}",
-                balance=None
-            )
-            
+        # Get from database
+        balance = await self.check_balance(user_id)
+        
+        # Handle None balance by returning 0
+        if balance is None:
+            balance = Decimal("0.0")
+        
+        # If balance is a TokenBalance object, extract the balance value
+        if hasattr(balance, 'balance'):
+            balance = Decimal(str(balance.balance))
+        
+        # Cache the result
+        if self._redis:
+            cache_key = f"token:balance:{user_id}"
+            await self._redis.setex(cache_key, 300, str(balance))  # 5 minutes in seconds
+        
+        return balance
+
     async def transfer(
-        self,
-        from_user_id: str,
-        to_user_id: str,
-        amount: Decimal,
-        reason: str
-    ) -> TokenTransaction:
-        """Transfer tokens between users.
-        
-        Args:
-            from_user_id: Source user ID
-            to_user_id: Destination user ID
-            amount: Amount to transfer
-            reason: Reason for transfer
-            
-        Returns:
-            TokenTransaction: Created transaction
-            
-        Raises:
-            TokenBalanceError: If source has insufficient balance
-            TokenTransactionError: If transfer fails
-        """
-        if amount <= 0:
-            raise TokenValidationError(
-                field="amount",
-                reason="Transfer amount must be positive",
-                details={"amount": amount}
-            )
-        
+        self, from_user_id: str, to_user_id: str, amount: Decimal, reason: str = ""
+    ) -> Dict[str, Any]:
+        """Transfer tokens from one user to another"""
         try:
-            transaction = await self.repository.transfer_tokens(
-                from_user_id=from_user_id,
-                to_user_id=to_user_id,
-                amount=amount,
-                reason=reason
+            # Check if sender has enough balance
+            sender_balance = await self.check_balance(from_user_id)
+            if sender_balance < amount:
+                raise TokenBalanceError(
+                    operation="transfer",
+                    reason=f"Insufficient balance for transfer. Required: {amount}, Available: {sender_balance}",
+                    balance=sender_balance
+                )
+
+            # Create outgoing transaction (use DEDUCTION instead of OUTGOING)
+            outgoing_tx = await self.repository.create_transaction(
+                user_id=from_user_id,
+                transaction_type=TransactionType.DEDUCTION.value,  # Use DEDUCTION instead of OUTGOING
+                amount=amount,  # Use positive amount
+                status=TransactionStatus.COMPLETED.value,
+                meta_data={"recipient": str(to_user_id), "reason": reason, "transfer_type": "outgoing"}  # Add transfer_type for clarity
             )
+
+            # Create incoming transaction (use CREDIT instead of INCOMING)
+            incoming_tx = await self.repository.create_transaction(
+                user_id=to_user_id,
+                transaction_type=TransactionType.CREDIT.value,  # Use CREDIT instead of INCOMING
+                amount=amount,  # Positive for incoming
+                status=TransactionStatus.COMPLETED.value,
+                meta_data={"sender": str(from_user_id), "reason": reason, "transfer_type": "incoming"}  # Add transfer_type for clarity
+            )
+
+            # Update sender's balance
+            await self.repository.update_user_balance(from_user_id, -amount)
             
-            # Invalidate cache for both users
+            # Update recipient's balance
+            await self.repository.update_user_balance(to_user_id, amount)
+
+            # Clear balance cache for both users
             if self._redis:
-                await self._redis.delete(f"balance:{from_user_id}")
-                await self._redis.delete(f"balance:{to_user_id}")
-            
-            logger.info(
-                f"Successfully transferred {amount} tokens from {from_user_id} to {to_user_id}: {reason}"
-            )
-            return transaction
-        except TokenBalanceError:
+                sender_cache_key = f"token:balance:{from_user_id}"
+                recipient_cache_key = f"token:balance:{to_user_id}"
+                await self._redis.delete(sender_cache_key)
+                await self._redis.delete(recipient_cache_key)
+
+            return {
+                "success": True,
+                "outgoing_transaction_id": outgoing_tx.id if outgoing_tx else "",
+                "incoming_transaction_id": incoming_tx.id if incoming_tx else "",
+                "amount": amount,
+                "from_user_id": from_user_id,
+                "to_user_id": to_user_id,
+                "reason": reason
+            }
+        except TokenBalanceError as e:
+            logger.error(f"Token balance error during transfer: {str(e)}")
             raise
         except Exception as e:
             logger.error(f"Failed to transfer tokens: {str(e)}")
             raise TokenTransactionError(
-                transaction_id="transfer",
+                transaction_id="",
                 operation="transfer",
-                reason=f"Transfer failed: {str(e)}",
-                details={"from_user_id": from_user_id, "to_user_id": to_user_id, "amount": str(amount)}
+                reason=f"Failed to transfer tokens: {str(e)}"
             )
-            
+
     async def deduct_service_fee(
-        self,
-        user_id: str,
-        amount: Decimal,
-        service_type: str
-    ) -> TokenTransaction:
-        """Deduct service fee from user's balance.
-        
-        Args:
-            user_id: User ID
-            amount: Fee amount
-            service_type: Type of service
-            
-        Returns:
-            TokenTransaction: Created transaction
-            
-        Raises:
-            TokenBalanceError: If insufficient balance
-            TokenTransactionError: If deduction fails
-        """
-        if amount <= 0:
-            raise TokenValidationError(
-                field="amount",
-                reason="Fee amount must be positive",
-                details={"amount": amount}
-            )
-            
+        self, user_id: str, amount: Decimal, service_type: str
+    ) -> Dict[str, Any]:
+        """Deduct service fee from user's balance"""
         try:
-            transaction = await self.repository.deduct_tokens(
+            result = await self.deduct_tokens(
                 user_id=user_id,
                 amount=amount,
                 reason=f"Service fee: {service_type}"
             )
-            
-            # Invalidate cache
-            if self._redis:
-                await self._redis.delete(f"balance:{user_id}")
-                
-            logger.info(f"Deducted service fee of {amount} from user {user_id} for {service_type}")
-            return transaction
-        except TokenBalanceError:
+            return result
+        except TokenBalanceError as e:
+            logger.error(f"Token balance error during service fee deduction: {str(e)}")
             raise
         except Exception as e:
             logger.error(f"Failed to deduct service fee: {str(e)}")
             raise TokenTransactionError(
-                transaction_id="service_fee",
+                transaction_id="",
                 operation="deduct_service_fee",
-                reason=f"Failed to deduct service fee: {str(e)}",
-                details={"user_id": user_id, "amount": str(amount), "service_type": service_type}
+                reason=f"Failed to deduct service fee: {str(e)}"
             )
-            
+
     async def clear_balance_cache(self, user_id: str) -> None:
-        """Clear cached balance for a user.
-        
-        Args:
-            user_id: User ID
-        """
+        """Clear user's balance cache"""
         if self._redis:
-            await self._redis.delete(f"balance:{user_id}")
+            cache_key = f"token:balance:{user_id}"
+            await self._redis.delete(cache_key)
             logger.debug(f"Cleared balance cache for user {user_id}")
-            
-    async def validate_transaction(self, transaction_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate transaction data.
-        
-        Args:
-            transaction_data: Transaction data to validate
-            
-        Returns:
-            Dict[str, Any]: Validated transaction data
-            
-        Raises:
-            ValidationError: If validation fails
-        """
-        # Validate amount
-        amount = transaction_data.get('amount')
-        if not amount or not isinstance(amount, Decimal) or amount <= 0:
-            raise ValidationError("Transaction amount must be a positive Decimal")
-            
-        # Check if the amount is too small (less than 1E-8)
-        if amount < Decimal('0.00000001'):
-            raise ValidationError("Transaction amount is too small. Minimum allowed is 0.00000001")
-            
-        # Validate type
-        tx_type = transaction_data.get('type')
-        token_valid_types = [t.value for t in TokenTransactionType]
-        transaction_valid_types = [t.value for t in TransactionType]
-        
-        # Combine all valid types
-        valid_types = list(set(token_valid_types + transaction_valid_types))
-        
-        if not tx_type or tx_type not in valid_types:
-            raise ValidationError(f"Invalid transaction type. Must be one of: {', '.join(valid_types)}")
-            
-        # Return validated data
-        return transaction_data
-        
+
     async def create_transaction(
         self,
         user_id: str,
         amount: Decimal,
         type: str,
-        status: Optional[str] = None,
-        reason: Optional[str] = None,
+        status: str,
+        description: Optional[str] = None,
         meta_data: Optional[Dict[str, Any]] = None
     ) -> TokenTransaction:
-        """Create a new token transaction.
+        """Create a token transaction.
         
         Args:
             user_id: User ID
             amount: Transaction amount
-            type: Transaction type (one of TokenTransactionType values)
-            status: Transaction status (optional)
-            reason: Reason for transaction (optional)
+            type: Transaction type
+            status: Transaction status
+            description: Optional transaction description (for backward compatibility)
             meta_data: Optional transaction metadata
             
         Returns:
-            TokenTransaction: Created transaction
-            
-        Raises:
-            TokenTransactionError: If transaction creation fails
-            ValidationError: If transaction data is invalid
+            The created transaction
         """
+        # Validate amount
+        if amount <= 0:
+            raise TokenValidationError(
+                field="amount",
+                reason="Amount must be positive"
+            )
+        
+        # Ensure amount has at most 8 decimal places
+        if amount.as_tuple().exponent < -8:
+            raise TokenValidationError(
+                field="amount",
+                reason="Amount cannot have more than 8 decimal places"
+            )
+        
+        # Handle description for backward compatibility
+        transaction_meta_data = meta_data or {}
+        if description and 'description' not in transaction_meta_data:
+            transaction_meta_data['description'] = description
+        
         try:
-            # Process meta_data to ensure UUID objects are serialized
-            processed_meta_data = {}
-            if meta_data:
-                for key, value in meta_data.items():
-                    # Convert UUID to string
-                    if isinstance(value, UUID):
-                        processed_meta_data[key] = str(value)
-                    else:
-                        processed_meta_data[key] = value
-            
-            # Validate transaction data
-            transaction_data = {
-                'user_id': user_id,
-                'type': type,
-                'amount': amount,
-                'reason': reason or "",
-                'meta_data': processed_meta_data or {}
-            }
-            
-            await self.validate_transaction(transaction_data)
-            
-            # Set default status if not provided
-            if not status:
-                status = TokenTransactionStatus.PENDING.value
-            
-            # Create transaction record
+            # Create transaction
             transaction = await self.repository.create_transaction(
                 user_id=user_id,
                 transaction_type=type,
                 amount=amount,
                 status=status,
-                meta_data={
-                    'reason': reason or "Transaction",
-                    **(processed_meta_data or {})
-                }
+                meta_data=transaction_meta_data
             )
             
-            # Update user balance based on transaction type
-            if type in [TokenTransactionType.REWARD.value, TokenTransactionType.REFUND.value, TokenTransactionType.CREDIT.value]:
-                # Add to balance
-                balance = await self.repository.get_user_balance(user_id)
-                if balance:
-                    await balance.update_balance(
-                        self.db,
-                        amount,
-                        type,
-                        reason or "Transaction",
-                        transaction.id,
-                        processed_meta_data
-                    )
-                    
-                # Invalidate cache
-                if self._redis:
-                    await self._redis.delete(f"balance:{user_id}")
+            # Update user balance if transaction is completed
+            if status == TransactionStatus.COMPLETED.value:
+                # For deduction type, we subtract from balance
+                if type in [TransactionType.DEDUCTION.value, TransactionType.OUTGOING.value]:
+                    await self.repository.update_user_balance(user_id, -amount)
+                # For other types (reward, refund, credit, incoming), we add to balance
+                else:
+                    await self.repository.update_user_balance(user_id, amount)
+                
+                # Clear balance cache
+                await self.clear_balance_cache(user_id)
             
-            # Return transaction
             return transaction
-        except ValidationError as e:
-            raise e
         except Exception as e:
-            logger.error(f"Failed to create transaction: {str(e)}")
+            logger.error(f"Failed to create transaction for user {user_id}: {str(e)}")
             raise TokenTransactionError(
-                transaction_id="create_transaction",
+                transaction_id=None,
                 operation="create_transaction",
                 reason=f"Failed to create transaction: {str(e)}",
-                details={"user_id": user_id, "amount": str(amount), "type": type}
+                details={"user_id": user_id, "amount": amount, "type": type}
+            )
+
+    async def validate_transaction(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate transaction data"""
+        errors = {}
+        
+        # Validate amount
+        amount = data.get("amount")
+        if not amount or not isinstance(amount, Decimal) or amount <= 0:
+            errors["amount"] = "Amount must be a positive decimal"
+        
+        # Validate type
+        tx_type = data.get("type")
+        if not tx_type or tx_type not in [t.value for t in TokenTransactionType]:
+            errors["type"] = f"Type must be one of: {', '.join([t.value for t in TokenTransactionType])}"
+        
+        # Validate status
+        status = data.get("status")
+        if status and status not in [s.value for s in TokenTransactionStatus]:
+            errors["status"] = f"Status must be one of: {', '.join([s.value for s in TokenTransactionStatus])}"
+        
+        if errors:
+            raise ValidationError(
+                message="Invalid transaction data",
+                errors=errors
+            )
+        
+        return data
+
+    async def update_balance(self, user_id: str, amount: Decimal) -> Decimal:
+        """Update user's token balance"""
+        try:
+            # Get current balance first to ensure it exists
+            current_balance = await self.check_balance(user_id)
+            
+            # Update balance in repository
+            updated_balance = await self.repository.update_user_balance(user_id, amount)
+            
+            # Clear cache
+            if self._redis:
+                cache_key = f"token:balance:{user_id}"
+                await self._redis.delete(cache_key)
+            
+            # Return the updated balance value
+            if updated_balance is None:
+                return Decimal("0.0")
+            
+            if hasattr(updated_balance, 'balance'):
+                return Decimal(str(updated_balance.balance))
+            
+            return Decimal(str(updated_balance))
+        except Exception as e:
+            logger.error(f"Failed to update balance for user {user_id}: {str(e)}")
+            raise TokenBalanceError(
+                operation="update_balance",
+                reason=f"Failed to update balance: {str(e)}",
+                balance=current_balance if 'current_balance' in locals() else Decimal("0.0")
             )
 
 # Export SolanaTokenService as TokenService for backward compatibility

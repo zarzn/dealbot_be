@@ -1,0 +1,13 @@
+Login to {{ site_name }}
+
+Click the link below to log in to your account:
+
+{{ magic_link_url }}
+
+This login link will expire in 30 minutes.
+
+If you did not request this login link, please ignore this email.
+
+This email was sent by {{ site_name }}. Please do not reply to this email.
+
+If you have any questions, please contact our support team at {{ support_email }} 

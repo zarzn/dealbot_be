@@ -5,7 +5,7 @@ from core.models.goal import Goal
 from core.models.enums import GoalStatus
 from factories.user import UserFactory
 from factories.goal import GoalFactory
-from utils.markers import feature_test, depends_on
+from backend_tests.utils.markers import feature_test, depends_on
 
 pytestmark = pytest.mark.asyncio
 

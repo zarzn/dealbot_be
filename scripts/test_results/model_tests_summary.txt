@@ -1,9 +1,0 @@
-﻿MODEL TESTS SUMMARY
-===================
-
-Total Tests: 0
-Passed: 0
-Failed: 0
-
-Failed Tests:
-

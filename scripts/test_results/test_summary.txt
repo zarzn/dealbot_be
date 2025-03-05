@@ -1,44 +1,15 @@
-﻿TEST RESULTS SUMMARY
-===================
+# Test Results Summary
 
-Overall Summary:
-  Total Tests in Codebase: 1204
-  Tests Executed: 0
-  Passed Tests: 0
-  Failed Tests: 0
-  Skipped Tests: 0
+Generated: 03/05/2025 02:48:05
 
-Test Counts by Category:
-  Core Tests: 301 tests (25% of total)
-  Integration Tests: 301 tests (25% of total)
-  Service Tests: 301 tests (25% of total)
-  Feature Tests: 301 tests (25% of total)
-Results by Category:
-Core Tests:
-  Total Tests in Category: 301
-  Tests Run: 0
-  Passed: 0
-  Failed: 0
-  Status: Passed
-  Dependency Status: Dependencies Met
-Integration Tests:
-  Total Tests in Category: 301
-  Tests Run: 0
-  Passed: 0
-  Failed: 0
-  Status: Passed
-  Dependency Status: Dependencies Met
-Service Tests:
-  Total Tests in Category: 301
-  Tests Run: 0
-  Passed: 0
-  Failed: 0
-  Status: Passed
-  Dependency Status: Dependencies Met
-Feature Tests:
-  Total Tests in Category: 301
-  Tests Run: 0
-  Passed: 0
-  Failed: 0
-  Status: Passed
-  Dependency Status: Dependencies Met
+**Note: Only running Core and Service tests. Integration and Feature tests excluded.**
+
+✅ Core tests: PASSED
+❌ Service tests: FAILED or had issues
+
+## Generated Reports:
+- Core_report.html
+- Feature_report.html
+- Integration_report.html
+- Service_report.html
+- test_report.html

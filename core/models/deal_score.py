@@ -47,8 +47,8 @@ class DealMatch(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=expression.text("CURRENT_TIMESTAMP"))
 
     # Relationships
-    goal = relationship("Goal", back_populates="matched_deals")
-    deal = relationship("Deal", back_populates="goal_matches")
+    goal = relationship("Goal", back_populates="matched_deals", lazy="selectin")
+    deal = relationship("Deal", back_populates="goal_matches", lazy="selectin")
 
     def __repr__(self) -> str:
         """String representation."""
@@ -76,7 +76,7 @@ class DealScore(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationships
-    deal = relationship("Deal", back_populates="scores")
+    deal = relationship("Deal", back_populates="scores", lazy="selectin")
 
     def __repr__(self) -> str:
         """String representation of the deal score."""
@@ -90,6 +90,7 @@ class DealScore(Base):
             'user_id': str(self.user_id),
             'score': float(self.score),
             'confidence': float(self.confidence),
+            'score_type': self.score_type,
             'timestamp': self.created_at.isoformat(),
             'factors': self.factors,
             'created_at': self.created_at.isoformat()

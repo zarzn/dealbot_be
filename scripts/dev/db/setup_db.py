@@ -69,7 +69,13 @@ def reset_database_local():
     """Reset the database by dropping and recreating it using local connection."""
     try:
         # Connect to postgres database to drop/create deals database
-        engine = create_engine('postgresql://postgres:12345678@localhost:5432/postgres')
+        db_host = os.environ.get('DB_HOST', 'localhost')
+        db_password = os.environ.get('DB_PASSWORD', '12345678')
+        db_user = os.environ.get('DB_USER', 'postgres')
+        db_port = os.environ.get('DB_PORT', '5432')
+        
+        logger.info(f"Connecting to database at {db_host}:{db_port} as {db_user}")
+        engine = create_engine(f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/postgres')
         conn = engine.connect()
         conn.execute(text("COMMIT"))  # Close any open transactions
         
@@ -155,10 +161,18 @@ def init_database_docker():
 def init_database_local():
     """Initialize database with required extensions and test table using local connection."""
     try:
+        # Get database connection parameters from environment variables
+        db_host = os.environ.get('DB_HOST', 'localhost')
+        db_password = os.environ.get('DB_PASSWORD', '12345678')
+        db_user = os.environ.get('DB_USER', 'postgres')
+        db_port = os.environ.get('DB_PORT', '5432')
+        
         # Initialize both main and test databases
         for db_name in ['deals', 'deals_test']:
             # Connect to database
-            engine = create_engine(f'postgresql://postgres:12345678@localhost:5432/{db_name}')
+            connection_string = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
+            logger.info(f"Connecting to {db_name} at {db_host}:{db_port}")
+            engine = create_engine(connection_string)
             conn = engine.connect()
             
             # Set timezone to UTC
@@ -230,13 +244,22 @@ def run_migrations_local():
         # Get the current working directory
         current_dir = os.getcwd()
         
+        # Get database connection parameters from environment variables
+        db_host = os.environ.get('DB_HOST', 'localhost')
+        db_password = os.environ.get('DB_PASSWORD', '12345678')
+        db_user = os.environ.get('DB_USER', 'postgres')
+        db_port = os.environ.get('DB_PORT', '5432')
+        
         # Get the parent directory (backend) where alembic.ini is located
-        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
+        backend_dir = current_dir
+        if "backend" not in current_dir:
+            backend_dir = os.path.join(current_dir, "backend")
         
         # Run migrations for both main and test databases
         for db_name in ['deals', 'deals_test']:
             # Set the database URL in environment
-            os.environ['DATABASE_URL'] = f'postgresql://postgres:12345678@localhost:5432/{db_name}'
+            os.environ['DATABASE_URL'] = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
+            logger.info(f"Setting DATABASE_URL to: {os.environ['DATABASE_URL']}")
             
             # Run alembic from the backend directory
             result = subprocess.run(
@@ -306,8 +329,16 @@ def create_default_user_docker():
 def create_default_user_local():
     """Create a default user in the database using local connection."""
     try:
+        # Get database connection parameters from environment variables
+        db_host = os.environ.get('DB_HOST', 'localhost')
+        db_password = os.environ.get('DB_PASSWORD', '12345678')
+        db_user = os.environ.get('DB_USER', 'postgres')
+        db_port = os.environ.get('DB_PORT', '5432')
+        
         # Connect to the database
-        engine = create_engine('postgresql://postgres:12345678@localhost:5432/deals')
+        connection_string = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/deals'
+        logger.info(f"Connecting to deals database at {db_host}:{db_port}")
+        engine = create_engine(connection_string)
         Session = sessionmaker(bind=engine)
         session = Session()
         
@@ -359,8 +390,45 @@ def create_default_user_local():
         logger.error(f"Failed to create default user (Local): {str(e)}")
         return False
 
-def setup_database(use_docker=True):
+def determine_environment():
+    """Determine whether to use Docker or local environment based on environment variables."""
+    # Check if DB_HOST environment variable is set
+    db_host = os.environ.get('DB_HOST', None)
+    
+    # If DB_HOST is explicitly set to 'localhost', use local
+    if db_host == 'localhost':
+        logger.info("DB_HOST is set to 'localhost', using local environment")
+        return False
+    
+    # If DB_HOST is explicitly set to 'deals_postgres', use Docker
+    if db_host == 'deals_postgres':
+        logger.info("DB_HOST is set to 'deals_postgres', using Docker environment")
+        return True
+    
+    # Otherwise, try to detect Docker environment by checking if we can access the Docker container
+    try:
+        result = subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'echo', 'Docker environment detected'],
+            capture_output=True,
+            text=True,
+            check=False  # Don't raise exception if command fails
+        )
+        if result.returncode == 0:
+            logger.info("Docker container 'deals_postgres' is accessible, using Docker environment")
+            return True
+    except Exception:
+        pass
+    
+    # Default to local if Docker is not detected
+    logger.info("Using local environment by default (Docker container not detected)")
+    return False
+
+def setup_database(use_docker=None):
     """Run complete database setup process."""
+    # If use_docker is not specified, auto-detect the environment
+    if use_docker is None:
+        use_docker = determine_environment()
+    
     logger.info(f"Starting database setup process using {'Docker' if use_docker else 'Local'} environment...")
     
     # Step 1: Reset database
@@ -412,8 +480,16 @@ def setup_database(use_docker=True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Setup database for AI Agentic Deals System')
-    parser.add_argument('--local', action='store_true', help='Use local connection instead of Docker')
+    parser.add_argument('--local', action='store_true', help='Force using local connection')
+    parser.add_argument('--docker', action='store_true', help='Force using Docker connection')
     args = parser.parse_args()
     
-    success = setup_database(not args.local)
+    # Determine environment based on args
+    use_docker = None
+    if args.local:
+        use_docker = False
+    elif args.docker:
+        use_docker = True
+    
+    success = setup_database(use_docker)
     sys.exit(0 if success else 1) 

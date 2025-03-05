@@ -45,6 +45,15 @@ class DatabaseMetrics:
                 'Database transaction duration in seconds',
                 buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
             )
+            self.slow_queries = Counter(
+                'db_slow_queries_total',
+                'Total number of slow database queries'
+            )
+            self.query_execution_time = Histogram(
+                'db_query_execution_time_seconds',
+                'Database query execution time in seconds',
+                buckets=(0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0)
+            )
             self._initialized = True
 
     def connection_checkout(self):
@@ -69,4 +78,22 @@ class DatabaseMetrics:
 
     def transaction_time(self, duration: float):
         """Record transaction duration."""
-        self.transaction_duration.observe(duration) 
+        self.transaction_duration.observe(duration)
+        
+    def record_slow_query(self):
+        """Record a slow query."""
+        self.slow_queries.inc()
+        
+    def record_query_time(self, duration: float):
+        """Record query execution time."""
+        self.query_execution_time.observe(duration)
+        
+    @property
+    def connection_failures_count(self) -> int:
+        """Get the current count of connection failures."""
+        return self.connection_failures._value.get()
+        
+    @property
+    def slow_queries_count(self) -> int:
+        """Get the current count of slow queries."""
+        return self.slow_queries._value.get() 

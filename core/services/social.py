@@ -53,7 +53,7 @@ async def verify_google_token(token: str) -> Optional[SocialUserInfo]:
                 )
     except aiohttp.ClientError as e:
         logger.error(f"Google token verification failed: {str(e)}")
-        raise SocialAuthError("Failed to verify Google token", provider="google")
+        raise SocialAuthError("Google authentication failed: Network error", provider="google")
 
 async def verify_facebook_token(token: str) -> Optional[SocialUserInfo]:
     """Verify Facebook OAuth token.
@@ -88,6 +88,11 @@ async def verify_facebook_token(token: str) -> Optional[SocialUserInfo]:
                     raise SocialAuthError("Failed to get Facebook user info", provider="facebook")
                     
                 data = await response.json()
+                
+                # Check if email is provided
+                if "email" not in data:
+                    raise SocialAuthError("Email not provided by Facebook", provider="facebook")
+                
                 return SocialUserInfo(
                     id=data["id"],
                     email=data["email"],
@@ -97,7 +102,7 @@ async def verify_facebook_token(token: str) -> Optional[SocialUserInfo]:
                 )
     except aiohttp.ClientError as e:
         logger.error(f"Facebook token verification failed: {str(e)}")
-        raise SocialAuthError("Failed to verify Facebook token", provider="facebook")
+        raise SocialAuthError("Facebook authentication failed: Network error", provider="facebook")
 
 async def verify_social_token(provider: str, token: str) -> Optional[SocialUserInfo]:
     """Verify social OAuth token.

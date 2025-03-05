@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional, List
 import asyncio
 from datetime import datetime
 import httpx
-from langchain.llms import OpenAI
+from langchain_community.chat_models import ChatOpenAI
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 import os
@@ -44,10 +44,19 @@ class LLMResponse(BaseModel):
 class LLMManager:
     """Manager for handling LLM interactions"""
 
-    def __init__(self, redis_client=None, is_development: bool = False):
+    def __init__(self, redis_client=None, is_development: bool = False, **kwargs):
         self.redis_client = redis_client
         self.is_development = is_development
         self._token_usage = {}
+        
+        # Store additional configuration parameters
+        self.max_tokens = kwargs.get('max_tokens', None)
+        self.temperature = kwargs.get('temperature', None)
+        self.system_prompt = kwargs.get('system_prompt', None)
+        self.model_params = kwargs.get('model_params', {})
+        self.tools = kwargs.get('tools', [])
+        self.tool_map = kwargs.get('tool_map', {})
+        
         self._initialize_providers()
 
     async def initialize(self):
@@ -148,27 +157,54 @@ class LLMManager:
         request: LLMRequest,
         config: Dict[str, Any]
     ) -> LLMResponse:
-        """Generate response using OpenAI API."""
-        try:
-            if not self.openai_client.api_key:
-                raise LLMProviderError("OpenAI API key not configured")
-
-            response = await self.openai_client.chat.completions.create(
-                model=config.model,
-                messages=[{"role": "user", "content": request.prompt}],
-                temperature=request.temperature or config.temperature,
-                max_tokens=request.max_tokens or config.max_tokens
-            )
-
+        """Generate text using OpenAI API.
+        
+        Args:
+            request: Request parameters
+            config: OpenAI configuration
+            
+        Returns:
+            Response with generated text
+        """
+        # In development or testing environments, return a mock response
+        if self.is_development:
+            await asyncio.sleep(0.1)  # Simulate API delay
             return LLMResponse(
-                text=response.choices[0].message.content,
+                text="OpenAI mock response for: " + request.prompt[:20] + "...",
                 provider=LLMProvider.OPENAI,
-                tokens_used=response.usage.total_tokens,
-                processing_time=0,
+                tokens_used=50,
+                processing_time=0.1,
                 cache_hit=False
             )
+        
+        start_time = datetime.now()
+        
+        try:
+            # Use ChatOpenAI from langchain_community
+            chat_model = ChatOpenAI(
+                model_name=config.get("model", "gpt-3.5-turbo"),
+                temperature=request.temperature or config.get("temperature", 0.7),
+                max_tokens=request.max_tokens or config.get("max_tokens", 500),
+                api_key=config.get("api_key")
+            )
+            
+            # Generate response using agenerate
+            response = await chat_model.agenerate([[request.prompt]])
+            completion = response.generations[0][0]
+            response_text = completion.text
+            tokens = response.llm_output.get("token_usage", {}).get("total_tokens", 50)
+            
+            processing_time = (datetime.now() - start_time).total_seconds()
+            
+            return LLMResponse(
+                text=response_text,
+                provider=LLMProvider.OPENAI,
+                tokens_used=tokens,
+                processing_time=processing_time
+            )
         except Exception as e:
-            raise LLMProviderError(f"OpenAI API error: {str(e)}")
+            logger.error(f"Error with OpenAI: {str(e)}")
+            raise LLMProviderError(f"OpenAI error: {str(e)}")
 
     def _update_token_usage(self, provider: LLMProvider, tokens: int):
         """Update token usage tracking"""

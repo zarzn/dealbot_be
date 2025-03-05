@@ -37,6 +37,7 @@ import sqlalchemy as sa
 from decimal import Decimal, ROUND_DOWN
 import random
 import string
+import bcrypt
 
 from core.models.base import Base
 from core.exceptions import (
@@ -53,8 +54,14 @@ from core.models.token_transaction import TokenTransaction
 from core.models.token_balance_history import TokenBalanceHistory
 from core.models.token_wallet import TokenWallet
 from core.models.token_balance import TokenBalance
+from core.models.deal_token import DealToken  # Import DealToken class instead of Token
+from core.models.token import Token  # Import Token class from token.py
+from core.models.chat_context import ChatContext  # Import ChatContext
 from core.utils.auth import create_token
 from core.models.enums import UserStatus, TokenType, TokenStatus, TokenScope, TokenTransactionType, BalanceChangeType
+
+# Import UserPreferences for backward compatibility
+from core.models.user_preferences import UserPreferences
 
 logger = logging.getLogger(__name__)
 
@@ -285,21 +292,66 @@ class User(Base):
     # Relationships
     goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")
     auth_tokens = relationship("AuthToken", back_populates="user", cascade="all, delete-orphan")
-    token_transactions = relationship("TokenTransaction", back_populates="user", cascade="all, delete-orphan")
+    tokens = relationship("Token", back_populates="user", cascade="all, delete-orphan")
+    deal_tokens = relationship("DealToken", back_populates="user", cascade="all, delete-orphan", foreign_keys="DealToken.user_id")
+    token_transactions = relationship("TokenTransaction", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
     token_balance_history = relationship("TokenBalanceHistory", back_populates="user", cascade="all, delete-orphan")
     token_balances = relationship("TokenBalance", back_populates="user", cascade="all, delete-orphan", viewonly=True)  # Add viewonly=True to prevent conflicts
     token_wallets = relationship("TokenWallet", back_populates="user", cascade="all, delete-orphan")
+    wallet_transactions = relationship("WalletTransaction", back_populates="user", cascade="all, delete-orphan")
+    chats = relationship("Chat", back_populates="user", cascade="all, delete-orphan")
     chat_messages = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
+    chat_contexts = relationship("ChatContext", back_populates="user", cascade="all, delete-orphan")
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
     agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
     tracked_deals = relationship("TrackedDeal", back_populates="user", cascade="all, delete-orphan")
     user_preferences = relationship("UserPreferences", back_populates="user", cascade="all, delete-orphan", overlaps="preferences")
     price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
     price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
+    markets = relationship("Market", back_populates="user")
     
     # Add relationships from relationships.py to fix conflicts
     preferences = relationship("UserPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan", overlaps="user_preferences")
     token_wallet = relationship("TokenWallet", back_populates="user", uselist=False, cascade="all, delete-orphan", overlaps="token_wallets")
+
+    def __init__(self, **kwargs):
+        """Initialize User model.
+        
+        This method handles the preferences vs preferences_data distinction to avoid
+        the error: 'dict' object has no attribute '_sa_instance_state'
+        """
+        # Extract preferences_data without affecting relationships
+        self._preferences_dict = kwargs.pop('preferences_data', None)
+        
+        # Hash password if provided
+        if 'password' in kwargs and kwargs['password'] and not kwargs['password'].startswith('$2b$'):
+            kwargs['password'] = self.hash_password(kwargs['password'])
+        
+        # Initialize other attributes
+        super().__init__(**kwargs)
+        
+        # We don't set self.preferences directly because it's a relationship
+        # The JSONB column will be set during DB operations separately
+
+    @staticmethod
+    def hash_password(password: str) -> str:
+        """Hash password using bcrypt."""
+        if password.startswith('$2b$'):
+            return password  # Already hashed
+        
+        # Generate a salt and hash the password
+        salt = bcrypt.gensalt()
+        hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+        return hashed.decode('utf-8')
+        
+    def verify_password(self, password: str) -> bool:
+        """Verify password against stored hash."""
+        if self.password.startswith('$2b$'):
+            # Proper bcrypt hash
+            return bcrypt.checkpw(password.encode('utf-8'), self.password.encode('utf-8'))
+        else:
+            # For tests or migration period
+            return self.password == password
 
     @property
     def is_active(self) -> bool:
@@ -395,92 +447,8 @@ class User(Base):
         db.add(history)
         await db.flush()
 
-    async def connect_wallet(self, db: AsyncSession, address: str) -> None:
-        """Connect a wallet to the user."""
-        if self.sol_address:
-            raise WalletError("User already has a connected wallet")
-            
-        self.sol_address = address
-        await db.flush()
-
-    async def generate_referral_code(self, db: AsyncSession) -> str:
-        """Generate a unique referral code."""
-        if self.referral_code:
-            return self.referral_code
-            
-        # Generate a random code and ensure it's unique
-        while True:
-            code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-            stmt = select(User).where(User.referral_code == code)
-            result = await db.execute(stmt)
-            if not result.scalar_one_or_none():
-                self.referral_code = code
-                await db.flush()
-                return code
-
     def generate_token(self) -> str:
         """Generate a JWT token for this user."""
         return create_token(str(self.id))
-
-    async def get_token_balance(self, db: AsyncSession) -> Decimal:
-        """Get user's token balance.
-        
-        Args:
-            db: Database session
-            
-        Returns:
-            Current token balance with proper precision
-        """
-        stmt = select(TokenBalance).where(TokenBalance.user_id == self.id)
-        result = await db.execute(stmt)
-        token_balance = result.scalar_one_or_none()
-        
-        if not token_balance:
-            return Decimal('0').quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
-            
-        # Ensure proper precision
-        return Decimal(str(token_balance.balance)).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
-
-    @property
-    def token_balance(self) -> Decimal:
-        """Get cached token balance or default to 0."""
-        if not hasattr(self, '_token_balance'):
-            self._token_balance = Decimal('0').quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
-        return self._token_balance
-
-    @token_balance.setter
-    def token_balance(self, value: Decimal):
-        """Set token balance."""
-        self._token_balance = Decimal(str(value)).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
-
-class UserPreferences(BaseModel):
-    """Model for user preferences"""
-    theme: str = Field(default="light", pattern="^(light|dark)$")
-    notifications: NotificationPreference = Field(default=NotificationPreference.ALL)
-    email_notifications: bool = Field(default=True)
-    push_notifications: bool = Field(default=False)
-    telegram_notifications: bool = Field(default=False)
-    discord_notifications: bool = Field(default=False)
-    deal_alert_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
-    auto_buy_enabled: bool = Field(default=False)
-    auto_buy_threshold: float = Field(default=0.95, ge=0.0, le=1.0)
-    max_auto_buy_amount: float = Field(default=100.0, ge=0.0)
-    language: str = Field(default="en", pattern="^[a-z]{2}(-[A-Z]{2})?$")
-    timezone: str = Field(default="UTC")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "theme": "dark",
-                "notifications": "important",
-                "email_notifications": True,
-                "deal_alert_threshold": 0.85,
-                "auto_buy_enabled": False,
-                "auto_buy_threshold": 0.95,
-                "max_auto_buy_amount": 100.0,
-                "language": "en",
-                "timezone": "UTC"
-            }
-        }
 
 

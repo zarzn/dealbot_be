@@ -4,8 +4,8 @@ This module provides tools for analyzing user goals, validating constraints,
 and generating search parameters.
 """
 
-from typing import Dict, Any, Optional
-from langchain.tools import BaseTool
+from typing import Dict, Any, List, Optional
+from langchain_community.tools import BaseTool
 from pydantic import BaseModel, Field
 
 class GoalInput(BaseModel):

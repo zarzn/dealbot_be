@@ -12,6 +12,7 @@ class MarketType(str, Enum):
     EBAY = "ebay"
     TARGET = "target"
     BESTBUY = "bestbuy"
+    CRYPTO = "crypto"
     TEST = "test"
 
 class MarketStatus(str, Enum):
@@ -168,6 +169,7 @@ class TokenScope(str, Enum):
     FULL = "full"
     LIMITED = "limited"
     READ = "read"
+    WRITE = "write"
     RESET = "reset"
 
 class UserStatus(str, Enum):
@@ -193,6 +195,8 @@ class TransactionType(str, Enum):
     SEARCH_PAYMENT = "search_payment"
     SEARCH_REFUND = "search_refund"
     CREDIT = "credit"
+    OUTGOING = "outgoing"
+    INCOMING = "incoming"
 
 class TransactionStatus(str, Enum):
     """Transaction status enumeration."""

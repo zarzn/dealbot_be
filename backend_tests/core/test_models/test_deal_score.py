@@ -18,18 +18,37 @@ from core.models.deal_score import (
 from core.models.deal import Deal
 from core.models.goal import Goal
 from core.models.user import User
-from core.models.enums import DealStatus, MarketType, GoalStatus
+from core.models.enums import DealStatus, MarketType, GoalStatus, MarketCategory, MarketStatus
 from core.exceptions import ValidationError
+from core.models.market import Market
 
 
 @pytest.mark.asyncio
 @pytest.mark.core
-async def test_deal_score_creation(async_session):
+async def test_deal_score_creation(db_session):
     """Test creating a deal score in the database."""
     # Create a test user first
     user_id = uuid4()
-    user = User(id=user_id, email="test@example.com", username="testuser")
-    async_session.add(user)
+    user = User(
+        id=user_id, 
+        email="test@example.com", 
+        name="testuser",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
+    )
+    db_session.add(user)
+    
+    # Create a test market
+    market_id = uuid4()
+    market = Market(
+        id=market_id,
+        name="Test Market",
+        type=MarketType.TEST.value.lower(),
+        user_id=user_id
+    )
+    db_session.add(market)
+    await db_session.commit()
     
     # Create a test deal
     deal_id = uuid4()
@@ -37,12 +56,16 @@ async def test_deal_score_creation(async_session):
         id=deal_id,
         title="Test Deal",
         description="A test deal for scoring",
-        status=DealStatus.ACTIVE.value,
-        market_type=MarketType.CRYPTO.value,
-        user_id=user_id
+        url="https://example.com/test-deal",
+        price=Decimal("99.99"),
+        currency="USD",
+        status=DealStatus.ACTIVE.value.lower(),
+        category=MarketCategory.ELECTRONICS.value,
+        user_id=user_id,
+        market_id=market_id
     )
-    async_session.add(deal)
-    await async_session.commit()
+    db_session.add(deal)
+    await db_session.commit()
     
     # Create a deal score
     score = DealScore(
@@ -57,12 +80,12 @@ async def test_deal_score_creation(async_session):
             "time_horizon": 0.6
         }
     )
-    async_session.add(score)
-    await async_session.commit()
+    db_session.add(score)
+    await db_session.commit()
     
     # Retrieve the score
     query = select(DealScore).where(DealScore.deal_id == deal_id)
-    result = await async_session.execute(query)
+    result = await db_session.execute(query)
     fetched_score = result.scalar_one()
     
     # Assertions
@@ -81,27 +104,51 @@ async def test_deal_score_creation(async_session):
 
 @pytest.mark.asyncio
 @pytest.mark.core
-async def test_deal_score_relationships(async_session):
-    """Test the relationships between deal scores and deals."""
-    # Create a test user
+async def test_deal_score_relationships(db_session):
+    """Test the relationships between deal scores, deals, and users."""
+    # Create a test user first
     user_id = uuid4()
-    user = User(id=user_id, email="test@example.com", username="testuser")
-    async_session.add(user)
+    user = User(
+        id=user_id, 
+        email="test_rel@example.com", 
+        name="reluser",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
+    )
+    db_session.add(user)
     
-    # Create a test deal
-    deal = Deal(
-        title="Relationship Test Deal",
-        description="Testing deal score relationships",
-        status=DealStatus.ACTIVE.value,
-        market_type=MarketType.CRYPTO.value,
+    # Create a test market
+    market_id = uuid4()
+    market = Market(
+        id=market_id,
+        name="Relationship Test Market",
+        type=MarketType.TEST.value.lower(),
         user_id=user_id
     )
-    async_session.add(deal)
-    await async_session.commit()
+    db_session.add(market)
+    await db_session.commit()
+    
+    # Create a test deal
+    deal_id = uuid4()
+    deal = Deal(
+        id=deal_id,
+        title="Relationship Test Deal",
+        description="A test deal for relationship testing",
+        url="https://example.com/rel-test-deal",
+        price=Decimal("129.99"),
+        currency="USD",
+        status=DealStatus.ACTIVE.value.lower(),
+        category=MarketCategory.ELECTRONICS.value,
+        user_id=user_id,
+        market_id=market_id
+    )
+    db_session.add(deal)
+    await db_session.commit()
     
     # Create multiple scores for the deal
     ai_score = DealScore(
-        deal_id=deal.id,
+        deal_id=deal_id,
         user_id=user_id,
         score=0.8,
         confidence=0.9,
@@ -109,20 +156,23 @@ async def test_deal_score_relationships(async_session):
     )
     
     user_score = DealScore(
-        deal_id=deal.id,
+        deal_id=deal_id,
         user_id=user_id,
         score=0.7,
         confidence=1.0,
         score_type=ScoreType.USER.value
     )
     
-    async_session.add_all([ai_score, user_score])
-    await async_session.commit()
+    db_session.add_all([ai_score, user_score])
+    await db_session.commit()
     
     # Test deal -> scores relationship
-    query = select(Deal).where(Deal.id == deal.id)
-    result = await async_session.execute(query)
+    query = select(Deal).where(Deal.id == deal_id)
+    result = await db_session.execute(query)
     fetched_deal = result.scalar_one()
+    
+    # Explicitly refresh the object to load relationships
+    await db_session.refresh(fetched_deal, ["scores"])
     
     assert len(fetched_deal.scores) == 2
     assert any(score.score_type == ScoreType.AI.value for score in fetched_deal.scores)
@@ -131,28 +181,52 @@ async def test_deal_score_relationships(async_session):
 
 @pytest.mark.asyncio
 @pytest.mark.core
-async def test_deal_score_validation(async_session):
-    """Test validation for deal scores."""
+async def test_deal_score_validation(db_session):
+    """Test deal score validation rules."""
     # Create a test user
     user_id = uuid4()
-    user = User(id=user_id, email="test@example.com", username="testuser")
-    async_session.add(user)
+    user = User(
+        id=user_id, 
+        email="validation@example.com", 
+        name="validuser",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
+    )
+    db_session.add(user)
     
-    # Create a test deal
-    deal = Deal(
-        title="Validation Test Deal",
-        description="Testing deal score validation",
-        status=DealStatus.ACTIVE.value,
-        market_type=MarketType.CRYPTO.value,
+    # Create a test market
+    market_id = uuid4()
+    market = Market(
+        id=market_id,
+        name="Validation Test Market",
+        type=MarketType.TEST.value.lower(),
         user_id=user_id
     )
-    async_session.add(deal)
-    await async_session.commit()
+    db_session.add(market)
+    await db_session.commit()
+    
+    # Create a test deal
+    deal_id = uuid4()
+    deal = Deal(
+        id=deal_id,
+        title="Validation Test Deal",
+        description="A test deal for validation testing",
+        url="https://example.com/validation-test-deal",
+        price=Decimal("79.99"),
+        currency="USD",
+        status=DealStatus.ACTIVE.value.lower(),
+        category=MarketCategory.ELECTRONICS.value,
+        user_id=user_id,
+        market_id=market_id
+    )
+    db_session.add(deal)
+    await db_session.commit()
     
     # Test invalid score (greater than 1)
     with pytest.raises(ValidationError):
         await DealScore.create_score(
-            db=async_session,
+            db=db_session,
             deal_id=deal.id,
             user_id=user_id,
             score=1.5,  # Invalid: > 1
@@ -162,7 +236,7 @@ async def test_deal_score_validation(async_session):
     # Test invalid score (negative)
     with pytest.raises(ValidationError):
         await DealScore.create_score(
-            db=async_session,
+            db=db_session,
             deal_id=deal.id,
             user_id=user_id,
             score=-0.5,  # Invalid: < 0
@@ -172,7 +246,7 @@ async def test_deal_score_validation(async_session):
     # Test invalid confidence (greater than 1)
     with pytest.raises(ValidationError):
         await DealScore.create_score(
-            db=async_session,
+            db=db_session,
             deal_id=deal.id,
             user_id=user_id,
             score=0.7,
@@ -181,7 +255,7 @@ async def test_deal_score_validation(async_session):
     
     # Create a valid score
     valid_score = await DealScore.create_score(
-        db=async_session,
+        db=db_session,
         deal_id=deal.id,
         user_id=user_id,
         score=0.5,
@@ -197,76 +271,117 @@ async def test_deal_score_validation(async_session):
 
 @pytest.mark.asyncio
 @pytest.mark.core
-async def test_create_score_method(async_session):
+async def test_create_score_method(db_session):
     """Test the create_score method of DealScore."""
     # Create a test user
     user_id = uuid4()
-    user = User(id=user_id, email="test@example.com", username="testuser")
-    async_session.add(user)
+    user = User(
+        id=user_id, 
+        email="create_method@example.com", 
+        name="methoduser",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
+    )
+    db_session.add(user)
+    
+    # Create a test market
+    market_id = uuid4()
+    market = Market(
+        id=market_id,
+        name="Method Test Market",
+        type=MarketType.TEST.value.lower(),
+        user_id=user_id
+    )
+    db_session.add(market)
+    await db_session.commit()
     
     # Create a test deal
     deal = Deal(
         title="Create Method Test Deal",
-        description="Testing deal score create method",
-        status=DealStatus.ACTIVE.value,
-        market_type=MarketType.CRYPTO.value,
-        user_id=user_id
+        description="Testing the create_score method",
+        url="https://example.com/create-method-test",
+        price=Decimal("59.99"),
+        currency="USD",
+        status=DealStatus.ACTIVE.value.lower(),
+        category=MarketCategory.ELECTRONICS.value,
+        user_id=user_id,
+        market_id=market_id
     )
-    async_session.add(deal)
-    await async_session.commit()
+    db_session.add(deal)
+    await db_session.commit()
     
     # Create a score using the create_score method
     factors = {
-        "profitability": 0.9,
-        "risk": 0.2,
-        "market_trend": 0.7
+        "price": 0.9,
+        "quality": 0.8,
+        "reviews": 0.7
     }
     
     score = await DealScore.create_score(
-        db=async_session,
+        db=db_session,
         deal_id=deal.id,
         user_id=user_id,
-        score=0.65,
-        confidence=0.75,
+        score=0.85,
+        confidence=0.9,
         factors=factors
     )
     
-    # Verify score was created properly
-    assert score.deal_id == deal.id
-    assert score.user_id == user_id
-    assert score.score == 0.65
-    assert score.confidence == 0.75
-    assert score.factors == factors
-    
     # Verify it was saved in the database
     query = select(DealScore).where(DealScore.id == score.id)
-    result = await async_session.execute(query)
+    result = await db_session.execute(query)
     db_score = result.scalar_one()
     
-    assert db_score is not None
-    assert db_score.id == score.id
-    assert db_score.factors["profitability"] == 0.9
+    assert db_score.score == 0.85
+    assert db_score.confidence == 0.9
+    assert db_score.score_type == ScoreType.AI.value
+    assert db_score.factors["price"] == 0.9
+    assert db_score.factors["quality"] == 0.8
+    assert db_score.factors["reviews"] == 0.7
 
 
 @pytest.mark.asyncio
 @pytest.mark.core
-async def test_update_metrics(async_session):
+async def test_update_metrics(db_session):
     """Test updating metrics for a deal score."""
     # Create a test user
     user_id = uuid4()
-    user = User(id=user_id, email="test@example.com", username="testuser")
-    async_session.add(user)
+    user = User(
+        id=user_id, 
+        email="test@example.com", 
+        name="testuser",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
+    )
+    db_session.add(user)
+    
+    # Create a test market
+    market_id = uuid4()
+    market = Market(
+        id=market_id,
+        name="Metrics Test Market",
+        type=MarketType.TEST.value.lower(),
+        user_id=user_id
+    )
+    db_session.add(market)
+    await db_session.commit()
     
     # Create a test deal
     deal = Deal(
         title="Metrics Update Test Deal",
         description="Testing deal score metrics updates",
         status=DealStatus.ACTIVE.value,
-        market_type=MarketType.CRYPTO.value,
-        user_id=user_id
+        market_type=MarketType.TEST.value,
+        user_id=user_id,
+        market_id=market_id,
+        url="https://example.com/metrics-test",
+        price=Decimal("99.99"),
+        currency="USD",
+        category=MarketCategory.ELECTRONICS.value
     )
-    async_session.add(deal)
-    await async_session.commit()
+    db_session.add(deal)
+    await db_session.commit()
     
     # Create a score with initial metrics
     initial_factors = {
@@ -275,7 +390,7 @@ async def test_update_metrics(async_session):
     }
     
     score = await DealScore.create_score(
-        db=async_session,
+        db=db_session,
         deal_id=deal.id,
         user_id=user_id,
         score=0.5,
@@ -291,13 +406,13 @@ async def test_update_metrics(async_session):
     }
     
     await score.update_metrics(
-        db=async_session,
+        db=db_session,
         metrics=updated_metrics
     )
     
     # Verify metrics were updated
     query = select(DealScore).where(DealScore.id == score.id)
-    result = await async_session.execute(query)
+    result = await db_session.execute(query)
     updated_score = result.scalar_one()
     
     assert updated_score.factors == updated_metrics
@@ -307,76 +422,118 @@ async def test_update_metrics(async_session):
 
 @pytest.mark.asyncio
 @pytest.mark.core
-async def test_to_json(async_session):
+async def test_to_json(db_session):
     """Test the to_json method of DealScore."""
     # Create a test user
     user_id = uuid4()
-    user = User(id=user_id, email="test@example.com", username="testuser")
-    async_session.add(user)
+    user = User(
+        id=user_id, 
+        email="json@example.com", 
+        name="jsonuser",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
+    )
+    db_session.add(user)
+    
+    # Create a test market
+    market_id = uuid4()
+    market = Market(
+        id=market_id,
+        name="JSON Test Market",
+        type=MarketType.TEST.value.lower(),
+        user_id=user_id
+    )
+    db_session.add(market)
+    await db_session.commit()
     
     # Create a test deal
     deal = Deal(
         title="JSON Test Deal",
-        description="Testing deal score to_json method",
-        status=DealStatus.ACTIVE.value,
-        market_type=MarketType.CRYPTO.value,
-        user_id=user_id
+        description="Testing the to_json method",
+        url="https://example.com/json-test",
+        price=Decimal("149.99"),
+        currency="USD",
+        status=DealStatus.ACTIVE.value.lower(),
+        category=MarketCategory.ELECTRONICS.value,
+        user_id=user_id,
+        market_id=market_id
     )
-    async_session.add(deal)
-    await async_session.commit()
+    db_session.add(deal)
+    await db_session.commit()
     
     # Create a score
+    now = datetime.utcnow()
     factors = {
-        "quality": 0.75,
-        "timeline": 0.6
+        "price": 0.8,
+        "quality": 0.7,
+        "reviews": 0.85
     }
     
     score = DealScore(
         deal_id=deal.id,
         user_id=user_id,
-        score=0.7,
-        confidence=0.8,
+        score=0.78,
+        confidence=0.92,
         score_type=ScoreType.AI.value,
         factors=factors
     )
-    async_session.add(score)
-    await async_session.commit()
+    db_session.add(score)
+    await db_session.commit()
     
     # Test to_json method
-    json_str = score.to_json()
-    
-    # Import json to parse the string
+    json_data = score.to_json()
     import json
-    json_obj = json.loads(json_str)
+    data = json.loads(json_data)
     
-    # Verify JSON data
-    assert json_obj["id"] == str(score.id)
-    assert json_obj["deal_id"] == str(deal.id)
-    assert json_obj["user_id"] == str(user_id)
-    assert json_obj["score"] == 0.7
-    assert json_obj["confidence"] == 0.8
-    assert json_obj["factors"]["quality"] == 0.75
-    assert json_obj["factors"]["timeline"] == 0.6
-    assert "created_at" in json_obj
-    assert "timestamp" in json_obj
+    assert data["id"] == str(score.id)
+    assert data["deal_id"] == str(deal.id)
+    assert data["user_id"] == str(user_id)
+    assert data["score"] == 0.78
+    assert data["confidence"] == 0.92
+    assert data["score_type"] == ScoreType.AI.value
+    assert "factors" in data
+    assert data["factors"]["price"] == 0.8
+    assert data["factors"]["quality"] == 0.7
+    assert data["factors"]["reviews"] == 0.85
 
 
 @pytest.mark.asyncio
 @pytest.mark.core
-async def test_deal_match_creation(async_session):
+async def test_deal_match_creation(db_session):
     """Test creating a DealMatch in the database."""
     # Create a test user
     user_id = uuid4()
-    user = User(id=user_id, email="test@example.com", username="testuser")
-    async_session.add(user)
+    user = User(
+        id=user_id, 
+        email="test@example.com", 
+        name="testuser",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
+    )
+    db_session.add(user)
+    
+    # Create a test market
+    market_id = uuid4()
+    market = Market(
+        id=market_id,
+        name="Test Market",
+        description="Market for testing",
+        category=MarketCategory.ELECTRONICS.value,
+        type=MarketType.TEST.value.lower(),
+        status=MarketStatus.ACTIVE.value
+    )
+    db_session.add(market)
     
     # Create a test deal
     deal = Deal(
         title="Match Test Deal",
         description="Deal for testing match functionality",
         status=DealStatus.ACTIVE.value,
-        market_type=MarketType.CRYPTO.value,
-        user_id=user_id
+        market_type=MarketType.TEST.value,
+        user_id=user_id,
+        market_id=market_id
     )
     
     # Create a test goal
@@ -387,8 +544,8 @@ async def test_deal_match_creation(async_session):
         user_id=user_id
     )
     
-    async_session.add_all([deal, goal])
-    await async_session.commit()
+    db_session.add_all([deal, goal])
+    await db_session.commit()
     
     # Create a deal match
     match = DealMatch(
@@ -402,14 +559,14 @@ async def test_deal_match_creation(async_session):
         }
     )
     
-    async_session.add(match)
-    await async_session.commit()
+    db_session.add(match)
+    await db_session.commit()
     
     # Retrieve the match
     query = select(DealMatch).where(
         (DealMatch.goal_id == goal.id) & (DealMatch.deal_id == deal.id)
     )
-    result = await async_session.execute(query)
+    result = await db_session.execute(query)
     fetched_match = result.scalar_one()
     
     # Assertions
@@ -425,28 +582,49 @@ async def test_deal_match_creation(async_session):
 
 @pytest.mark.asyncio
 @pytest.mark.core
-async def test_deal_match_relationships(async_session):
+async def test_deal_match_relationships(db_session):
     """Test the relationships between deal matches, deals, and goals."""
     # Create a test user
     user_id = uuid4()
-    user = User(id=user_id, email="test@example.com", username="testuser")
-    async_session.add(user)
+    user = User(
+        id=user_id, 
+        email="test@example.com", 
+        name="testuser",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
+    )
+    db_session.add(user)
+    
+    # Create a test market
+    market_id = uuid4()
+    market = Market(
+        id=market_id,
+        name="Test Market",
+        description="Market for testing",
+        category=MarketCategory.ELECTRONICS.value,
+        type=MarketType.TEST.value.lower(),
+        status=MarketStatus.ACTIVE.value
+    )
+    db_session.add(market)
     
     # Create multiple deals and goals
     deal1 = Deal(
         title="First Match Test Deal",
         description="First deal for testing matches",
         status=DealStatus.ACTIVE.value,
-        market_type=MarketType.CRYPTO.value,
-        user_id=user_id
+        market_type=MarketType.TEST.value,
+        user_id=user_id,
+        market_id=market_id
     )
     
     deal2 = Deal(
         title="Second Match Test Deal",
         description="Second deal for testing matches",
         status=DealStatus.ACTIVE.value,
-        market_type=MarketType.CRYPTO.value,
-        user_id=user_id
+        market_type=MarketType.TEST.value,
+        user_id=user_id,
+        market_id=market_id
     )
     
     goal1 = Goal(
@@ -463,8 +641,8 @@ async def test_deal_match_relationships(async_session):
         user_id=user_id
     )
     
-    async_session.add_all([deal1, deal2, goal1, goal2])
-    await async_session.commit()
+    db_session.add_all([deal1, deal2, goal1, goal2])
+    await db_session.commit()
     
     # Create matches
     match1 = DealMatch(
@@ -488,13 +666,16 @@ async def test_deal_match_relationships(async_session):
         match_criteria={"overall": 0.8}
     )
     
-    async_session.add_all([match1, match2, match3])
-    await async_session.commit()
+    db_session.add_all([match1, match2, match3])
+    await db_session.commit()
     
     # Test goal -> matched_deals relationship
     query = select(Goal).where(Goal.id == goal1.id)
-    result = await async_session.execute(query)
+    result = await db_session.execute(query)
     fetched_goal = result.scalar_one()
+    
+    # Refresh the goal to load the relationships
+    await db_session.refresh(fetched_goal, ["matched_deals"])
     
     assert len(fetched_goal.matched_deals) == 2
     assert any(match.deal_id == deal1.id for match in fetched_goal.matched_deals)
@@ -502,8 +683,11 @@ async def test_deal_match_relationships(async_session):
     
     # Test deal -> goal_matches relationship
     query = select(Deal).where(Deal.id == deal1.id)
-    result = await async_session.execute(query)
+    result = await db_session.execute(query)
     fetched_deal = result.scalar_one()
+    
+    # Refresh the deal to load the relationships
+    await db_session.refresh(fetched_deal, ["goal_matches"])
     
     assert len(fetched_deal.goal_matches) == 2
     assert any(match.goal_id == goal1.id for match in fetched_deal.goal_matches)
@@ -513,8 +697,11 @@ async def test_deal_match_relationships(async_session):
     query = select(DealMatch).where(
         (DealMatch.goal_id == goal1.id) & (DealMatch.deal_id == deal1.id)
     )
-    result = await async_session.execute(query)
+    result = await db_session.execute(query)
     fetched_match = result.scalar_one()
+    
+    # Refresh the match to load the relationships
+    await db_session.refresh(fetched_match, ["goal", "deal"])
     
     assert fetched_match.goal.id == goal1.id
     assert fetched_match.deal.id == deal1.id 

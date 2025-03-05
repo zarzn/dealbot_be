@@ -16,7 +16,7 @@ from factories.user import UserFactory
 from factories.goal import GoalFactory
 from factories.deal import DealFactory
 from factories.token import TokenTransactionFactory
-from utils.markers import feature_test, depends_on
+from backend_tests.utils.markers import feature_test, depends_on
 from backend_tests.mocks.redis_mock import get_mock_redis_service
 
 pytestmark = pytest.mark.asyncio

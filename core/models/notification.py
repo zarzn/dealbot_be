@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
-from sqlalchemy.sql import expression
+from sqlalchemy.sql import expression, select
 import sqlalchemy
 
 from core.models.base import Base
@@ -441,15 +441,16 @@ class Notification(Base):
     ) -> List['Notification']:
         """Get pending notifications with optional filtering."""
         try:
-            query = db.query(cls).filter(cls.status == NotificationStatus.PENDING)
+            stmt = select(cls).where(cls.status == NotificationStatus.PENDING.value)
 
             if user_id:
-                query = query.filter(cls.user_id == user_id)
+                stmt = stmt.where(cls.user_id == user_id)
             if channel:
-                query = query.filter(cls.channels.contains([channel]))
+                stmt = stmt.where(cls.channels.contains([channel.value]))
 
-            query = query.order_by(cls.priority.desc(), cls.created_at.asc()).limit(limit)
-            return await query.all()
+            stmt = stmt.order_by(cls.priority.desc(), cls.created_at.asc()).limit(limit)
+            result = await db.execute(stmt)
+            return result.scalars().all()
 
         except Exception as e:
             logger.error(
@@ -475,12 +476,14 @@ class Notification(Base):
         try:
             # Get recent notifications of the same type
             cutoff_time = datetime.utcnow() - time_window
-            recent_notifications = await db.query(cls).filter(
+            stmt = select(cls).where(
                 cls.user_id == user_id,
-                cls.type == type,
+                cls.type == type.value,
                 cls.created_at >= cutoff_time,
-                cls.status.in_([NotificationStatus.PENDING, NotificationStatus.SENT])
-            ).order_by(cls.created_at.desc()).all()
+                cls.status.in_([NotificationStatus.PENDING.value, NotificationStatus.SENT.value])
+            ).order_by(cls.created_at.desc())
+            result = await db.execute(stmt)
+            recent_notifications = result.scalars().all()
 
             if not recent_notifications:
                 return None

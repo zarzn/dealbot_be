@@ -26,6 +26,7 @@ from core.models.enums import (
     DealStatus, DealSource, MarketCategory, Currency
 )
 from core.exceptions.deal_exceptions import DealValidationError
+from core.models.deal_token import DealToken  # Import DealToken class instead of Token
 
 class DealPriority(int, enum.Enum):
     """Deal priority levels."""
@@ -293,6 +294,7 @@ class Deal(Base):
         server_default=text("TIMEZONE('UTC', CURRENT_TIMESTAMP)")
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    score: Mapped[Optional[float]] = mapped_column(DECIMAL(5, 2), nullable=True)
 
     # Relationships
     user = relationship("User", back_populates="deals")
@@ -307,6 +309,7 @@ class Deal(Base):
     price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
     price_trackers = relationship("PriceTracker", back_populates="deal", cascade="all, delete-orphan")
     price_predictions = relationship("PricePrediction", back_populates="deal", cascade="all, delete-orphan")
+    tokens = relationship("DealToken", back_populates="deal", cascade="all, delete-orphan")
 
     def __init__(
         self,
@@ -334,6 +337,7 @@ class Deal(Base):
         deal_metadata: Dict[str, Any] = None,
         price_metadata: Dict[str, Any] = None,
         _skip_updated_at: bool = False,
+        market_type: Optional[str] = None,
         **kw,
     ):
         # Handle user parameter from factory
@@ -351,6 +355,13 @@ class Deal(Base):
         # Handle goal parameter from factory
         if goal is not None and hasattr(goal, 'id'):
             goal_id = goal.id
+
+        # Validate category first
+        if isinstance(category, str):
+            try:
+                category = MarketCategory(category.lower())
+            except ValueError:
+                raise ValueError(f"Invalid category: {category}")
 
         if title is None:
             # Set a default title if none is provided
@@ -375,13 +386,6 @@ class Deal(Base):
             except ValueError:
                 raise ValueError(f"Invalid source: {source}")
 
-        # Validate category
-        if isinstance(category, str):
-            try:
-                category = MarketCategory(category.lower())
-            except ValueError:
-                raise ValueError(f"Invalid category: {category}")
-
         # Validate currency
         if currency and len(currency) > 3:
             raise ValueError("Currency code should be 3 characters or fewer")
@@ -399,6 +403,14 @@ class Deal(Base):
 
         # Set the _skip_updated_at attribute directly instead of passing to super().__init__
         self._skip_updated_at = _skip_updated_at
+
+        # Ensure category is never None
+        if category is None:
+            category = MarketCategory.ELECTRONICS
+
+        # Ensure source is never None
+        if source is None:
+            source = DealSource.MANUAL
 
         super().__init__(
             user_id=user_id,

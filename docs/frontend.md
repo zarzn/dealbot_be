@@ -1,393 +1,809 @@
 # Frontend Documentation
 
-## Overview
-The frontend of the AI Agentic Deals System is built using Next.js 13+ with TypeScript, featuring a modern, responsive design with Tailwind CSS. It implements server-side rendering, API routes, and integrates with various services for a complete user experience.
-
-## Project Structure
-```
-frontend/
-├── src/
-│   ├── app/           # Next.js 13+ app directory
-│   ├── components/    # Reusable React components
-│   ├── api/          # API route handlers
-│   ├── hooks/        # Custom React hooks
-│   ├── lib/          # Shared libraries
-│   ├── providers/    # React context providers
-│   ├── services/     # API service integrations
-│   ├── styles/       # Global styles and Tailwind
-│   ├── types/        # TypeScript type definitions
-│   ├── utils/        # Utility functions
-│   └── middleware.ts # Request middleware
-├── public/           # Static assets
-└── tests/           # Frontend tests
-```
+This document provides comprehensive information about the frontend architecture, components, and integration points with the backend for the AI Agentic Deals System.
 
 ## Technology Stack
 
-### Core Technologies
-- Next.js 13+
-- React 18
-- TypeScript
-- Tailwind CSS
-- Redux Toolkit (State Management)
-- React Query (Data Fetching)
-- Axios (HTTP Client)
+The frontend is built with the following technologies:
 
-### Development Tools
-- ESLint
-- Prettier
-- Husky
-- Jest
-- React Testing Library
-- Cypress
+- **React**: Core UI library
+- **Next.js**: React framework for server-side rendering
+- **TypeScript**: Type-safe JavaScript
+- **Chakra UI**: Component library for consistent design
+- **React Query**: Data fetching and state management
+- **Zustand**: Lightweight state management
+- **Axios**: HTTP client for API requests
+- **React Hook Form**: Form validation and management
+- **Chart.js**: Data visualization
+- **Socket.io-client**: Real-time communication with backend
 
-## Components
+## Project Structure
 
-### Authentication Components
-- `LoginForm`: User login with email/password
-- `SignupForm`: New user registration
-- `ResetPassword`: Password reset workflow
-- `SocialAuth`: Social media authentication
-- `AuthGuard`: Protected route wrapper
+The frontend codebase is organized as follows:
 
-### User Interface Components
-- `Layout`: Main application layout
-- `Navbar`: Navigation and user menu
-- `Sidebar`: Secondary navigation
-- `Footer`: Site footer
-- `ThemeToggle`: Light/dark mode switch
+```
+frontend/
+  ├── public/          # Static assets
+  ├── src/             # Source code
+  │   ├── api/         # API integration
+  │   ├── components/  # Reusable UI components
+  │   ├── contexts/    # React contexts
+  │   ├── hooks/       # Custom React hooks
+  │   ├── layouts/     # Page layouts
+  │   ├── pages/       # Next.js pages
+  │   ├── store/       # Global state management
+  │   ├── styles/      # Global styles
+  │   ├── types/       # TypeScript types
+  │   └── utils/       # Utility functions
+  ├── .env.local       # Local environment variables
+  ├── .env.development # Development environment variables
+  ├── .env.production  # Production environment variables
+  ├── next.config.js   # Next.js configuration
+  ├── package.json     # Dependencies and scripts
+  └── tsconfig.json    # TypeScript configuration
+```
 
-### Deal Management Components
-- `DealsList`: Display active deals
-- `DealCard`: Individual deal display
-- `DealFilter`: Deal filtering options
-- `DealSearch`: Deal search functionality
-- `PriceTracker`: Price tracking display
-
-### Goal Components
-- `GoalCreator`: Goal creation interface
-- `GoalsList`: Active goals display
-- `GoalProgress`: Goal progress tracking
-- `GoalMetrics`: Goal performance metrics
-- `GoalNotifications`: Goal alerts
-
-### Market Components
-- `MarketOverview`: Market status display
-- `MarketSelector`: Market selection interface
-- `MarketMetrics`: Market performance data
-- `TrendingDeals`: Popular deals display
-- `MarketAlerts`: Market notifications
-
-### Token Components
-- `TokenBalance`: User token balance
-- `TokenHistory`: Transaction history
-- `TokenPurchase`: Token purchase interface
-- `TokenUsage`: Token usage metrics
-- `RewardSystem`: Token rewards display
-
-### Shared Components
-- `Button`: Reusable button styles
-- `Input`: Form input components
-- `Modal`: Modal dialog component
-- `Toast`: Notification system
-- `Loading`: Loading states
-- `Error`: Error displays
-- `Empty`: Empty state displays
-
-## Features
+## Core Components
 
 ### Authentication
-- Email/password authentication
-- Social media login (Google, GitHub)
-- JWT token management
-- Password reset functionality
-- Session management
-- Role-based access control
 
-### User Management
-- User profile management
-- Preference settings
-- Notification settings
-- Account deletion
-- Activity history
-- Referral system
+Authentication is handled via JWT tokens with the following components:
 
-### Deal Management
-- Deal discovery
-- Deal filtering
-- Price tracking
-- Deal alerts
-- Deal sharing
-- Deal analytics
-- Automated deal finding
+- `AuthContext` (`src/contexts/AuthContext.tsx`): Manages authentication state
+- `useAuth` hook (`src/hooks/useAuth.ts`): Custom hook for authentication
+- `ProtectedRoute` component (`src/components/ProtectedRoute.tsx`): Route protection
 
-### Goal System
-- Goal creation
-- Goal tracking
-- Progress monitoring
-- Success metrics
-- Goal notifications
-- Goal optimization
+Authentication flow:
 
-### Market Integration
-- Multiple market support
-- Market status tracking
-- Price comparison
-- Availability checking
-- Market analytics
-- Rate limiting handling
+1. User logs in via login form
+2. Backend returns JWT token
+3. Token is stored in secure HTTP-only cookie
+4. Token is refreshed automatically before expiration
+5. Logout invalidates token on backend and removes cookie
 
-### Token System
-- Token balance management
-- Token purchase
-- Usage tracking
-- Reward system
-- Transaction history
-- Token analytics
+### API Integration
 
-## State Management
+API requests are managed using React Query with Axios:
 
-### Redux Store Structure
+- Base API configuration (`src/api/axios.ts`): Sets up base URL and interceptors
+- API hooks (`src/api/hooks/`): Custom hooks for API endpoints
+- Types (`src/types/api.ts`): TypeScript interfaces for API requests/responses
+
+Example API hook:
+
 ```typescript
-interface RootState {
-  auth: AuthState;
-  deals: DealsState;
-  goals: GoalsState;
-  markets: MarketsState;
-  tokens: TokensState;
-  ui: UIState;
-}
-```
-
-### React Query Implementation
-- Optimistic updates
-- Cache management
-- Real-time updates
-- Error handling
-- Retry logic
-- Background refetching
-
-## API Integration
-
-### API Services
-- `authService`: Authentication endpoints
-- `dealService`: Deal management
-- `goalService`: Goal operations
-- `marketService`: Market interactions
-- `tokenService`: Token management
-- `userService`: User operations
-
-### WebSocket Integration
-- Real-time updates
-- Price change notifications
-- Deal alerts
-- System notifications
-- Connection management
-- Reconnection handling
-
-## Styling
-
-### Tailwind Configuration
-```javascript
-// tailwind.config.js
-module.exports = {
-  content: ['./src/**/*.{js,ts,jsx,tsx}'],
-  theme: {
-    extend: {
-      colors: {
-        primary: {...},
-        secondary: {...},
-        accent: {...}
-      }
+// src/api/hooks/useDeals.ts
+export const useDeals = (filters?: DealFilters) => {
+  return useQuery(['deals', filters], () => 
+    api.get('/deals', { params: filters })
+      .then(response => response.data),
+    {
+      staleTime: 5 * 60 * 1000, // 5 minutes
+      keepPreviousData: true,
     }
-  },
-  plugins: [...]
-}
+  );
+};
 ```
 
-### Theme System
-- Light/dark mode support
-- Custom color schemes
-- Responsive design
-- Component variants
-- Animation system
-- Layout utilities
+### State Management
 
-## Performance Optimization
+The application uses a combination of local React state, React Query for server state, and Zustand for global UI state:
 
-### Code Splitting
-- Dynamic imports
-- Route-based splitting
-- Component lazy loading
-- Module chunking
-- CSS optimization
-- Image optimization
+- `useAuthStore` (`src/store/authStore.ts`): Authentication state
+- `useUIStore` (`src/store/uiStore.ts`): UI state (theme, sidebar, modals)
+- `useNotificationStore` (`src/store/notificationStore.ts`): Notification management
 
-### Caching Strategy
-- API response caching
-- Static asset caching
-- Route caching
-- State persistence
-- Local storage usage
-- Session storage usage
+Example store:
 
-## Security Measures
+```typescript
+// src/store/uiStore.ts
+import create from 'zustand';
 
-### Frontend Security
-- CSRF protection
-- XSS prevention
-- Content Security Policy
-- Secure cookie handling
-- Input sanitization
-- API key management
+interface UIState {
+  sidebarOpen: boolean;
+  theme: 'light' | 'dark';
+  setSidebarOpen: (open: boolean) => void;
+  toggleSidebar: () => void;
+  setTheme: (theme: 'light' | 'dark') => void;
+}
 
-### Authentication Security
-- Token encryption
-- Session management
-- Rate limiting
-- Error handling
-- Secure routes
-- Role validation
+export const useUIStore = create<UIState>((set) => ({
+  sidebarOpen: true,
+  theme: 'light',
+  setSidebarOpen: (open) => set({ sidebarOpen: open }),
+  toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
+  setTheme: (theme) => set({ theme }),
+}));
+```
+
+### Form Handling
+
+Forms are managed using React Hook Form with Zod for validation:
+
+- Form components (`src/components/forms/`)
+- Form schemas (`src/utils/validation.ts`)
+- Custom form hooks (`src/hooks/useForm.ts`)
+
+Example form component:
+
+```typescript
+// src/components/forms/DealForm.tsx
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { dealSchema } from '../../utils/validation';
+
+export const DealForm = ({ onSubmit, initialData }) => {
+  const { 
+    register, 
+    handleSubmit, 
+    formState: { errors } 
+  } = useForm({
+    resolver: zodResolver(dealSchema),
+    defaultValues: initialData || {},
+  });
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      {/* Form fields */}
+    </form>
+  );
+};
+```
+
+## Pages and Routing
+
+The application uses Next.js pages router with the following main pages:
+
+- `/` - Dashboard
+- `/deals` - Deals listing
+- `/deals/[id]` - Deal details
+- `/goals` - Goals listing
+- `/goals/[id]` - Goal details
+- `/analytics` - Analytics dashboard
+- `/agents` - Agent management
+- `/settings` - User settings
+- `/auth/login` - Login page
+- `/auth/register` - Registration page
+
+Dynamic routes use Next.js slugs with data fetching in `getServerSideProps` or client-side data fetching with React Query:
+
+```typescript
+// src/pages/deals/[id].tsx
+export const getServerSideProps: GetServerSideProps = async (context) => {
+  const id = context.params?.id as string;
+  
+  try {
+    // Pre-fetch deal data on the server
+    const dealData = await fetchDealById(id);
+    
+    return {
+      props: {
+        dealData,
+      },
+    };
+  } catch (error) {
+    return {
+      notFound: true,
+    };
+  }
+};
+```
+
+## Real-time Updates
+
+The frontend connects to the backend websocket server for real-time updates:
+
+- WebSocket context (`src/contexts/WebSocketContext.tsx`)
+- WebSocket hook (`src/hooks/useWebSocket.ts`)
+
+The WebSocket handles the following events:
+
+- Deal updates
+- Goal and task status changes
+- Market data updates
+- Notifications
+
+Example WebSocket hook:
+
+```typescript
+// src/hooks/useWebSocket.ts
+export const useWebSocket = () => {
+  const { socket } = useContext(WebSocketContext);
+  
+  const subscribeToDealUpdates = useCallback((dealId: string, callback: (data: any) => void) => {
+    if (!socket) return;
+    
+    socket.emit('subscribe:deal', { dealId });
+    socket.on(`deal:${dealId}:update`, callback);
+    
+    return () => {
+      socket.off(`deal:${dealId}:update`);
+      socket.emit('unsubscribe:deal', { dealId });
+    };
+  }, [socket]);
+  
+  return { 
+    subscribeToDealUpdates,
+    // Other websocket methods
+  };
+};
+```
 
 ## Error Handling
 
-### Error Boundaries
-- Global error boundary
-- Component-level boundaries
-- Error logging
-- User feedback
-- Recovery actions
-- Fallback UI
+The frontend implements a robust error handling system:
 
-### API Error Handling
-- Status code handling
-- Error messages
-- Retry logic
-- Timeout handling
-- Network errors
-- Validation errors
+- Global error boundary (`src/components/ErrorBoundary.tsx`)
+- API error handling in React Query
+- Form validation errors with React Hook Form
+- Toast notifications for user feedback
+
+API error handling example:
+
+```typescript
+// src/api/axios.ts
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const { response } = error;
+    
+    if (response && response.status === 401) {
+      // Handle unauthorized errors
+      authStore.logout();
+      window.location.href = '/auth/login';
+    }
+    
+    if (response && response.data && response.data.message) {
+      // Show error message to user
+      notificationStore.addNotification({
+        title: 'Error',
+        message: response.data.message,
+        type: 'error',
+      });
+    }
+    
+    return Promise.reject(error);
+  }
+);
+```
+
+## Theme and Styling
+
+The application uses Chakra UI with a custom theme:
+
+- Theme configuration (`src/styles/theme.ts`)
+- Global styles (`src/styles/globals.css`)
+- Component styles (`src/components/[ComponentName]/styles.ts`)
+
+Theme configuration example:
+
+```typescript
+// src/styles/theme.ts
+import { extendTheme } from '@chakra-ui/react';
+
+const theme = extendTheme({
+  colors: {
+    brand: {
+      50: '#e0f5ff',
+      100: '#b8e2ff',
+      // ...other shades
+      900: '#0a2d4d',
+    },
+    // ...other color scales
+  },
+  fonts: {
+    heading: 'Inter, system-ui, sans-serif',
+    body: 'Inter, system-ui, sans-serif',
+  },
+  components: {
+    Button: {
+      // Custom button variants
+    },
+    // ...other component customizations
+  },
+});
+
+export default theme;
+```
+
+## Feature Modules
+
+### Dashboard
+
+The dashboard (`/pages/index.tsx`) displays:
+
+- Deal overview cards
+- Recent activities
+- Market trends
+- Agent status
+
+Components:
+- `DealSummaryCard`
+- `ActivityFeed`
+- `MarketTrends`
+- `AgentStatusCard`
+
+### Deal Management
+
+Deal management pages include:
+
+- Deal listing (`/pages/deals/index.tsx`)
+- Deal creation (`/pages/deals/new.tsx`)
+- Deal details (`/pages/deals/[id].tsx`)
+
+Components:
+- `DealList`
+- `DealForm`
+- `DealDetails`
+- `DealScoreCard`
+- `DealActivityTimeline`
+
+### Goal Management
+
+Goal management pages include:
+
+- Goal listing (`/pages/goals/index.tsx`)
+- Goal creation (`/pages/goals/new.tsx`)
+- Goal details (`/pages/goals/[id].tsx`)
+
+Components:
+- `GoalList`
+- `GoalForm`
+- `GoalDetails`
+- `TaskList`
+- `TaskForm`
+
+### Agent Interaction
+
+Agent interaction is handled via:
+
+- Agent listing (`/pages/agents/index.tsx`)
+- Agent details (`/pages/agents/[id].tsx`)
+- Agent chat interface (`/components/AgentChat.tsx`)
+
+Components:
+- `AgentList`
+- `AgentCard`
+- `AgentChat`
+- `MessageList`
+
+### Analytics
+
+Analytics are displayed using Chart.js:
+
+- Performance metrics (`/pages/analytics/index.tsx`)
+- Deal analytics (`/pages/analytics/deals.tsx`)
+- Market analytics (`/pages/analytics/markets.tsx`)
+
+Components:
+- `PerformanceChart`
+- `DealAnalyticsChart`
+- `MarketTrendChart`
+
+## Backend Integration
+
+### API Integration
+
+The frontend integrates with the backend API using the following endpoints:
+
+- Authentication: `/auth/login`, `/auth/register`, `/auth/refresh`
+- Deals: `/deals`, `/deals/{id}`
+- Goals: `/goals`, `/goals/{id}`
+- Tasks: `/tasks`, `/tasks/{id}`
+- Agents: `/agents`, `/agents/{id}`
+- Analytics: `/analytics`, `/analytics/deals`, `/analytics/markets`
+- User: `/users/me`, `/users/settings`
+
+Example API client:
+
+```typescript
+// src/api/deals.ts
+export const fetchDeals = async (params: DealParams): Promise<DealResponse> => {
+  const response = await api.get('/deals', { params });
+  return response.data;
+};
+
+export const fetchDealById = async (id: string): Promise<Deal> => {
+  const response = await api.get(`/deals/${id}`);
+  return response.data;
+};
+
+export const createDeal = async (dealData: CreateDealRequest): Promise<Deal> => {
+  const response = await api.post('/deals', dealData);
+  return response.data;
+};
+
+export const updateDeal = async (id: string, dealData: UpdateDealRequest): Promise<Deal> => {
+  const response = await api.put(`/deals/${id}`, dealData);
+  return response.data;
+};
+
+export const deleteDeal = async (id: string): Promise<void> => {
+  await api.delete(`/deals/${id}`);
+};
+```
+
+### WebSocket Integration
+
+The frontend connects to the backend WebSocket server at `/ws`:
+
+```typescript
+// src/contexts/WebSocketContext.tsx
+import { createContext, useEffect, useState } from 'react';
+import io, { Socket } from 'socket.io-client';
+import { useAuth } from '../hooks/useAuth';
+
+export const WebSocketContext = createContext<{ socket: Socket | null }>({ socket: null });
+
+export const WebSocketProvider = ({ children }) => {
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const { isAuthenticated, accessToken } = useAuth();
+  
+  useEffect(() => {
+    if (!isAuthenticated || !accessToken) {
+      if (socket) {
+        socket.disconnect();
+        setSocket(null);
+      }
+      return;
+    }
+    
+    const socketInstance = io(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000', {
+      path: '/ws',
+      auth: {
+        token: accessToken,
+      },
+    });
+    
+    setSocket(socketInstance);
+    
+    return () => {
+      socketInstance.disconnect();
+    };
+  }, [isAuthenticated, accessToken]);
+  
+  return (
+    <WebSocketContext.Provider value={{ socket }}>
+      {children}
+    </WebSocketContext.Provider>
+  );
+};
+```
+
+## Performance Optimizations
+
+The frontend implements several performance optimizations:
+
+### Code Splitting
+
+Next.js automatic code splitting and dynamic imports:
+
+```typescript
+// src/pages/deals/[id].tsx
+import dynamic from 'next/dynamic';
+
+const DealChart = dynamic(() => import('../../components/DealChart'), {
+  ssr: false,
+  loading: () => <div>Loading chart...</div>,
+});
+```
+
+### Memoization
+
+React's memoization to prevent unnecessary re-renders:
+
+```typescript
+// src/components/DealList.tsx
+const MemoizedDealItem = React.memo(DealItem);
+
+export const DealList = ({ deals }) => {
+  return (
+    <div>
+      {deals.map(deal => (
+        <MemoizedDealItem key={deal.id} deal={deal} />
+      ))}
+    </div>
+  );
+};
+```
+
+### Request Optimizations
+
+Request optimization with React Query's caching and deduplication:
+
+```typescript
+// src/hooks/useDeal.ts
+export const useDeal = (id: string) => {
+  return useQuery(
+    ['deal', id],
+    () => api.get(`/deals/${id}`).then(res => res.data),
+    {
+      staleTime: 5 * 60 * 1000, // 5 minutes
+      refetchOnWindowFocus: false,
+    }
+  );
+};
+```
+
+### Infinite Loading
+
+Infinite scrolling for large data sets:
+
+```typescript
+// src/hooks/useInfiniteDeals.ts
+export const useInfiniteDeals = (filters?: DealFilters) => {
+  return useInfiniteQuery(
+    ['infiniteDeals', filters],
+    ({ pageParam = 1 }) => api.get('/deals', {
+      params: {
+        ...filters,
+        page: pageParam,
+        limit: 10,
+      },
+    }).then(res => res.data),
+    {
+      getNextPageParam: (lastPage) => {
+        if (lastPage.meta.currentPage < lastPage.meta.totalPages) {
+          return lastPage.meta.currentPage + 1;
+        }
+        return undefined;
+      },
+    }
+  );
+};
+```
 
 ## Testing
 
+The frontend includes comprehensive testing:
+
 ### Unit Tests
-- Component testing
-- Hook testing
-- Utility testing
-- State management
-- API mocking
-- Event handling
+
+Jest and React Testing Library for unit tests:
+
+```typescript
+// src/components/DealCard.test.tsx
+import { render, screen } from '@testing-library/react';
+import { DealCard } from './DealCard';
+
+describe('DealCard', () => {
+  it('renders deal information correctly', () => {
+    const deal = {
+      id: '1',
+      title: 'Test Deal',
+      status: 'active',
+      market_type: 'stock',
+      price: 100,
+    };
+    
+    render(<DealCard deal={deal} />);
+    
+    expect(screen.getByText('Test Deal')).toBeInTheDocument();
+    expect(screen.getByText('Active')).toBeInTheDocument();
+    expect(screen.getByText('Stock')).toBeInTheDocument();
+    expect(screen.getByText('$100')).toBeInTheDocument();
+  });
+});
+```
 
 ### Integration Tests
-- Page testing
-- Flow testing
-- API integration
-- State integration
-- Route testing
-- Form submission
 
-### E2E Tests
-- User flows
-- Authentication
-- Navigation
-- Data persistence
-- Error scenarios
-- Performance
+Cypress for integration tests:
 
-## Build and Deployment
+```typescript
+// cypress/integration/deals.spec.ts
+describe('Deals Page', () => {
+  beforeEach(() => {
+    cy.login();
+    cy.visit('/deals');
+  });
+  
+  it('displays deals list', () => {
+    cy.get('[data-testid="deal-list"]').should('exist');
+    cy.get('[data-testid="deal-card"]').should('have.length.at.least', 1);
+  });
+  
+  it('can create a new deal', () => {
+    cy.get('[data-testid="create-deal-button"]').click();
+    cy.get('[data-testid="deal-form"]').should('be.visible');
+    
+    cy.get('input[name="title"]').type('New Test Deal');
+    cy.get('select[name="market_type"]').select('stock');
+    cy.get('input[name="price"]').type('150');
+    
+    cy.get('[data-testid="submit-button"]').click();
+    
+    cy.get('[data-testid="deal-card"]')
+      .contains('New Test Deal')
+      .should('be.visible');
+  });
+});
+```
 
-### Build Configuration
-```javascript
+### End-to-End Tests
+
+Playwright for end-to-end tests:
+
+```typescript
+// tests/e2e/deal-workflow.spec.ts
+import { test, expect } from '@playwright/test';
+
+test('complete deal workflow', async ({ page }) => {
+  await page.goto('/auth/login');
+  
+  // Login
+  await page.fill('input[name="email"]', 'test@example.com');
+  await page.fill('input[name="password"]', 'password123');
+  await page.click('button[type="submit"]');
+  
+  // Create deal
+  await page.goto('/deals/new');
+  await page.fill('input[name="title"]', 'E2E Test Deal');
+  await page.selectOption('select[name="market_type"]', 'stock');
+  await page.fill('input[name="price"]', '200');
+  await page.click('button[type="submit"]');
+  
+  // Verify deal was created
+  await page.waitForURL(/\/deals\/[\w-]+/);
+  await expect(page.locator('h1')).toContainText('E2E Test Deal');
+  
+  // Add goal to deal
+  await page.click('[data-testid="add-goal-button"]');
+  await page.fill('input[name="title"]', 'Research Market');
+  await page.click('button[type="submit"]');
+  
+  // Verify goal was added
+  await expect(page.locator('[data-testid="goal-item"]')).toContainText('Research Market');
+});
+```
+
+## Accessibility
+
+The frontend follows WCAG 2.1 AA standards:
+
+- Semantic HTML
+- Keyboard navigation
+- ARIA attributes
+- Color contrast compliance
+- Screen reader support
+
+Accessibility features:
+
+```typescript
+// src/components/Button.tsx
+import { forwardRef } from 'react';
+import { Button as ChakraButton, ButtonProps } from '@chakra-ui/react';
+
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ children, ...props }, ref) => {
+    return (
+      <ChakraButton
+        ref={ref}
+        {...props}
+        sx={{
+          '&:focus-visible': {
+            boxShadow: '0 0 0 3px var(--chakra-colors-blue-300)',
+          },
+        }}
+      >
+        {children}
+      </ChakraButton>
+    );
+  }
+);
+
+Button.displayName = 'Button';
+```
+
+## Deployment
+
+The frontend is deployed using Vercel with the following configuration:
+
+1. Production environment: `https://agentic-deals.example.com`
+2. Staging environment: `https://staging.agentic-deals.example.com`
+3. Development environment: `https://dev.agentic-deals.example.com`
+
+Environment variables are managed through Vercel's dashboard:
+
+```
+# .env.production
+NEXT_PUBLIC_API_URL=https://api.agentic-deals.example.com
+NEXT_PUBLIC_WEBSOCKET_URL=wss://api.agentic-deals.example.com
+NEXT_PUBLIC_ENVIRONMENT=production
+```
+
+## Security Considerations
+
+The frontend implements the following security measures:
+
+- HTTP-only cookies for JWT storage
+- CSRF protection
+- Content Security Policy (CSP)
+- XSS protection
+- Input sanitization
+- HTTPS enforcement
+
+Security implementation:
+
+```typescript
 // next.config.js
+const ContentSecurityPolicy = `
+  default-src 'self';
+  script-src 'self' 'unsafe-eval' 'unsafe-inline';
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data:;
+  font-src 'self';
+  connect-src 'self' ${process.env.NEXT_PUBLIC_API_URL};
+`;
+
 module.exports = {
-  reactStrictMode: true,
-  images: {
-    domains: ['...'],
+  async headers() {
+    return [
+      {
+        source: '/(.*)',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value: ContentSecurityPolicy.replace(/\s{2,}/g, ' ').trim(),
+          },
+          {
+            key: 'X-XSS-Protection',
+            value: '1; mode=block',
+          },
+          {
+            key: 'X-Frame-Options',
+            value: 'DENY',
+          },
+          {
+            key: 'X-Content-Type-Options',
+            value: 'nosniff',
+          },
+        ],
+      },
+    ];
   },
-  env: {
-    API_URL: process.env.API_URL,
-  },
-  // Additional configuration
-}
+};
 ```
 
-### Environment Variables
-```env
-# .env.example
-NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_WS_URL=ws://localhost:8000
-NEXT_PUBLIC_STRIPE_KEY=pk_test_...
-```
+## Troubleshooting
 
-### Deployment Pipeline
-1. Code linting
-2. Type checking
-3. Unit tests
-4. Build process
-5. Integration tests
-6. E2E tests
-7. Deployment
-8. Health checks
+Common issues and solutions:
 
-## Development Workflow
+### API Connection Issues
 
-### Setup Instructions
-```bash
-# Install dependencies
-npm install
+1. Check API URL in environment variables
+2. Verify CORS configuration on backend
+3. Check network tab for error responses
+4. Verify authentication token
 
-# Run development server
-npm run dev
+### State Management Issues
 
-# Build for production
-npm run build
+1. Check React Query devtools for query status
+2. Verify Zustand store state
+3. Check component re-rendering with React DevTools
 
-# Start production server
-npm start
+### Build Errors
 
-# Run tests
-npm test
-```
+1. Check TypeScript errors
+2. Verify dependency versions
+3. Check Next.js build logs
 
-### Development Commands
-- `npm run dev`: Development server
-- `npm run build`: Production build
-- `npm start`: Production server
-- `npm test`: Run tests
-- `npm run lint`: Code linting
-- `npm run format`: Code formatting
+## Contributing
 
-## Monitoring and Analytics
+Guidelines for contributing to the frontend:
 
-### Performance Monitoring
-- Page load times
-- Component rendering
-- API response times
-- Resource usage
-- Error rates
-- User metrics
+1. Follow the project's coding standards
+2. Write unit tests for new components
+3. Ensure accessibility compliance
+4. Document new features
+5. Update type definitions
+6. Run lint and type checks before committing
 
-### User Analytics
-- Page views
-- User actions
-- Feature usage
-- Error tracking
-- Performance data
-- Conversion rates
+## References
 
-## Documentation
-
-### Code Documentation
-- Component documentation
-- Type definitions
-- API documentation
-- Utility functions
-- Hooks documentation
-- State management
-
-### User Documentation
-- Feature guides
-- User tutorials
-- API references
-- Troubleshooting
-- FAQs
-- Release notes 
+- [React Documentation](https://reactjs.org/docs/getting-started.html)
+- [Next.js Documentation](https://nextjs.org/docs)
+- [TypeScript Documentation](https://www.typescriptlang.org/docs)
+- [Chakra UI Documentation](https://chakra-ui.com/docs/getting-started)
+- [React Query Documentation](https://react-query.tanstack.com/overview)
+- [Zustand Documentation](https://github.com/pmndrs/zustand) 

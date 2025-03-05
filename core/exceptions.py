@@ -9,6 +9,7 @@ from fastapi import HTTPException, status
 from pydantic import ValidationError as PydanticValidationError
 import traceback
 import json
+from decimal import Decimal
 
 class BaseAppException(Exception):
     """Base application exception with enhanced error handling."""
@@ -620,8 +621,20 @@ class InsufficientBalanceError(BaseAppException):
     def __init__(
         self,
         message: str = "Insufficient balance",
-        details: Optional[Dict[str, Any]] = None
+        details: Optional[Dict[str, Any]] = None,
+        reason: Optional[str] = None,
+        available: Optional[Decimal] = None
     ):
+        # For backward compatibility, accept both message and reason
+        if reason and not message.startswith(reason):
+            message = f"{reason}: {message}"
+        
+        if details is None:
+            details = {}
+        
+        if available is not None:
+            details["available"] = str(available)
+            
         super().__init__(
             message=message,
             status_code=status.HTTP_400_BAD_REQUEST,

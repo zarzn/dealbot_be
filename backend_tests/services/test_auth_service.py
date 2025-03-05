@@ -30,15 +30,10 @@ async def test_create_access_token(db_session, auth_service):
     user = await UserFactory.create_async(db_session=db_session)
     
     # Create an access token
-    token_data = await auth_service.create_access_token(user_id=str(user.id))
-    
-    # Verify token data
-    assert "access_token" in token_data
-    assert "token_type" in token_data
-    assert token_data["token_type"] == "bearer"
+    token = await auth_service.create_access_token(user)
     
     # Verify token can be decoded
-    decoded = await auth_service.verify_token(token_data["access_token"])
+    decoded = await auth_service.verify_token(token)
     assert decoded["sub"] == str(user.id)
     assert decoded["type"] == "access"
 
@@ -50,15 +45,10 @@ async def test_create_refresh_token(db_session, auth_service):
     user = await UserFactory.create_async(db_session=db_session)
     
     # Create a refresh token
-    token_data = await auth_service.create_refresh_token(user_id=str(user.id))
-    
-    # Verify token data
-    assert "refresh_token" in token_data
-    assert "token_type" in token_data
-    assert token_data["token_type"] == "bearer"
+    token = await auth_service.create_refresh_token(user)
     
     # Verify token can be decoded
-    decoded = await auth_service.verify_token(token_data["refresh_token"])
+    decoded = await auth_service.verify_token(token)
     assert decoded["sub"] == str(user.id)
     assert decoded["type"] == "refresh"
 
@@ -76,11 +66,12 @@ async def test_verify_invalid_token(auth_service):
         user_id = str(uuid.uuid4())
         
         # Create an access token (which will be expired in the time-traveled future)
-        token_data = await auth_service.create_access_token(user_id=user_id)
+        data = {"sub": user_id}
+        token = await auth_service.create_access_token(data)
         
         # Verify token is expired
         with pytest.raises(TokenError):
-            await auth_service.verify_token(token_data["access_token"])
+            await auth_service.verify_token(token)
 
 @service_test
 @depends_on("core.test_models.test_user.test_create_user")
@@ -90,8 +81,7 @@ async def test_blacklist_token(db_session, auth_service):
     user = await UserFactory.create_async(db_session=db_session)
     
     # Create an access token
-    token_data = await auth_service.create_access_token(user_id=str(user.id))
-    token = token_data["access_token"]
+    token = await auth_service.create_access_token(user)
     
     # Verify token is valid
     decoded = await auth_service.verify_token(token)
@@ -122,9 +112,9 @@ async def test_authenticate_user_with_valid_credentials(db_session):
     
     # Authenticate the user
     authenticated_user = await authenticate_user(
-        db_session=db_session,
         email=unique_email,
-        password="testpassword123"
+        password="testpassword123",
+        db=db_session
     )
     
     # Verify the authenticated user
@@ -149,17 +139,17 @@ async def test_authentication_failure(db_session):
     # Test with incorrect password
     with pytest.raises(InvalidCredentialsError):
         await authenticate_user(
-            db_session=db_session,
             email=unique_email,
-            password="wrongpassword"
+            password="wrongpassword",
+            db=db_session
         )
     
     # Test with non-existent user
     with pytest.raises(AuthenticationError):
         await authenticate_user(
-            db_session=db_session,
             email="nonexistent@example.com",
-            password="testpassword123"
+            password="testpassword123",
+            db=db_session
         )
     
     # Test with inactive user
@@ -168,14 +158,14 @@ async def test_authentication_failure(db_session):
         db_session=db_session,
         email=inactive_email,
         password="testpassword123",
-        is_active=False
+        status="inactive"
     )
     
     with pytest.raises(AuthenticationError):
         await authenticate_user(
-            db_session=db_session,
             email=inactive_email,
-            password="testpassword123"
+            password="testpassword123",
+            db=db_session
         )
 
 @service_test
@@ -183,18 +173,15 @@ async def test_authentication_failure(db_session):
 async def test_token_operations(db_session, redis_client):
     """Test token creation, verification, and blacklisting."""
     # Create auth service
-    auth_service = AuthService(db_session, redis_client)
+    auth_service = AuthService(db_session)
     
     # Create a test user
     user = await UserFactory.create_async(db_session=db_session)
     user_id = str(user.id)
     
     # Create access and refresh tokens
-    access_token_data = await auth_service.create_access_token(user_id=user_id)
-    refresh_token_data = await auth_service.create_refresh_token(user_id=user_id)
-    
-    access_token = access_token_data["access_token"]
-    refresh_token = refresh_token_data["refresh_token"]
+    access_token = await auth_service.create_access_token(user)
+    refresh_token = await auth_service.create_refresh_token(user)
     
     # Verify tokens
     access_decoded = await auth_service.verify_token(access_token)

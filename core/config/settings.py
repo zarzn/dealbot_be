@@ -73,6 +73,7 @@ from pydantic import (
     HttpUrl
 )
 from pydantic_settings import BaseSettings
+import sys
 
 # Get the base directory
 _BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -128,7 +129,7 @@ class Settings(BaseSettings):
 
     # Database settings
     DATABASE_URL: Optional[PostgresDsn] = Field(
-        default="postgresql+asyncpg://postgres:12345678@deals_postgres:5432/deals",
+        default=None,  # Will be built by validator based on environment
         description="Database URL"
     )
     POSTGRES_USER: str = Field(default="postgres")
@@ -148,8 +149,11 @@ class Settings(BaseSettings):
     DB_ECHO: bool = Field(default=True, description="Enable SQL query logging")
 
     # Redis settings
-    REDIS_URL: RedisDsn = Field(default="redis://deals_redis:6379/0")
-    REDIS_HOST: str = Field(default="redis")
+    REDIS_URL: Optional[RedisDsn] = Field(
+        default=None,  # Will be built by validator based on environment
+        description="Redis URL"
+    )
+    REDIS_HOST: str = Field(default="localhost")
     REDIS_PORT: int = Field(default=6379)
     REDIS_DB: int = Field(default=0)
     REDIS_PASSWORD: str = Field(default="your_redis_password")
@@ -174,6 +178,7 @@ class Settings(BaseSettings):
     REDIS_RETRY_MAX_DELAY: float = Field(default=5.0)
     REDIS_RETRY_JITTER: bool = Field(default=True)
     hosts: List[str] = Field(default=["localhost"])
+    host: str = Field(default="localhost")
 
     # JWT settings
     JWT_SECRET_KEY: SecretStr = Field(default="test-secret-key")
@@ -197,6 +202,9 @@ class Settings(BaseSettings):
     API_OPENAPI_URL: str = Field(default="/openapi.json")
     API_ROOT_PATH: str = Field(default="")
     API_DEBUG: bool = Field(default=False)
+
+    # Site settings
+    SITE_URL: str = Field(default="http://localhost:3000", description="Frontend site URL")
 
     # Security settings
     SECRET_KEY: SecretStr = Field(default="test-secret-key")
@@ -439,38 +447,199 @@ class Settings(BaseSettings):
     @classmethod
     def build_database_url(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Build database URL from components if not provided."""
+        print("DEBUG: In build_database_url validator")
+        
+        # Check for AWS environment indicators
+        is_aws = os.environ.get("AWS_EXECUTION_ENV") is not None or \
+                 os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None or \
+                 os.environ.get("ECS_CONTAINER_METADATA_URI") is not None
+        
+        if is_aws:
+            print("DEBUG: Running in AWS environment - prioritizing AWS configuration")
+        
+        # If DATABASE_URL is not already set
         if not values.get("DATABASE_URL"):
-            values["DATABASE_URL"] = PostgresDsn.build(
-                scheme="postgresql+asyncpg",
-                username=values.get("POSTGRES_USER"),
-                password=values.get("POSTGRES_PASSWORD"),
-                host=values.get("POSTGRES_HOST"),
-                port=int(values.get("POSTGRES_PORT", 5432)),
-                path=values.get("POSTGRES_DB", "")
-            )
+            try:
+                # Get individual components with defaults
+                db_user = values.get("POSTGRES_USER", "postgres")
+                db_password = values.get("POSTGRES_PASSWORD", "postgres")
+                
+                # Prioritize AWS RDS hostname if available
+                db_host = values.get("POSTGRES_HOST")
+                if not db_host:
+                    # Check environment directly in case it's set but not loaded in values yet
+                    db_host = os.environ.get("POSTGRES_HOST")
+                    if db_host:
+                        print(f"DEBUG: Found POSTGRES_HOST in environment: {db_host}")
+                        values["POSTGRES_HOST"] = db_host
+                
+                # If still no host, use default
+                if not db_host:
+                    # Use "localhost" in AWS instead of "deals_postgres" to avoid DNS errors
+                    db_host = "localhost" if is_aws else "deals_postgres"
+                    print(f"DEBUG: Using default host: {db_host}")
+                
+                db_port = values.get("POSTGRES_PORT", "5432")
+                db_name = values.get("POSTGRES_DB", "agentic_deals")
+                
+                # Print the actual values for debugging (mask password)
+                print(f"DEBUG: Building URL with HOST={db_host}, PORT={db_port}, USER={db_user}, DB={db_name}")
+                
+                # Make sure port is an integer when converted
+                try:
+                    db_port = str(int(db_port))
+                except (ValueError, TypeError):
+                    print(f"DEBUG: Invalid port value: {db_port}, using default 5432")
+                    db_port = "5432"
+                
+                # Ensure the password is URL encoded
+                import urllib.parse
+                
+                # Remove any existing URL encoding to prevent double-encoding
+                def clean_component(s):
+                    """Clean a URL component to prevent double encoding."""
+                    try:
+                        # First try to decode in case it's already encoded
+                        decoded = urllib.parse.unquote(str(s))
+                        # Then encode it properly
+                        return urllib.parse.quote_plus(decoded)
+                    except Exception as e:
+                        print(f"DEBUG: Error cleaning URL component: {str(e)}")
+                        return urllib.parse.quote_plus(str(s))
+                
+                encoded_user = clean_component(db_user)
+                encoded_password = clean_component(db_password)
+                encoded_host = db_host  # Don't encode hostname
+                
+                # Build the database URL string with the correct driver
+                # Use asyncpg for normal operation, but psycopg2 for migrations
+                if "alembic" in sys.modules:
+                    print("DEBUG: Using psycopg2 driver for Alembic migrations")
+                    db_driver = "postgresql"
+                else:
+                    print("DEBUG: Using asyncpg driver for normal operation")
+                    db_driver = "postgresql+asyncpg"
+                
+                values["DATABASE_URL"] = f"{db_driver}://{encoded_user}:{encoded_password}@{encoded_host}:{db_port}/{db_name}"
+                print(f"DEBUG: Built DATABASE_URL with host={db_host}, port={db_port}")
+                
+                # Skip validation as the PostgresDsn class doesn't have a validate method directly
+                # This addresses the linter error "Class 'PostgresDsn' has no 'validate' member"
+                
+            except Exception as e:
+                print(f"DEBUG: Error building database URL: {str(e)}")
+                # Provide a fallback URL
+                if is_aws:
+                    print("DEBUG: Using fallback database URL for AWS")
+                    values["DATABASE_URL"] = f"postgresql+asyncpg://postgres:postgres@localhost:5432/agentic_deals"
+                else:
+                    print("DEBUG: Using fallback database URL for development")
+                    values["DATABASE_URL"] = f"postgresql+asyncpg://postgres:12345678@deals_postgres:5432/deals"
+        
         return values
 
     @model_validator(mode='before')
     @classmethod
     def build_redis_url(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Build Redis URL from components if not provided."""
-        # Fix for Redis validation error: ensure only one of host or hosts is set
-        if 'host' in values and 'hosts' in values:
-            # If both are set, prioritize hosts and remove host
-            del values['host']
+        print("DEBUG: In build_redis_url validator")
+        
+        # Check for AWS environment indicators
+        is_aws = os.environ.get("AWS_EXECUTION_ENV") is not None or \
+                 os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None or \
+                 os.environ.get("ECS_CONTAINER_METADATA_URI") is not None
+        
+        if is_aws:
+            print("DEBUG: Running in AWS environment - prioritizing AWS Redis configuration")
+        
+        # Remove 'host' to avoid Redis validation error
+        if 'host' in values:
             print(f"DEBUG: In build_redis_url: Removed 'host' to avoid Redis validation error")
+            # We don't actually remove it because it might be needed in set_host_and_hosts
         
         if not values.get("REDIS_URL"):
-            # Build Redis URL from components
-            redis_host = values.get("REDIS_HOST", "localhost")
-            redis_port = values.get("REDIS_PORT", 6379)
-            redis_db = values.get("REDIS_DB", 0)
-            redis_password = values.get("REDIS_PASSWORD")
-
-            if redis_password:
-                values["REDIS_URL"] = f"redis://:{redis_password}@{redis_host}:{redis_port}/{redis_db}"
-            else:
-                values["REDIS_URL"] = f"redis://{redis_host}:{redis_port}/{redis_db}"
+            try:
+                # Prioritize Redis host from environment variables
+                redis_host = values.get("REDIS_HOST")
+                if not redis_host:
+                    # Check environment directly in case it's set but not loaded in values yet
+                    redis_host = os.environ.get("REDIS_HOST")
+                    if redis_host:
+                        print(f"DEBUG: Found REDIS_HOST in environment: {redis_host}")
+                        values["REDIS_HOST"] = redis_host
+                
+                # If still no host, use default
+                if not redis_host:
+                    # Use "localhost" in AWS instead of "deals_redis" to avoid DNS errors
+                    redis_host = "localhost" if is_aws else "deals_redis"
+                    print(f"DEBUG: Using default Redis host: {redis_host}")
+                
+                redis_port = values.get("REDIS_PORT", 6379)
+                redis_db = values.get("REDIS_DB", 0)
+                
+                # Get password from environment or settings
+                redis_password = values.get("REDIS_PASSWORD", "")
+                if not redis_password:
+                    redis_password = os.environ.get("REDIS_PASSWORD", "")
+                    if redis_password:
+                        print("DEBUG: Using Redis password from environment")
+                        values["REDIS_PASSWORD"] = redis_password
+                
+                print(f"DEBUG: Building Redis URL with HOST={redis_host}, PORT={redis_port}, DB={redis_db}")
+                
+                # Validate port is an integer
+                try:
+                    redis_port = int(redis_port)
+                except (ValueError, TypeError):
+                    print(f"DEBUG: Invalid Redis port value: {redis_port}, using default 6379")
+                    redis_port = 6379
+                
+                # Validate DB is an integer
+                try:
+                    redis_db = int(redis_db)
+                except (ValueError, TypeError):
+                    print(f"DEBUG: Invalid Redis DB value: {redis_db}, using default 0")
+                    redis_db = 0
+                
+                # URL encode password if provided
+                import urllib.parse
+                
+                # Clean and encode the password to prevent double encoding
+                def clean_password(pwd):
+                    if not pwd:
+                        return pwd
+                    try:
+                        # First try to decode in case it's already encoded
+                        decoded = urllib.parse.unquote(str(pwd))
+                        # Then encode it properly
+                        return urllib.parse.quote_plus(decoded)
+                    except Exception as e:
+                        print(f"DEBUG: Error cleaning Redis password: {str(e)}")
+                        return urllib.parse.quote_plus(str(pwd))
+                
+                encoded_password = clean_password(redis_password)
+                
+                # Build Redis URL based on whether password is provided
+                if redis_password:
+                    values["REDIS_URL"] = f"redis://:{encoded_password}@{redis_host}:{redis_port}/{redis_db}"
+                else:
+                    values["REDIS_URL"] = f"redis://{redis_host}:{redis_port}/{redis_db}"
+                
+                print(f"DEBUG: Built REDIS_URL with host={redis_host}, port={redis_port}, db={redis_db}")
+                
+                # Skip validation as the Redis and PostgresDsn classes don't have a validate method directly
+                # This addresses the linter error
+                
+            except Exception as e:
+                print(f"DEBUG: Error building Redis URL: {str(e)}")
+                # Provide a fallback URL for development
+                if is_aws:
+                    print("DEBUG: Using fallback Redis URL for AWS")
+                    values["REDIS_URL"] = "redis://localhost:6379/0"
+                else:
+                    print("DEBUG: Using fallback Redis URL for development")
+                    values["REDIS_URL"] = "redis://deals_redis:6379/0"
+        
         return values
 
     @computed_field
@@ -501,37 +670,28 @@ class Settings(BaseSettings):
     @classmethod
     def set_host_and_hosts(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Set host and hosts fields from environment variables."""
-        # Print debug information
-        print(f"DEBUG: In set_host_and_hosts validator")
-        print(f"DEBUG: Environment host: {os.environ.get('host')}")
-        print(f"DEBUG: Environment hosts: {os.environ.get('hosts')}")
-        
         # Ensure we have at least one of host or hosts
         if 'host' not in values and 'hosts' not in values:
             # If neither is set, use default hosts
             values['hosts'] = ["localhost"]
-            print(f"DEBUG: Neither host nor hosts set, using default hosts: {values['hosts']}")
+            values['host'] = "localhost"
         
-        # If both are set, prioritize hosts and remove host to avoid validation errors
-        if 'host' in values and 'hosts' in values:
-            del values['host']
-            print(f"DEBUG: Both host and hosts were set, removed host to avoid validation errors")
+        # If only host is set but not hosts
+        if 'host' in values and 'hosts' not in values:
+            # Convert host to hosts list format
+            values['hosts'] = [values['host']]
         
-        # Set host from environment if not already set
-        if 'host' not in values and os.environ.get('host') and 'hosts' not in values:
-            values['host'] = os.environ.get('host')
-            print(f"DEBUG: Set host to {values['host']}")
+        # If only hosts is set but not host
+        if 'hosts' in values and 'host' not in values:
+            # Use first host as the default host
+            values['host'] = values['hosts'][0] if values['hosts'] else "localhost"
         
-        # Set hosts from environment if not already set
-        if 'hosts' not in values and os.environ.get('hosts'):
-            import json
-            try:
-                hosts_value = json.loads(os.environ.get('hosts', '["localhost"]'))
-                values['hosts'] = hosts_value
-                print(f"DEBUG: Set hosts to {values['hosts']}")
-            except json.JSONDecodeError:
-                values['hosts'] = ["localhost"]
-                print(f"DEBUG: Failed to parse hosts, using default")
+        # Make sure both are valid values
+        if not values.get('host'):
+            values['host'] = "localhost"
+            
+        if not values.get('hosts'):
+            values['hosts'] = ["localhost"]
         
         return values
 
@@ -550,9 +710,11 @@ class Settings(BaseSettings):
             file_secret_settings,
         ):
             # First get values from normal sources
-            result = super().customise_sources(
-                init_settings, env_settings, file_secret_settings
-            )
+            from pydantic.v1.env_settings import SettingsSourceCallable
+            from functools import partial
+            
+            # Chain the settings sources
+            result = (init_settings, env_settings, file_secret_settings)
 
             # Then apply test-specific overrides
             def test_override(settings_dict):
@@ -576,4 +738,13 @@ class Settings(BaseSettings):
                         settings_dict["REDIS_URL"] = f"redis://{settings_dict['REDIS_HOST']}:{settings_dict['REDIS_PORT']}/{settings_dict['REDIS_DB']}"
                 return settings_dict
 
-            return lambda: test_override(result()) 
+            # Create a callable that properly chains the sources and applies our override
+            def combined_sources():
+                # First apply the normal sources in sequence
+                settings_dict = {}
+                for source in result:
+                    settings_dict.update(source())
+                # Then apply our test overrides
+                return test_override(settings_dict)
+                
+            return combined_sources 

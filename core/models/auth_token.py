@@ -75,7 +75,7 @@ class AuthToken(Base):
     )
 
     # Relationships
-    user = relationship("core.models.user.User", back_populates="auth_tokens")
+    user = relationship("User", back_populates="auth_tokens")
 
     def __repr__(self) -> str:
         """String representation of the auth token."""

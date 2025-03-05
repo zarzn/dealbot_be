@@ -81,6 +81,7 @@ from .token import (
     TokenWalletUpdate,
     TokenWalletResponse
 )
+from .deal_token import DealToken
 from .token_transaction import (
     TokenTransaction,
     TokenTransactionCreate,
@@ -160,6 +161,7 @@ __all__ = [
     'DealStatus',
     'DealSource',
     'PriceHistory',
+    'DealToken',
 
     # Price Tracking
     'PricePoint',
@@ -209,6 +211,7 @@ __all__ = [
     'TokenBalance',
     'TokenBalanceHistory',
     'TokenPricing',
+    'DealToken',
     'TokenTransactionCreate',
     'TokenTransactionUpdate',
     'TokenTransactionInDB',

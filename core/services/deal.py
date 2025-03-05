@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
 from ratelimit import limits, sleep_and_retry
 from tenacity import retry, stop_after_attempt, wait_exponential
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import httpx

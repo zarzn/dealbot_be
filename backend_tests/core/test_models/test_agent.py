@@ -8,7 +8,11 @@ from sqlalchemy import select
 from core.models.agent import Agent, AgentType, AgentStatus
 from core.models.user import User
 from core.models.deal import Deal
-from core.models.enums import DealStatus, MarketType
+from core.models.enums import DealStatus, MarketType, MarketCategory, MarketStatus
+from core.models.market import Market
+
+# Skip all tests in this module since the agents table doesn't exist
+# pytestmark = pytest.mark.skip(reason="The agents table doesn't exist in the test database")
 
 @pytest.mark.asyncio
 @pytest.mark.core
@@ -17,22 +21,34 @@ async def test_agent_creation(db_session):
     # Create a user
     user = User(
         email="agent_test@example.com",
-        username="agentuser",
-        full_name="Agent Test User",
-        hashed_password="hashed_password_value",
-        is_active=True
+        name="Agent Test User",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
     )
     db_session.add(user)
+    await db_session.commit()
+    
+    # Create a market
+    market = Market(
+        name="Agent Test Market",
+        type=MarketType.TEST.value.lower(),
+        status=MarketStatus.ACTIVE.value.lower()
+    )
+    db_session.add(market)
     await db_session.commit()
     
     # Create a deal
     deal = Deal(
         title="Agent Test Deal",
-        description="A deal for testing agent model",
-        status=DealStatus.DRAFT.value.lower(),
-        market_type=MarketType.CRYPTO.value.lower(),
+        description="A deal for testing agent relationships",
+        url="https://example.com/agent-test-deal",
+        price=19.99,
+        currency="USD",
+        status=DealStatus.ACTIVE.value.lower(),
+        category=MarketCategory.ELECTRONICS.value,
         user_id=user.id,
-        metadata={"test": True}
+        market_id=market.id
     )
     db_session.add(deal)
     await db_session.commit()
@@ -40,22 +56,13 @@ async def test_agent_creation(db_session):
     # Create an agent
     agent = Agent(
         name="Test Agent",
-        type=AgentType.MARKET_ANALYST.value.lower(),
-        status=AgentStatus.ACTIVE.value.lower(),
+        agent_type=AgentType.GOAL.value,
+        status=AgentStatus.ACTIVE.value,
+        description="A test agent",
         user_id=user.id,
-        deal_id=deal.id,
-        configuration={
-            "model": "gpt-4",
-            "temperature": 0.7,
-            "max_tokens": 1000
-        },
-        metadata={
-            "specialty": "cryptocurrency",
-            "experience_level": "expert"
-        }
+        config={"model": "gpt-4", "temperature": 0.7},
+        meta_data={"created_by": "test_suite"}
     )
-    
-    # Add to session and commit
     db_session.add(agent)
     await db_session.commit()
     await db_session.refresh(agent)
@@ -64,17 +71,15 @@ async def test_agent_creation(db_session):
     assert agent.id is not None
     assert isinstance(agent.id, uuid.UUID)
     assert agent.name == "Test Agent"
-    assert agent.type == AgentType.MARKET_ANALYST.value.lower()
-    assert agent.status == AgentStatus.ACTIVE.value.lower()
+    assert agent.agent_type == AgentType.GOAL.value
+    assert agent.status == AgentStatus.ACTIVE.value
+    assert agent.description == "A test agent"
     assert agent.user_id == user.id
-    assert agent.deal_id == deal.id
     
-    # Verify configuration and metadata
-    assert agent.configuration["model"] == "gpt-4"
-    assert agent.configuration["temperature"] == 0.7
-    assert agent.configuration["max_tokens"] == 1000
-    assert agent.metadata["specialty"] == "cryptocurrency"
-    assert agent.metadata["experience_level"] == "expert"
+    # Verify config and metadata
+    assert agent.config["model"] == "gpt-4"
+    assert agent.config["temperature"] == 0.7
+    assert agent.meta_data["created_by"] == "test_suite"
     
     # Verify created_at and updated_at were set
     assert agent.created_at is not None
@@ -85,26 +90,38 @@ async def test_agent_creation(db_session):
 @pytest.mark.asyncio
 @pytest.mark.core
 async def test_agent_relationships(db_session):
-    """Test agent relationships with user and deal."""
+    """Test agent relationships with other models."""
     # Create a user
     user = User(
-        email="agent_rel_test@example.com",
-        username="agentreluser",
-        full_name="Agent Relationship Test User",
-        hashed_password="hashed_password_value",
-        is_active=True
+        email="agent_rel@example.com",
+        name="Agent Relationship Test User",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
     )
     db_session.add(user)
+    await db_session.commit()
+    
+    # Create a market
+    market = Market(
+        name="Agent Relationship Test Market",
+        type=MarketType.TEST.value.lower(),
+        status=MarketStatus.ACTIVE.value.lower()
+    )
+    db_session.add(market)
     await db_session.commit()
     
     # Create a deal
     deal = Deal(
         title="Agent Relationship Test Deal",
         description="A deal for testing agent relationships",
-        status=DealStatus.DRAFT.value.lower(),
-        market_type=MarketType.CRYPTO.value.lower(),
+        url="https://example.com/agent-rel-test-deal",
+        price=29.99,
+        currency="USD",
+        status=DealStatus.ACTIVE.value.lower(),
+        category=MarketCategory.ELECTRONICS.value,
         user_id=user.id,
-        metadata={"test": True}
+        market_id=market.id
     )
     db_session.add(deal)
     await db_session.commit()
@@ -112,124 +129,108 @@ async def test_agent_relationships(db_session):
     # Create an agent
     agent = Agent(
         name="Relationship Test Agent",
-        type=AgentType.DEAL_NEGOTIATOR.value.lower(),
-        status=AgentStatus.ACTIVE.value.lower(),
+        agent_type=AgentType.GOAL.value,
+        status=AgentStatus.ACTIVE.value,
+        description="An agent for testing relationships",
         user_id=user.id,
-        deal_id=deal.id,
-        configuration={"model": "gpt-4"},
-        metadata={"test": True}
+        config={"model": "gpt-4", "temperature": 0.7},
+        meta_data={"created_by": "test_suite"}
     )
     db_session.add(agent)
     await db_session.commit()
+    await db_session.refresh(agent)
     
-    # Query the agent with relationships
-    stmt = select(Agent).where(Agent.id == agent.id)
+    # Verify the relationship with user
+    assert agent.user_id == user.id
+    
+    # Test the relationship from the user side
+    stmt = select(User).where(User.id == user.id)
     result = await db_session.execute(stmt)
-    loaded_agent = result.scalar_one()
+    loaded_user = result.scalar_one()
     
-    # Verify relationships
-    assert loaded_agent.id == agent.id
-    assert loaded_agent.user_id == user.id
-    assert loaded_agent.deal_id == deal.id
+    # Explicitly refresh the user to load relationships
+    await db_session.refresh(loaded_user, ['agents'])
+    
+    # Verify the user has the agent in its relationship
+    assert len(loaded_user.agents) == 1
+    assert loaded_user.agents[0].id == agent.id
 
 @pytest.mark.asyncio
 @pytest.mark.core
 async def test_agent_update(db_session):
-    """Test updating an agent."""
+    """Test updating an agent in the database."""
     # Create a user
     user = User(
         email="agent_update@example.com",
-        username="agentupdateuser",
-        full_name="Agent Update Test User",
-        hashed_password="hashed_password_value",
-        is_active=True
+        name="Agent Update Test User",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
     )
     db_session.add(user)
-    await db_session.commit()
-    
-    # Create a deal
-    deal = Deal(
-        title="Agent Update Test Deal",
-        description="A deal for testing agent updates",
-        status=DealStatus.DRAFT.value.lower(),
-        market_type=MarketType.CRYPTO.value.lower(),
-        user_id=user.id,
-        metadata={"test": True}
-    )
-    db_session.add(deal)
     await db_session.commit()
     
     # Create an agent
     agent = Agent(
         name="Update Test Agent",
-        type=AgentType.RISK_ASSESSOR.value.lower(),
-        status=AgentStatus.ACTIVE.value.lower(),
+        agent_type=AgentType.GOAL.value,
+        status=AgentStatus.ACTIVE.value,
+        description="An agent for testing updates",
         user_id=user.id,
-        deal_id=deal.id,
-        configuration={"model": "gpt-4", "temperature": 0.7},
-        metadata={"specialty": "risk analysis"}
+        config={"model": "gpt-4", "temperature": 0.7},
+        meta_data={"created_by": "test_suite"}
     )
     db_session.add(agent)
     await db_session.commit()
+    await db_session.refresh(agent)
     
     # Update the agent
-    agent.name = "Updated Agent Name"
-    agent.status = AgentStatus.PAUSED.value.lower()
-    agent.configuration["temperature"] = 0.5
-    agent.configuration["max_tokens"] = 2000
-    agent.metadata["specialty"] = "advanced risk analysis"
-    agent.metadata["priority"] = "high"
+    agent.name = "Updated Agent"
+    agent.description = "An updated agent description"
+    agent.status = AgentStatus.BUSY.value
+    agent.config = {"model": "gpt-4-turbo", "temperature": 0.5}
+    agent.meta_data = {"created_by": "test_suite", "updated": True}
     
     await db_session.commit()
     await db_session.refresh(agent)
     
     # Verify the updates
-    assert agent.name == "Updated Agent Name"
-    assert agent.status == AgentStatus.PAUSED.value.lower()
-    assert agent.configuration["temperature"] == 0.5
-    assert agent.configuration["max_tokens"] == 2000
-    assert agent.metadata["specialty"] == "advanced risk analysis"
-    assert agent.metadata["priority"] == "high"
+    assert agent.name == "Updated Agent"
+    assert agent.description == "An updated agent description"
+    assert agent.status == AgentStatus.BUSY.value
+    assert agent.config["model"] == "gpt-4-turbo"
+    assert agent.config["temperature"] == 0.5
+    assert agent.meta_data["created_by"] == "test_suite"
+    assert agent.meta_data["updated"] is True
     
     # Verify updated_at was updated
     assert agent.updated_at is not None
+    assert isinstance(agent.updated_at, datetime)
 
 @pytest.mark.asyncio
 @pytest.mark.core
 async def test_agent_deletion(db_session):
-    """Test deleting an agent."""
+    """Test deleting an agent from the database."""
     # Create a user
     user = User(
         email="agent_delete@example.com",
-        username="agentdeleteuser",
-        full_name="Agent Delete Test User",
-        hashed_password="hashed_password_value",
-        is_active=True
+        name="Agent Delete Test User",
+        password="hashed_password_value",
+        status="active",
+        email_verified=True
     )
     db_session.add(user)
-    await db_session.commit()
-    
-    # Create a deal
-    deal = Deal(
-        title="Agent Delete Test Deal",
-        description="A deal for testing agent deletion",
-        status=DealStatus.DRAFT.value.lower(),
-        market_type=MarketType.CRYPTO.value.lower(),
-        user_id=user.id,
-        metadata={"test": True}
-    )
-    db_session.add(deal)
     await db_session.commit()
     
     # Create an agent
     agent = Agent(
         name="Delete Test Agent",
-        type=AgentType.MARKET_ANALYST.value.lower(),
-        status=AgentStatus.ACTIVE.value.lower(),
+        agent_type=AgentType.GOAL.value,
+        status=AgentStatus.ACTIVE.value,
+        description="An agent for testing deletion",
         user_id=user.id,
-        deal_id=deal.id,
-        configuration={"model": "gpt-4"},
-        metadata={"test": True}
+        config={"model": "gpt-4", "temperature": 0.7},
+        meta_data={"created_by": "test_suite"}
     )
     db_session.add(agent)
     await db_session.commit()
@@ -241,259 +242,9 @@ async def test_agent_deletion(db_session):
     await db_session.delete(agent)
     await db_session.commit()
     
-    # Try to find the deleted agent
+    # Verify the agent was deleted
     stmt = select(Agent).where(Agent.id == agent_id)
     result = await db_session.execute(stmt)
     deleted_agent = result.scalar_one_or_none()
     
-    # Verify the agent was deleted
-    assert deleted_agent is None 
-
-import pytest
-import uuid
-from datetime import datetime
-from sqlalchemy import select
-
-from core.models.agent import Agent, AgentType, AgentStatus
-from core.models.user import User
-from core.models.deal import Deal
-from core.models.enums import DealStatus, MarketType
-
-@pytest.mark.asyncio
-@pytest.mark.core
-async def test_agent_creation(db_session):
-    """Test creating an agent in the database."""
-    # Create a user
-    user = User(
-        email="agent_test@example.com",
-        username="agentuser",
-        full_name="Agent Test User",
-        hashed_password="hashed_password_value",
-        is_active=True
-    )
-    db_session.add(user)
-    await db_session.commit()
-    
-    # Create a deal
-    deal = Deal(
-        title="Agent Test Deal",
-        description="A deal for testing agent model",
-        status=DealStatus.DRAFT.value.lower(),
-        market_type=MarketType.CRYPTO.value.lower(),
-        user_id=user.id,
-        metadata={"test": True}
-    )
-    db_session.add(deal)
-    await db_session.commit()
-    
-    # Create an agent
-    agent = Agent(
-        name="Test Agent",
-        type=AgentType.MARKET_ANALYST.value.lower(),
-        status=AgentStatus.ACTIVE.value.lower(),
-        user_id=user.id,
-        deal_id=deal.id,
-        configuration={
-            "model": "gpt-4",
-            "temperature": 0.7,
-            "max_tokens": 1000
-        },
-        metadata={
-            "specialty": "cryptocurrency",
-            "experience_level": "expert"
-        }
-    )
-    
-    # Add to session and commit
-    db_session.add(agent)
-    await db_session.commit()
-    await db_session.refresh(agent)
-    
-    # Verify the agent was created with an ID
-    assert agent.id is not None
-    assert isinstance(agent.id, uuid.UUID)
-    assert agent.name == "Test Agent"
-    assert agent.type == AgentType.MARKET_ANALYST.value.lower()
-    assert agent.status == AgentStatus.ACTIVE.value.lower()
-    assert agent.user_id == user.id
-    assert agent.deal_id == deal.id
-    
-    # Verify configuration and metadata
-    assert agent.configuration["model"] == "gpt-4"
-    assert agent.configuration["temperature"] == 0.7
-    assert agent.configuration["max_tokens"] == 1000
-    assert agent.metadata["specialty"] == "cryptocurrency"
-    assert agent.metadata["experience_level"] == "expert"
-    
-    # Verify created_at and updated_at were set
-    assert agent.created_at is not None
-    assert agent.updated_at is not None
-    assert isinstance(agent.created_at, datetime)
-    assert isinstance(agent.updated_at, datetime)
-
-@pytest.mark.asyncio
-@pytest.mark.core
-async def test_agent_relationships(db_session):
-    """Test agent relationships with user and deal."""
-    # Create a user
-    user = User(
-        email="agent_rel_test@example.com",
-        username="agentreluser",
-        full_name="Agent Relationship Test User",
-        hashed_password="hashed_password_value",
-        is_active=True
-    )
-    db_session.add(user)
-    await db_session.commit()
-    
-    # Create a deal
-    deal = Deal(
-        title="Agent Relationship Test Deal",
-        description="A deal for testing agent relationships",
-        status=DealStatus.DRAFT.value.lower(),
-        market_type=MarketType.CRYPTO.value.lower(),
-        user_id=user.id,
-        metadata={"test": True}
-    )
-    db_session.add(deal)
-    await db_session.commit()
-    
-    # Create an agent
-    agent = Agent(
-        name="Relationship Test Agent",
-        type=AgentType.DEAL_NEGOTIATOR.value.lower(),
-        status=AgentStatus.ACTIVE.value.lower(),
-        user_id=user.id,
-        deal_id=deal.id,
-        configuration={"model": "gpt-4"},
-        metadata={"test": True}
-    )
-    db_session.add(agent)
-    await db_session.commit()
-    
-    # Query the agent with relationships
-    stmt = select(Agent).where(Agent.id == agent.id)
-    result = await db_session.execute(stmt)
-    loaded_agent = result.scalar_one()
-    
-    # Verify relationships
-    assert loaded_agent.id == agent.id
-    assert loaded_agent.user_id == user.id
-    assert loaded_agent.deal_id == deal.id
-
-@pytest.mark.asyncio
-@pytest.mark.core
-async def test_agent_update(db_session):
-    """Test updating an agent."""
-    # Create a user
-    user = User(
-        email="agent_update@example.com",
-        username="agentupdateuser",
-        full_name="Agent Update Test User",
-        hashed_password="hashed_password_value",
-        is_active=True
-    )
-    db_session.add(user)
-    await db_session.commit()
-    
-    # Create a deal
-    deal = Deal(
-        title="Agent Update Test Deal",
-        description="A deal for testing agent updates",
-        status=DealStatus.DRAFT.value.lower(),
-        market_type=MarketType.CRYPTO.value.lower(),
-        user_id=user.id,
-        metadata={"test": True}
-    )
-    db_session.add(deal)
-    await db_session.commit()
-    
-    # Create an agent
-    agent = Agent(
-        name="Update Test Agent",
-        type=AgentType.RISK_ASSESSOR.value.lower(),
-        status=AgentStatus.ACTIVE.value.lower(),
-        user_id=user.id,
-        deal_id=deal.id,
-        configuration={"model": "gpt-4", "temperature": 0.7},
-        metadata={"specialty": "risk analysis"}
-    )
-    db_session.add(agent)
-    await db_session.commit()
-    
-    # Update the agent
-    agent.name = "Updated Agent Name"
-    agent.status = AgentStatus.PAUSED.value.lower()
-    agent.configuration["temperature"] = 0.5
-    agent.configuration["max_tokens"] = 2000
-    agent.metadata["specialty"] = "advanced risk analysis"
-    agent.metadata["priority"] = "high"
-    
-    await db_session.commit()
-    await db_session.refresh(agent)
-    
-    # Verify the updates
-    assert agent.name == "Updated Agent Name"
-    assert agent.status == AgentStatus.PAUSED.value.lower()
-    assert agent.configuration["temperature"] == 0.5
-    assert agent.configuration["max_tokens"] == 2000
-    assert agent.metadata["specialty"] == "advanced risk analysis"
-    assert agent.metadata["priority"] == "high"
-    
-    # Verify updated_at was updated
-    assert agent.updated_at is not None
-
-@pytest.mark.asyncio
-@pytest.mark.core
-async def test_agent_deletion(db_session):
-    """Test deleting an agent."""
-    # Create a user
-    user = User(
-        email="agent_delete@example.com",
-        username="agentdeleteuser",
-        full_name="Agent Delete Test User",
-        hashed_password="hashed_password_value",
-        is_active=True
-    )
-    db_session.add(user)
-    await db_session.commit()
-    
-    # Create a deal
-    deal = Deal(
-        title="Agent Delete Test Deal",
-        description="A deal for testing agent deletion",
-        status=DealStatus.DRAFT.value.lower(),
-        market_type=MarketType.CRYPTO.value.lower(),
-        user_id=user.id,
-        metadata={"test": True}
-    )
-    db_session.add(deal)
-    await db_session.commit()
-    
-    # Create an agent
-    agent = Agent(
-        name="Delete Test Agent",
-        type=AgentType.MARKET_ANALYST.value.lower(),
-        status=AgentStatus.ACTIVE.value.lower(),
-        user_id=user.id,
-        deal_id=deal.id,
-        configuration={"model": "gpt-4"},
-        metadata={"test": True}
-    )
-    db_session.add(agent)
-    await db_session.commit()
-    
-    # Get the agent ID
-    agent_id = agent.id
-    
-    # Delete the agent
-    await db_session.delete(agent)
-    await db_session.commit()
-    
-    # Try to find the deleted agent
-    stmt = select(Agent).where(Agent.id == agent_id)
-    result = await db_session.execute(stmt)
-    deleted_agent = result.scalar_one_or_none()
-    
-    # Verify the agent was deleted
     assert deleted_agent is None 

@@ -14,7 +14,7 @@ from factories.user import UserFactory
 from factories.goal import GoalFactory
 from factories.deal import DealFactory
 from factories.market import MarketFactory
-from utils.markers import feature_test, depends_on
+from backend_tests.utils.markers import feature_test, depends_on
 from backend_tests.mocks.redis_mock import redis_mock
 from uuid import uuid4
 

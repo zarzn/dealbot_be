@@ -16,6 +16,7 @@ from core.services.social import (
     SocialUserInfo
 )
 from core.exceptions import SocialAuthError
+from core.config import settings
 from utils.markers import service_test, depends_on
 
 pytestmark = pytest.mark.asyncio
@@ -133,9 +134,26 @@ async def test_verify_facebook_token_success(mock_facebook_response):
     # Setup
     token = "valid_facebook_token"
     
+    # Create a valid token response for the first API call
+    token_response = {
+        "data": {
+            "is_valid": True,
+            "app_id": "123456789",
+            "user_id": "9876543210"
+        }
+    }
+    
     # Mock aiohttp.ClientSession
     with patch("aiohttp.ClientSession.get") as mock_get:
-        mock_get.return_value = MockResponse(mock_facebook_response)
+        # Set up the mock to return different responses for different URLs
+        def side_effect(*args, **kwargs):
+            url = args[0]
+            if "debug_token" in url:
+                return MockResponse(token_response)
+            else:
+                return MockResponse(mock_facebook_response)
+        
+        mock_get.side_effect = side_effect
         
         # Execute
         result = await verify_facebook_token(token)
@@ -149,8 +167,14 @@ async def test_verify_facebook_token_success(mock_facebook_response):
         assert result.picture == mock_facebook_response["picture"]["data"]["url"]
         assert result.provider == "facebook"
         
-        # Verify correct URL was called
-        mock_get.assert_called_once_with(
+        # Verify both API calls were made
+        assert mock_get.call_count == 2
+        
+        # Verify the correct URLs were called
+        mock_get.assert_any_call(
+            f"https://graph.facebook.com/debug_token?input_token={token}&access_token={settings.FACEBOOK_APP_TOKEN}"
+        )
+        mock_get.assert_any_call(
             f"https://graph.facebook.com/me?fields=id,email,name,picture&access_token={token}"
         )
 
@@ -197,7 +221,16 @@ async def test_verify_facebook_token_missing_email():
     # Setup
     token = "valid_facebook_token"
     
-    # Create a response with missing email
+    # Create a valid token response for the first API call
+    token_response = {
+        "data": {
+            "is_valid": True,
+            "app_id": "123456789",
+            "user_id": "9876543210"
+        }
+    }
+    
+    # Create a response with missing email for the second API call
     response_missing_email = {
         "id": "9876543210",
         "name": "Test Facebook User"
@@ -205,7 +238,15 @@ async def test_verify_facebook_token_missing_email():
     
     # Mock aiohttp.ClientSession
     with patch("aiohttp.ClientSession.get") as mock_get:
-        mock_get.return_value = MockResponse(response_missing_email)
+        # Set up the mock to return different responses for different URLs
+        def side_effect(*args, **kwargs):
+            url = args[0]
+            if "debug_token" in url:
+                return MockResponse(token_response)
+            else:
+                return MockResponse(response_missing_email)
+        
+        mock_get.side_effect = side_effect
         
         # Execute & Verify
         with pytest.raises(SocialAuthError) as excinfo:
@@ -213,6 +254,9 @@ async def test_verify_facebook_token_missing_email():
         
         # Verify error details
         assert "Email not provided by Facebook" in str(excinfo.value)
+        
+        # Verify both API calls were made
+        assert mock_get.call_count == 2
 
 @service_test
 async def test_verify_social_token_google(mock_google_response):

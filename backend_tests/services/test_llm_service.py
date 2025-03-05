@@ -99,6 +99,7 @@ async def test_get_llm_service(mock_env_vars):
 async def test_llm_service_generate_text(mock_env_vars, mock_llm_responses):
     """Test LLM service text generation with different providers."""
     prompt = "Generate a product description for a smartphone."
+    messages = [{"role": "user", "content": prompt}]
     
     # Test DeepSeek R1
     with patch("core.services.llm_service.LLMService._call_deepseek_api", 
@@ -117,7 +118,8 @@ async def test_llm_service_generate_text(mock_env_vars, mock_llm_responses):
         
         assert response.text == mock_llm_responses["deepseek"]["text"]
         assert response.usage == mock_llm_responses["deepseek"]["usage"]
-        mock_deepseek.assert_called_once_with(prompt, deepseek_config)
+        # Check that the method was called with the correct message format and parameters
+        mock_deepseek.assert_called_once_with(messages, 0.7, 1000)
     
     # Test GPT-4
     with patch("core.services.llm_service.LLMService._call_openai_api", 
@@ -136,7 +138,8 @@ async def test_llm_service_generate_text(mock_env_vars, mock_llm_responses):
         
         assert response.text == mock_llm_responses["gpt4"]["text"]
         assert response.usage == mock_llm_responses["gpt4"]["usage"]
-        mock_openai.assert_called_once_with(prompt, gpt4_config)
+        # Check that the method was called with the correct message format and parameters
+        mock_openai.assert_called_once_with(messages, 0.7, 1000)
 
 @pytest.mark.asyncio
 @pytest.mark.service

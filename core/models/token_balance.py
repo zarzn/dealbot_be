@@ -128,10 +128,11 @@ class TokenBalance(Base):
         # Calculate new balance based on operation
         if operation == TransactionType.DEDUCTION.value:
             if old_balance < amount:
+                details = {"required": str(amount)}
                 raise InsufficientBalanceError(
-                    reason="Insufficient balance for deduction",
-                    message=f"Insufficient balance. Required: {amount}, Available: {old_balance}",
-                    available=old_balance
+                    message="Insufficient balance for deduction",
+                    available=old_balance,
+                    details=details
                 )
             new_balance = (old_balance - amount).quantize(Decimal('0.00000000'), rounding=ROUND_DOWN)
         elif operation in [TransactionType.REWARD.value, TransactionType.REFUND.value, 'credit']:

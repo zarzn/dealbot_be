@@ -66,6 +66,14 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         else:
             self._background_tasks.add_task(func, *args, **kwargs)
 
+    def set_background_tasks(self, background_tasks: BackgroundTasks) -> None:
+        """Set the background tasks object.
+        
+        Args:
+            background_tasks: FastAPI background tasks
+        """
+        self._background_tasks = background_tasks
+
     async def create_goal_analyst(self, user_id: UUID, goal_id: UUID) -> Agent:
         """Create a goal analyst agent."""
         try:

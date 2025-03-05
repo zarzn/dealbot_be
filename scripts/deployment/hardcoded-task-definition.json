@@ -1,0 +1,109 @@
+{
+  "family": "agentic-deals-tasks",
+  "executionRoleArn": "arn:aws:iam::586794462529:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::586794462529:role/agentic-deals-task-role",
+  "networkMode": "awsvpc",
+  "containerDefinitions": [
+    {
+      "name": "agentic-deals-app",
+      "image": "586794462529.dkr.ecr.us-east-1.amazonaws.com/agentic-deals-backend:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "hostPort": 8000,
+          "protocol": "tcp",
+          "name": "agentic-deals-app-8000-tcp",
+          "appProtocol": "http"
+        }
+      ],
+      "environment": [
+        {
+          "name": "APP_ENVIRONMENT",
+          "value": "production"
+        },
+        {
+          "name": "LOG_LEVEL",
+          "value": "INFO"
+        },
+        {
+          "name": "ALLOWED_ORIGINS",
+          "value": "*"
+        },
+        {
+          "name": "USE_PARAMETER_STORE",
+          "value": "true"
+        },
+        {
+          "name": "USE_SECRETS_MANAGER",
+          "value": "false"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "POSTGRES_HOST",
+          "valueFrom": "arn:aws:ssm:us-east-1:586794462529:parameter/agentic-deals/POSTGRES_HOST"
+        },
+        {
+          "name": "POSTGRES_PORT",
+          "valueFrom": "arn:aws:ssm:us-east-1:586794462529:parameter/agentic-deals/POSTGRES_PORT"
+        },
+        {
+          "name": "POSTGRES_USER",
+          "valueFrom": "arn:aws:ssm:us-east-1:586794462529:parameter/agentic-deals/POSTGRES_USER"
+        },
+        {
+          "name": "POSTGRES_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-east-1:586794462529:parameter/agentic-deals/POSTGRES_PASSWORD"
+        },
+        {
+          "name": "POSTGRES_DB",
+          "valueFrom": "arn:aws:ssm:us-east-1:586794462529:parameter/agentic-deals/POSTGRES_DB"
+        },
+        {
+          "name": "REDIS_HOST",
+          "valueFrom": "arn:aws:ssm:us-east-1:586794462529:parameter/agentic-deals/REDIS_HOST"
+        },
+        {
+          "name": "REDIS_PORT",
+          "valueFrom": "arn:aws:ssm:us-east-1:586794462529:parameter/agentic-deals/REDIS_PORT"
+        },
+        {
+          "name": "REDIS_PASSWORD",
+          "valueFrom": "arn:aws:ssm:us-east-1:586794462529:parameter/agentic-deals/REDIS_PASSWORD"
+        },
+        {
+          "name": "SECRET_KEY",
+          "valueFrom": "arn:aws:ssm:us-east-1:586794462529:parameter/agentic-deals/SECRET_KEY"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/agentic-deals-container",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -f http://localhost:8000/health || exit 1"
+        ],
+        "interval": 30,
+        "timeout": 10,
+        "retries": 3,
+        "startPeriod": 120
+      }
+    }
+  ],
+  "requiresCompatibilities": [
+    "FARGATE"
+  ],
+  "cpu": "512",
+  "memory": "1024",
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  }
+} 

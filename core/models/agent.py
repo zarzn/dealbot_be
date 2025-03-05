@@ -28,6 +28,9 @@ class AgentType(str, enum.Enum):
     DEAL_FINDER = "deal_finder"
     PRICE_ANALYST = "price_analyst"
     NOTIFIER = "notifier"
+    MARKET_ANALYST = "market_analyst"
+    DEAL_NEGOTIATOR = "deal_negotiator"
+    RISK_ASSESSOR = "risk_assessor"
 
 class AgentStatus(str, enum.Enum):
     """Agent status types."""
@@ -36,6 +39,7 @@ class AgentStatus(str, enum.Enum):
     BUSY = "busy"
     ERROR = "error"
     IDLE = "idle"  # Add the IDLE status needed for tests
+    PAUSED = "paused"  # Add the PAUSED status needed for tests
 
 class Agent(Base):
     """Agent database model."""
@@ -49,18 +53,25 @@ class Agent(Base):
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    goal_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("goals.id", ondelete="CASCADE"), nullable=True)
+    goal_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("goals.id", ondelete="SET NULL"), nullable=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    agent_type: Mapped[AgentType] = mapped_column(SQLEnum(AgentType), nullable=False)
-    status: Mapped[AgentStatus] = mapped_column(SQLEnum(AgentStatus), default=AgentStatus.INACTIVE)
+    agent_type: Mapped[AgentType] = mapped_column(
+        SQLEnum(AgentType, values_callable=lambda x: [e.value.lower() for e in x]),
+        nullable=False
+    )
+    status: Mapped[AgentStatus] = mapped_column(
+        SQLEnum(AgentStatus, values_callable=lambda x: [e.value.lower() for e in x]), 
+        nullable=False,
+        default=AgentStatus.INACTIVE
+    )
     description: Mapped[Optional[str]] = mapped_column(Text)
     config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
     meta_data: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSONB)
-    error_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_error: Mapped[Optional[str]] = mapped_column(Text)
-    last_active: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
+    last_active: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP"), onupdate=text("CURRENT_TIMESTAMP"))
 
     # Relationships
     user = relationship("User", back_populates="agents")

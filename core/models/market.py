@@ -20,8 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID, JSONB
 from sqlalchemy.orm import relationship, Mapped, mapped_column
-from sqlalchemy.sql import expression, text, func
-from sqlalchemy import select
+from sqlalchemy.sql import expression, text, func, select
 
 from core.models.base import Base
 from core.models.enums import MarketType, MarketStatus, MarketCategory
@@ -59,9 +58,14 @@ class Market(Base):
         SQLAlchemyEnum(MarketType, values_callable=lambda x: [e.value.lower() for e in x], name="markettype"),
         nullable=False
     )
+    category: Mapped[Optional[str]] = mapped_column(
+        SQLAlchemyEnum(MarketCategory, values_callable=lambda x: [e.value.lower() for e in x], name="marketcategory"),
+        nullable=True
+    )
     description: Mapped[Optional[str]] = mapped_column(Text)
     api_endpoint: Mapped[Optional[str]] = mapped_column(String(255))
     api_key: Mapped[Optional[str]] = mapped_column(String(255))
+    user_id: Mapped[Optional[UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     _status: Mapped[str] = mapped_column(
         'status',
         SQLAlchemyEnum(MarketStatus, values_callable=lambda x: [e.value.lower() for e in x], name="marketstatus"),
@@ -95,6 +99,7 @@ class Market(Base):
     # Relationships
     deals = relationship("Deal", back_populates="market", cascade="all, delete-orphan")
     price_histories = relationship("PriceHistory", back_populates="market", cascade="all, delete-orphan")
+    user = relationship("User", back_populates="markets")
 
     def __init__(self, **kwargs):
         """Initialize market with validation."""
@@ -552,7 +557,10 @@ class MarketRepository:
     async def get_stats(self, market_id: UUID) -> MarketStats:
         """Get market statistics."""
         try:
-            market = await self.db.query(Market).filter(Market.id == market_id).first()
+            stmt = select(Market).where(Market.id == market_id)
+            result = await self.db.execute(stmt)
+            market = result.scalar_one_or_none()
+            
             if not market:
                 raise MarketError(f"Market {market_id} not found")
                 
@@ -573,7 +581,10 @@ class MarketRepository:
     async def get_by_id(self, market_id: UUID) -> Market:
         """Get market by ID."""
         try:
-            market = await self.db.query(Market).filter(Market.id == market_id).first()
+            stmt = select(Market).where(Market.id == market_id)
+            result = await self.db.execute(stmt)
+            market = result.scalar_one_or_none()
+            
             if not market:
                 raise MarketError(f"Market {market_id} not found")
             return market
@@ -593,19 +604,12 @@ class MarketRepository:
     async def get_by_type(self, market_type: MarketType) -> List[Market]:
         """Get markets by type."""
         try:
-            markets = await self.db.query(Market).filter(
-                Market.type == market_type.value,
+            stmt = select(Market).where(
+                Market.type == market_type.value.lower(),
                 Market.is_active == True
-            ).all()
-            
-            logger.info(
-                f"Retrieved markets by type",
-                extra={
-                    'type': market_type.value,
-                    'count': len(markets)
-                }
             )
-            return markets
+            result = await self.db.execute(stmt)
+            return result.scalars().all()
             
         except Exception as e:
             logger.error(
@@ -620,10 +624,12 @@ class MarketRepository:
     async def get_all_active(self) -> List[Market]:
         """Get all active markets."""
         try:
-            markets = await self.db.query(Market).filter(
+            stmt = select(Market).where(
                 Market.is_active == True,
-                Market.status == MarketStatus.ACTIVE.value
-            ).all()
+                Market.status == MarketStatus.ACTIVE.value.lower()
+            )
+            result = await self.db.execute(stmt)
+            markets = result.scalars().all()
             
             logger.info(
                 f"Retrieved all active markets",

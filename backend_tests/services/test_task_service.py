@@ -28,8 +28,9 @@ async def mock_task_function():
     return _task
 
 @pytest.fixture
-async def task_service(cache_service):
+async def task_service(redis_client):
     """Task service fixture."""
+    cache_service = CacheService(redis_client)
     service = TaskService(cache_service)
     yield service
     await service.close()
@@ -58,16 +59,6 @@ def prepare_task_data():
     
     # Clean up
     redis_mock.data.clear()
-
-@pytest.fixture
-async def task_service(redis_client):
-    """Create task service instance for testing."""
-    cache_service = CacheService(redis_client)
-    return TaskService(cache_service=cache_service)
-
-async def mock_task_function(*args, **kwargs):
-    """Mock task function for testing."""
-    return {"success": True}
 
 @service_test
 async def test_create_task(task_service):

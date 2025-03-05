@@ -1,6 +1,6 @@
 """User and notification preferences models."""
 
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from enum import Enum
 from typing import Dict, List, Optional
 from uuid import UUID, uuid4
@@ -139,7 +139,7 @@ class UserPreferences(Base):
     )
 
     # Relationships
-    user = relationship("User", back_populates="user_preferences")
+    user = relationship("User", back_populates="user_preferences", lazy="selectin")
 
     def to_dict(self) -> Dict:
         """Convert preferences to dictionary"""
@@ -167,6 +167,58 @@ class UserPreferences(Base):
             "updated_at": self.updated_at.isoformat()
         }
 
+    def is_in_time_window(self, channel: str, current_time: datetime) -> bool:
+        """Check if the current time is within the notification time window for a channel.
+        
+        Args:
+            channel: The notification channel to check
+            current_time: The current time to check against
+            
+        Returns:
+            bool: True if within time window, False otherwise
+        """
+        # If channel not configured, default to True
+        if channel not in self.time_windows:
+            return True
+            
+        window = self.time_windows[channel]
+        window_start = time.fromisoformat(window["start_time"])
+        window_end = time.fromisoformat(window["end_time"])
+        timezone = window.get("timezone", "UTC")
+        
+        # Convert times to datetime objects on the same day for comparison
+        from datetime import date
+        today = date.today()
+        
+        # Adjust for timezone if needed
+        from pytz import timezone as pytz_timezone
+        from datetime import timezone as dt_timezone
+        
+        try:
+            # Convert current_time to the timezone in the window settings
+            if hasattr(current_time, "tzinfo") and current_time.tzinfo is not None:
+                # If current_time already has timezone info
+                tz = pytz_timezone(timezone)
+                current_time = current_time.astimezone(tz)
+            else:
+                # If current_time has no timezone, assume it's in UTC
+                utc = dt_timezone.utc
+                current_time = current_time.replace(tzinfo=utc)
+                tz = pytz_timezone(timezone)
+                current_time = current_time.astimezone(tz)
+        except Exception:
+            # If timezone conversion fails, just use the time as-is
+            pass
+            
+        current_time_only = current_time.time()
+        
+        # Simple case: start_time < end_time (same day window)
+        if window_start <= window_end:
+            return window_start <= current_time_only <= window_end
+            
+        # Complex case: start_time > end_time (overnight window)
+        return current_time_only >= window_start or current_time_only <= window_end
+
 class UserPreferencesResponse(BaseModel):
     """User preferences response schema."""
     id: UUID
@@ -175,7 +227,7 @@ class UserPreferencesResponse(BaseModel):
     language: Language
     timezone: str
     enabled_channels: List[NotificationChannel]
-    notification_frequency: Dict[NotificationType, NotificationFrequency]
+    notification_frequency: Dict[str, Dict[str, str]]  # Updated to match database format
     time_windows: Dict[NotificationChannel, NotificationTimeWindow]
     muted_until: Optional[time]
     do_not_disturb: bool
@@ -194,6 +246,44 @@ class UserPreferencesResponse(BaseModel):
     class Config:
         """Pydantic config."""
         from_attributes = True
+
+class UserPreferencesCreate(BaseModel):
+    """User preferences creation schema."""
+    user_id: UUID
+    theme: Theme = Theme.SYSTEM
+    language: Language = Language.EN
+    timezone: str = "UTC"
+    enabled_channels: List[NotificationChannel] = Field(
+        default=[NotificationChannel.IN_APP, NotificationChannel.EMAIL]
+    )
+    notification_frequency: Dict[NotificationType, NotificationFrequency] = Field(
+        default_factory=lambda: {
+            NotificationType.DEAL: NotificationFrequency.IMMEDIATE,
+            NotificationType.GOAL: NotificationFrequency.IMMEDIATE,
+            NotificationType.PRICE_ALERT: NotificationFrequency.IMMEDIATE,
+            NotificationType.TOKEN: NotificationFrequency.DAILY,
+            NotificationType.SECURITY: NotificationFrequency.IMMEDIATE,
+            NotificationType.MARKET: NotificationFrequency.DAILY,
+            NotificationType.SYSTEM: NotificationFrequency.IMMEDIATE
+        }
+    )
+    time_windows: Dict[NotificationChannel, NotificationTimeWindow] = Field(
+        default_factory=lambda: {
+            NotificationChannel.IN_APP: NotificationTimeWindow(),
+            NotificationChannel.EMAIL: NotificationTimeWindow()
+        }
+    )
+    muted_until: Optional[time] = None
+    do_not_disturb: bool = False
+    email_digest: bool = True
+    push_enabled: bool = True
+    sms_enabled: bool = False
+    telegram_enabled: bool = False
+    discord_enabled: bool = False
+    minimum_priority: str = "low"
+    deal_alert_settings: Dict = Field(default_factory=dict)
+    price_alert_settings: Dict = Field(default_factory=dict)
+    email_preferences: Dict = Field(default_factory=dict)
 
 class UserPreferencesUpdate(BaseModel):
     """User preferences update schema."""

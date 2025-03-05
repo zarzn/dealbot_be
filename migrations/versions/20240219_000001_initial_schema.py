@@ -105,7 +105,7 @@ def upgrade() -> None:
 
             DO $$ 
             BEGIN
-                CREATE TYPE markettype AS ENUM ('amazon', 'walmart', 'ebay', 'target', 'bestbuy', 'test');
+                CREATE TYPE markettype AS ENUM ('amazon', 'walmart', 'ebay', 'target', 'bestbuy', 'test', 'crypto');
             EXCEPTION 
                 WHEN duplicate_object THEN NULL;
             END $$;
@@ -196,7 +196,7 @@ def upgrade() -> None:
 
             DO $$ 
             BEGIN
-                CREATE TYPE tokenscope AS ENUM ('full', 'limited', 'read');
+                CREATE TYPE tokenscope AS ENUM ('full', 'limited', 'read', 'write');
             EXCEPTION 
                 WHEN duplicate_object THEN NULL;
             END $$;
@@ -269,6 +269,30 @@ def upgrade() -> None:
         """))
         logger.info("Auth_tokens table created")
 
+        # Create tokens table
+        logger.info("Creating tokens table...")
+        conn.execute(text("""
+            CREATE TABLE tokens (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token VARCHAR(255) NOT NULL UNIQUE,
+                token_type tokentype NOT NULL,
+                status tokenstatus NOT NULL DEFAULT 'active',
+                scope tokenscope NOT NULL DEFAULT 'full',
+                expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_used_at TIMESTAMP WITH TIME ZONE,
+                revoked_at TIMESTAMP WITH TIME ZONE,
+                client_info JSONB,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX ix_tokens_user_id ON tokens(user_id);
+            CREATE INDEX ix_tokens_token ON tokens(token);
+            CREATE INDEX ix_tokens_status ON tokens(status);
+            CREATE INDEX ix_tokens_expires_at ON tokens(expires_at);
+        """))
+        logger.info("Tokens table created")
+
         # Create markets table with unique name constraint
         logger.info("Creating markets table...")
         conn.execute(text("""
@@ -276,9 +300,11 @@ def upgrade() -> None:
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 name VARCHAR(100) NOT NULL,
                 type markettype NOT NULL,
+                category marketcategory,
                 description TEXT,
                 api_endpoint VARCHAR(255),
                 api_key VARCHAR(255),
+                user_id UUID REFERENCES users(id) ON DELETE SET NULL,
                 status marketstatus NOT NULL DEFAULT 'active',
                 config JSONB,
                 rate_limit INTEGER NOT NULL DEFAULT 100,
@@ -364,6 +390,7 @@ def upgrade() -> None:
                 deal_metadata JSONB,
                 price_metadata JSONB,
                 is_active BOOLEAN NOT NULL DEFAULT true,
+                score NUMERIC(5,2),
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT ch_positive_price CHECK (price > 0),
@@ -375,6 +402,25 @@ def upgrade() -> None:
             CREATE INDEX ix_deals_market_status ON deals(market_id, status);
         """))
         logger.info("Deals table created")
+
+        # Create deal_tokens table
+        logger.info("Creating deal_tokens table...")
+        conn.execute(text("""
+            CREATE TABLE deal_tokens (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                deal_id UUID NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+                user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+                name VARCHAR(255) NOT NULL,
+                symbol VARCHAR(10) NOT NULL,
+                status tokenstatus NOT NULL DEFAULT 'active',
+                token_metadata JSONB,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX ix_deal_tokens_deal_id ON deal_tokens(deal_id);
+            CREATE INDEX ix_deal_tokens_user_id ON deal_tokens(user_id);
+        """))
+        logger.info("Deal_tokens table created")
 
         # Create price_points table
         logger.info("Creating price_points table...")
@@ -587,13 +633,42 @@ def upgrade() -> None:
         """))
         logger.info("Messagestatus enum created")
 
+        # Create chatstatus enum
+        logger.info("Creating chatstatus enum...")
+        conn.execute(text("""
+            DO $$ 
+            BEGIN
+                CREATE TYPE chatstatus AS ENUM ('active', 'archived', 'deleted');
+            EXCEPTION 
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        """))
+        logger.info("Chatstatus enum created")
+
+        # Create chats table
+        logger.info("Creating chats table...")
+        conn.execute(text("""
+            CREATE TABLE chats (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                title VARCHAR(255) NOT NULL DEFAULT 'New Chat',
+                status chatstatus NOT NULL DEFAULT 'active',
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                chat_metadata JSONB
+            );
+            CREATE INDEX ix_chats_user_id ON chats(user_id);
+            CREATE INDEX ix_chats_created_at ON chats(created_at);
+        """))
+        logger.info("Chats table created")
+
         # Create chat_messages table
         logger.info("Creating chat_messages table...")
         conn.execute(text("""
             CREATE TABLE chat_messages (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                conversation_id UUID NOT NULL,
+                conversation_id UUID NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
                 role messagerole NOT NULL,
                 content TEXT NOT NULL,
                 status messagestatus NOT NULL DEFAULT 'pending',
@@ -655,13 +730,22 @@ def upgrade() -> None:
         # Create agents table
         logger.info("Creating agents table...")
         conn.execute(text("""
+            -- Create the enum types first
+            CREATE TYPE agenttype AS ENUM (
+                'goal', 'market', 'price', 'chat', 'goal_analyst', 'deal_finder',
+                'price_analyst', 'notifier', 'market_analyst', 'deal_negotiator', 'risk_assessor'
+            );
+            CREATE TYPE agentstatus AS ENUM (
+                'active', 'inactive', 'busy', 'error', 'idle', 'paused'
+            );
+            
             CREATE TABLE agents (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                goal_id UUID REFERENCES goals(id) ON DELETE CASCADE,
+                goal_id UUID REFERENCES goals(id) ON DELETE SET NULL,
                 name VARCHAR(100) NOT NULL,
-                agent_type VARCHAR(20) NOT NULL,
-                status VARCHAR(20) NOT NULL DEFAULT 'inactive',
+                agent_type agenttype NOT NULL,
+                status agentstatus NOT NULL DEFAULT 'inactive',
                 description TEXT,
                 config JSONB,
                 meta_data JSONB,
@@ -669,9 +753,7 @@ def upgrade() -> None:
                 last_error TEXT,
                 last_active TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                CONSTRAINT chk_agent_type CHECK (agent_type IN ('goal', 'market', 'price', 'chat')),
-                CONSTRAINT chk_agent_status CHECK (status IN ('active', 'inactive', 'busy', 'error'))
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             CREATE INDEX ix_agents_type ON agents(agent_type);
             CREATE INDEX ix_agents_status ON agents(status);
@@ -700,6 +782,29 @@ def upgrade() -> None:
             CREATE INDEX ix_token_wallets_network ON token_wallets(network);
         """))
         logger.info("Token_wallets table created")
+
+        # Create wallet_transactions table
+        logger.info("Creating wallet_transactions table...")
+        conn.execute(text("""
+            CREATE TABLE wallet_transactions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                wallet_id UUID NOT NULL REFERENCES token_wallets(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                type transactiontype NOT NULL,
+                amount NUMERIC(18, 8) NOT NULL,
+                status transactionstatus NOT NULL DEFAULT 'pending',
+                tx_hash VARCHAR(100),
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP WITH TIME ZONE,
+                transaction_metadata JSONB,
+                CONSTRAINT ch_positive_amount CHECK (amount > 0)
+            );
+            CREATE INDEX ix_wallet_transactions_wallet_type ON wallet_transactions(wallet_id, type);
+            CREATE INDEX ix_wallet_transactions_user_status ON wallet_transactions(user_id, status);
+            CREATE INDEX ix_wallet_transactions_created_at ON wallet_transactions(created_at);
+        """))
+        logger.info("Wallet_transactions table created")
 
         # Create deal_scores table
         logger.info("Creating deal_scores table...")
@@ -852,6 +957,11 @@ def upgrade() -> None:
                 FOR EACH ROW
                 EXECUTE FUNCTION update_updated_at_column();
 
+            CREATE TRIGGER update_deal_tokens_updated_at
+                BEFORE UPDATE ON deal_tokens
+                FOR EACH ROW
+                EXECUTE FUNCTION update_updated_at_column();
+
             CREATE TRIGGER update_notifications_updated_at
                 BEFORE UPDATE ON notifications
                 FOR EACH ROW
@@ -892,6 +1002,11 @@ def upgrade() -> None:
                 FOR EACH ROW
                 EXECUTE FUNCTION update_updated_at_column();
 
+            CREATE TRIGGER update_chats_updated_at
+                BEFORE UPDATE ON chats
+                FOR EACH ROW
+                EXECUTE FUNCTION update_updated_at_column();
+
             CREATE TRIGGER update_agents_updated_at
                 BEFORE UPDATE ON agents
                 FOR EACH ROW
@@ -899,6 +1014,11 @@ def upgrade() -> None:
 
             CREATE TRIGGER update_token_wallets_updated_at
                 BEFORE UPDATE ON token_wallets
+                FOR EACH ROW
+                EXECUTE FUNCTION update_updated_at_column();
+
+            CREATE TRIGGER update_wallet_transactions_updated_at
+                BEFORE UPDATE ON wallet_transactions
                 FOR EACH ROW
                 EXECUTE FUNCTION update_updated_at_column();
 
@@ -993,6 +1113,7 @@ def downgrade() -> None:
             DROP TRIGGER IF EXISTS update_markets_updated_at ON markets;
             DROP TRIGGER IF EXISTS update_goals_updated_at ON goals;
             DROP TRIGGER IF EXISTS update_deals_updated_at ON deals;
+            DROP TRIGGER IF EXISTS update_deal_tokens_updated_at ON deal_tokens;
             DROP TRIGGER IF EXISTS update_notifications_updated_at ON notifications;
             DROP TRIGGER IF EXISTS update_token_balances_updated_at ON token_balances;
             DROP TRIGGER IF EXISTS update_token_transactions_updated_at ON token_transactions;
@@ -1001,8 +1122,10 @@ def downgrade() -> None:
             DROP TRIGGER IF EXISTS update_price_histories_updated_at ON price_histories;
             DROP TRIGGER IF EXISTS update_user_preferences_updated_at ON user_preferences;
             DROP TRIGGER IF EXISTS update_chat_messages_updated_at ON chat_messages;
+            DROP TRIGGER IF EXISTS update_chats_updated_at ON chats;
             DROP TRIGGER IF EXISTS update_agents_updated_at ON agents;
             DROP TRIGGER IF EXISTS update_token_wallets_updated_at ON token_wallets;
+            DROP TRIGGER IF EXISTS update_wallet_transactions_updated_at ON wallet_transactions;
             DROP TRIGGER IF EXISTS update_deal_scores_updated_at ON deal_scores;
             DROP TRIGGER IF EXISTS update_chat_contexts_updated_at ON chat_contexts;
             DROP TRIGGER IF EXISTS update_tracked_deals_updated_at ON tracked_deals;
@@ -1019,10 +1142,10 @@ def downgrade() -> None:
         # Drop tables in reverse order
         logger.info("Dropping tables...")
         tables = [
-            'agents', 'chat_messages', 'chat_contexts', 'user_preferences', 'price_histories',
+            'agents', 'chat_messages', 'chats', 'chat_contexts', 'user_preferences', 'price_histories',
             'token_pricing', 'token_balance_history', 'token_transactions',
-            'token_balances', 'token_wallets', 'deal_scores', 'deal_interactions', 'tracked_deals', 'notifications', 
-            'deals', 'goals', 'markets', 'auth_tokens', 'users', 'price_trackers', 'price_predictions'
+            'token_balances', 'wallet_transactions', 'token_wallets', 'deal_scores', 'deal_interactions', 'tracked_deals', 'notifications', 
+            'deal_tokens', 'deals', 'goals', 'markets', 'auth_tokens', 'users', 'price_trackers', 'price_predictions'
         ]
         for table in tables:
             logger.info(f"Dropping table {table}")
@@ -1031,19 +1154,12 @@ def downgrade() -> None:
         # Drop enum types
         logger.info("Dropping enum types...")
         conn.execute(text("""
-            DROP TYPE IF EXISTS dealsource CASCADE;
-            DROP TYPE IF EXISTS transactiontype CASCADE;
-            DROP TYPE IF EXISTS transactionstatus CASCADE;
-            DROP TYPE IF EXISTS dealstatus CASCADE;
-            DROP TYPE IF EXISTS messagerole CASCADE;
-            DROP TYPE IF EXISTS notificationstatus CASCADE;
-            DROP TYPE IF EXISTS notificationpriority CASCADE;
-            DROP TYPE IF EXISTS marketstatus CASCADE;
-            DROP TYPE IF EXISTS markettype CASCADE;
-            DROP TYPE IF EXISTS marketcategory CASCADE;
-            DROP TYPE IF EXISTS goalstatus CASCADE;
-            DROP TYPE IF EXISTS userstatus CASCADE;
+            DROP TYPE IF EXISTS agenttype CASCADE;
+            DROP TYPE IF EXISTS agentstatus CASCADE;
         """))
+        logger.info("Enum types dropped")
+        
+        # Done!
         logger.info("Schema downgrade completed successfully")
         
     except Exception as e:

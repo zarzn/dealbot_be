@@ -220,7 +220,7 @@ class NotificationService:
             # Try to get existing preferences
             query = select(UserPreferences).where(UserPreferences.user_id == user_id)
             result = await self.session.execute(query)
-            preferences = result.scalar_one_or_none()
+            preferences = await result.scalar_one_or_none()
 
             if not preferences:
                 # Create default preferences if none exist
@@ -259,29 +259,39 @@ class NotificationService:
                 await self.session.commit()
                 await self.session.refresh(preferences)
 
+            # Prepare notification frequency dictionary
+            notification_freq = {}
+            if preferences.notification_frequency:
+                for key, value in preferences.notification_frequency.items():
+                    if isinstance(value, dict) and "frequency" in value:
+                        notification_freq[key] = value
+                    else:
+                        # Handle case where value is already a string/enum
+                        notification_freq[key] = {"type": key, "frequency": value if isinstance(value, str) else value.value}
+
             # Convert preferences to response model
             return UserPreferencesResponse(
                 id=preferences.id,
                 user_id=preferences.user_id,
-                theme=Theme(preferences.theme),
-                language=Language(preferences.language),
-                timezone=preferences.timezone,
-                enabled_channels=[NotificationChannel(ch) for ch in preferences.enabled_channels],
-                notification_frequency=self._convert_notification_frequency(preferences.notification_frequency),
-                time_windows=self._convert_time_windows(preferences.time_windows),
+                theme=Theme(preferences.theme) if preferences.theme else Theme.SYSTEM,
+                language=Language(preferences.language) if preferences.language else Language.EN,
+                timezone=preferences.timezone or "UTC",
+                enabled_channels=[NotificationChannel(ch) for ch in preferences.enabled_channels] if preferences.enabled_channels else [NotificationChannel.IN_APP],
+                notification_frequency=notification_freq,
+                time_windows=self._convert_time_windows(preferences.time_windows or {}),
                 muted_until=preferences.muted_until.time() if preferences.muted_until else None,
-                do_not_disturb=preferences.do_not_disturb,
-                email_digest=preferences.email_digest,
-                push_enabled=preferences.push_enabled,
-                sms_enabled=preferences.sms_enabled,
-                telegram_enabled=preferences.telegram_enabled,
-                discord_enabled=preferences.discord_enabled,
-                minimum_priority=preferences.minimum_priority,
+                do_not_disturb=preferences.do_not_disturb or False,
+                email_digest=preferences.email_digest or False,
+                push_enabled=preferences.push_enabled or False,
+                sms_enabled=preferences.sms_enabled or False,
+                telegram_enabled=preferences.telegram_enabled or False,
+                discord_enabled=preferences.discord_enabled or False,
+                minimum_priority=preferences.minimum_priority or "low",
                 deal_alert_settings=preferences.deal_alert_settings or {},
                 price_alert_settings=preferences.price_alert_settings or {},
                 email_preferences=preferences.email_preferences or {},
-                created_at=preferences.created_at,
-                updated_at=preferences.updated_at
+                created_at=preferences.created_at or datetime.now(),
+                updated_at=preferences.updated_at or datetime.now()
             )
 
         except Exception as e:
@@ -389,10 +399,15 @@ class NotificationService:
             raise NotificationError(f"Failed to create notification: {str(e)}")
 
     async def get_unread_count(self, user_id: UUID) -> int:
-        """Get count of unread notifications for a user."""
-        if not self.session:
-            raise NotificationError("Database session required for this operation")
-
+        """Get the count of unread notifications for a user.
+        
+        Args:
+            user_id: User ID
+            
+        Returns:
+            Count of unread notifications
+        """
+        
         try:
             query = select(func.count()).select_from(Notification).where(
                 and_(
@@ -400,12 +415,13 @@ class NotificationService:
                     Notification.read_at.is_(None)
                 )
             )
+            
             result = await self.session.execute(query)
-            return result.scalar() or 0
-
+            count = result.scalar_one()
+            return count
         except Exception as e:
-            logger.error(f"Error getting unread count: {str(e)}\n{traceback.format_exc()}")
-            raise NotificationError(f"Failed to get unread count: {str(e)}")
+            logger.error(f"Error getting unread count: {str(e)}")
+            return 0
 
     async def mark_as_read(
         self,
@@ -484,8 +500,11 @@ class NotificationService:
 
         try:
             key = f"notification:{notification.id}"
-            value = self._convert_to_response(notification).model_dump()
-            await self._redis_client.set(key, json.dumps(value), ex=3600)  # 1 hour TTL
+            response_data = self._convert_to_response(notification).model_dump()
+            
+            # Convert UUIDs to strings for JSON serialization
+            json_data = json.dumps(response_data, default=lambda o: str(o) if isinstance(o, UUID) else o)
+            await self._redis_client.set(key, json_data, ex=3600)  # 1 hour TTL
 
         except Exception as e:
             logger.warning(f"Failed to cache notification: {str(e)}")
@@ -517,6 +536,7 @@ class NotificationService:
     def set_background_tasks(self, background_tasks: BackgroundTasks) -> None:
         """Set background tasks for async operations."""
         self._background_tasks = background_tasks
+        self.background_tasks = background_tasks
 
     async def send_password_reset_email(
         self,
@@ -524,45 +544,49 @@ class NotificationService:
         reset_token: str,
         background_tasks: Optional[BackgroundTasks] = None
     ) -> None:
-        """Send password reset email."""
+        """Send password reset email.
+        
+        Args:
+            email: User email
+            reset_token: Password reset token
+            background_tasks: FastAPI background tasks
+        """
         try:
-            reset_url = f"{settings.SITE_URL}/reset-password/{reset_token}"
+            from core.services.email import get_email_service
+            
+            email_service = await get_email_service()
+            site_url = settings.SITE_URL
+            reset_url = f"{site_url}/reset-password?token={reset_token}"
+            
             template_data = {
                 "reset_url": reset_url,
                 "site_name": settings.APP_NAME,
-                "support_email": settings.EMAIL_FROM
+                "support_email": settings.EMAIL_SENDER_ADDRESS
             }
             
-            # Render email template
-            subject = "Password Reset Request"
-            html_content = await render_template(
-                "password_reset.html",
-                template_data
-            )
-            text_content = await render_template(
-                "password_reset.txt",
-                template_data
-            )
+            subject = f"{settings.EMAIL_SUBJECT_PREFIX} Reset Your Password"
             
-            # Send email
-            if background_tasks:
-                background_tasks.add_task(
+            # Use provided background_tasks or fall back to self.background_tasks
+            bg_tasks = background_tasks if background_tasks is not None else self._background_tasks
+            
+            if bg_tasks:
+                bg_tasks.add_task(
                     email_service.send_email,
                     to_email=email,
                     subject=subject,
-                    html_content=html_content,
-                    text_content=text_content
+                    template_name="password_reset",
+                    template_data=template_data
                 )
             else:
                 await email_service.send_email(
                     to_email=email,
                     subject=subject,
-                    html_content=html_content,
-                    text_content=text_content
+                    template_name="password_reset",
+                    template_data=template_data
                 )
                 
         except Exception as e:
-            logger.error(f"Error sending password reset email: {str(e)}\n{traceback.format_exc()}")
+            logger.error(f"Error sending password reset email: {str(e)}")
             raise NotificationError(f"Failed to send password reset email: {str(e)}")
 
     async def send_magic_link_email(
@@ -571,43 +595,47 @@ class NotificationService:
         token: str,
         background_tasks: Optional[BackgroundTasks] = None
     ) -> None:
-        """Send magic link email."""
+        """Send magic link email.
+        
+        Args:
+            email: User email
+            token: Magic link token
+            background_tasks: FastAPI background tasks
+        """
         try:
-            magic_link_url = f"{settings.SITE_URL}/auth/verify-magic-link/{token}"
+            from core.services.email import get_email_service
+            
+            email_service = await get_email_service()
+            site_url = settings.SITE_URL
+            magic_link_url = f"{site_url}/auth/magic-link?token={token}"
+            
             template_data = {
                 "magic_link_url": magic_link_url,
                 "site_name": settings.APP_NAME,
-                "support_email": settings.EMAIL_FROM
+                "support_email": settings.EMAIL_SENDER_ADDRESS
             }
             
-            # Render email template
-            subject = "Magic Link Login"
-            html_content = await render_template(
-                "magic_link.html",
-                template_data
-            )
-            text_content = await render_template(
-                "magic_link.txt",
-                template_data
-            )
+            subject = f"{settings.EMAIL_SUBJECT_PREFIX} Login Link"
             
-            # Send email
-            if background_tasks:
-                background_tasks.add_task(
+            # Use provided background_tasks or fall back to self.background_tasks
+            bg_tasks = background_tasks if background_tasks is not None else self._background_tasks
+            
+            if bg_tasks:
+                bg_tasks.add_task(
                     email_service.send_email,
                     to_email=email,
                     subject=subject,
-                    html_content=html_content,
-                    text_content=text_content
+                    template_name="magic_link",
+                    template_data=template_data
                 )
             else:
                 await email_service.send_email(
                     to_email=email,
                     subject=subject,
-                    html_content=html_content,
-                    text_content=text_content
+                    template_name="magic_link",
+                    template_data=template_data
                 )
                 
         except Exception as e:
-            logger.error(f"Error sending magic link email: {str(e)}\n{traceback.format_exc()}")
+            logger.error(f"Error sending magic link email: {str(e)}")
             raise NotificationError(f"Failed to send magic link email: {str(e)}")

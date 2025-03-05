@@ -6,7 +6,7 @@ allowing seamless use of our tools and agents within the CrewAI framework.
 
 from typing import Dict, Any, List, Optional
 from crewai import Agent, Task, Crew, Process
-from langchain.tools import BaseTool
+from langchain_community.tools import BaseTool
 from pydantic import BaseModel
 
 # Import our custom tools
