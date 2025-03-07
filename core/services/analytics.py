@@ -362,7 +362,7 @@ class AnalyticsService:
                 },
                 recommendations=recommendations[:3],  # Limit to top 3 recommendations
                 analysis_date=datetime.utcnow(),
-                expiration_analysis="Expires soon" if deal.expires_at and (deal.expires_at - datetime.utcnow()).days < 3 else "No immediate expiration"
+                expiration_analysis="Expires soon" if deal.expires_at and ((deal.expires_at.replace(tzinfo=None) if deal.expires_at.tzinfo else deal.expires_at) - datetime.utcnow()).days < 3 else "No immediate expiration"
             )
             
             # Cache the analysis

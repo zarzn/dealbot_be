@@ -9,100 +9,98 @@ import argparse
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 import subprocess
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def check_docker_connection():
-    """Check connection to the database in Docker."""
-    logger.info("Checking connection to database in Docker...")
-    
+    """Check database connection using Docker."""
     try:
-        # Use docker exec to run a query in the postgres container
+        # Check if Docker is running
         result = subprocess.run(
-            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'deals', '-c', 'SELECT 1 as test'],
+            ['docker', 'ps'],
             capture_output=True,
             text=True,
-            check=True
+            check=False
         )
         
-        if "1 row" in result.stdout:
-            logger.info("✅ Successfully connected to database in Docker!")
+        if result.returncode != 0:
+            print("Docker is not running or not accessible")
+            return False
+        
+        # Check if postgres container is running
+        result = subprocess.run(
+            ['docker', 'ps', '--filter', 'name=deals_postgres', '--format', '{{.Names}}'],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if 'deals_postgres' not in result.stdout:
+            print("PostgreSQL container 'deals_postgres' is not running")
+            return False
+        
+        # Try to connect to the database
+        result = subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 'SELECT 1 as test'],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        if result.returncode != 0:
+            print(f"Failed to connect to database: {result.stderr}")
             
-            # Check for tables
+            # Try to check if database exists
             result = subprocess.run(
-                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'deals', '-c', 
-                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"],
+                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c',
+                 "SELECT datname FROM pg_database WHERE datname = 'agentic_deals'"],
                 capture_output=True,
                 text=True,
-                check=True
+                check=False
             )
             
-            # Parse the output to get table names
-            lines = result.stdout.strip().split('\n')
-            if len(lines) > 2:  # Header + separator + at least one table
-                # Skip header and separator lines
-                table_lines = lines[2:-1]  # Skip the last line which is the row count
-                tables = [line.strip() for line in table_lines]
-                
-                if tables:
-                    logger.info(f"Found {len(tables)} tables: {', '.join(tables)}")
-                else:
-                    logger.warning("No tables found in the database. Migrations may not have been applied.")
-            else:
-                logger.warning("No tables found in the database. Migrations may not have been applied.")
-                
-            return True
-        else:
-            logger.error("Connection test failed")
-            return False
+            if 'agentic_deals' not in result.stdout:
+                print("Database 'agentic_deals' does not exist")
             
-    except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to connect to database in Docker: {e.stderr}")
-        return False
+            return False
+        
+        print("Successfully connected to database via Docker")
+        return True
+        
     except Exception as e:
-        logger.error(f"Error checking Docker connection: {str(e)}")
+        print(f"Error checking Docker connection: {str(e)}")
         return False
 
-def check_localhost_connection():
-    """Check connection to the database on localhost."""
-    logger.info("Checking connection to database on localhost...")
-    
+def check_local_connection():
+    """Check database connection using local connection."""
     try:
-        # Try to connect to the database on localhost
-        engine = create_engine('postgresql://postgres:12345678@localhost:5432/deals')
-        conn = engine.connect()
+        # Get database connection parameters from environment variables
+        db_host = os.environ.get('DB_HOST', 'localhost')
+        db_port = os.environ.get('DB_PORT', '5432')
+        db_user = os.environ.get('DB_USER', 'postgres')
+        db_password = os.environ.get('DB_PASSWORD', '12345678')
+        db_name = os.environ.get('DB_NAME', 'agentic_deals')
         
-        # Execute a simple query
-        result = conn.execute(text("SELECT 1 as test"))
-        row = result.fetchone()
+        # Try to connect using psql
+        result = subprocess.run(
+            ['psql', f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}', '-c', 'SELECT 1 as test'],
+            capture_output=True,
+            text=True,
+            check=False
+        )
         
-        if row and row[0] == 1:
-            logger.info("✅ Successfully connected to database on localhost!")
-            
-            # Check for tables
-            result = conn.execute(text("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public'
-            """))
-            tables = [row[0] for row in result]
-            
-            if tables:
-                logger.info(f"Found {len(tables)} tables: {', '.join(tables)}")
-            else:
-                logger.warning("No tables found in the database. Migrations may not have been applied.")
-                
-            conn.close()
-            engine.dispose()
-            return True
-        else:
-            logger.error("Connection test failed")
+        if result.returncode != 0:
+            print(f"Failed to connect to database: {result.stderr}")
             return False
-            
-    except SQLAlchemyError as e:
-        logger.error(f"Failed to connect to database on localhost: {str(e)}")
+        
+        print(f"Successfully connected to database at {db_host}:{db_port}")
+        return True
+        
+    except Exception as e:
+        print(f"Error checking local connection: {str(e)}")
         return False
 
 def check_custom_connection(host, port, user, password, dbname):
@@ -164,8 +162,8 @@ if __name__ == "__main__":
         success = success and docker_success
         
     if args.mode in ['localhost', 'all']:
-        localhost_success = check_localhost_connection()
-        success = success and localhost_success
+        local_success = check_local_connection()
+        success = success and local_success
         
     if args.mode == 'custom':
         custom_success = check_custom_connection(

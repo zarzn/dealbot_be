@@ -4,15 +4,26 @@ import logging
 import logging.handlers
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import configure_mappers
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from fastapi.responses import JSONResponse
 from sqlalchemy.sql import text
+from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.staticfiles import StaticFiles
+from fastapi.openapi.utils import get_openapi
+import time
+import sys
+import asyncio
+from typing import Dict, Any, List, Optional, Union, Callable
 
 from core.config import settings
+from core.models.relationships import setup_relationships
+from core.database import async_engine, sync_engine
+from core.services.redis import get_redis_service
 
 # Configure environment-specific logging
 def setup_logging():
@@ -79,9 +90,6 @@ from core.models import (
     MessageRole, MessageStatus, AuthToken
 )
 
-# Import relationships module
-from core.models.relationships import setup_relationships
-
 # Import middleware setup
 from core.middleware import setup_middleware
 
@@ -97,22 +105,26 @@ from core.api.v1.notifications.router import router as notifications_router
 from core.api.v1.health.router import router as health_router
 from core.api.v1.price_tracking.router import router as price_tracking_router
 from core.api.v1.price_prediction.router import router as price_prediction_router
+from core.api.v1.ai.router import router as ai_router
 
 # Import websocket handlers
 from core.api.v1.notifications.websocket import handle_websocket
 from core.api.websocket import router as websocket_router
 
-from core.utils.redis import get_redis_client, close_redis_client
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager."""
+    """Application lifespan setup and cleanup.
+    
+    This function handles setup before the application starts
+    and cleanup after it stops.
+    """
+    # Setup
     try:
-        # Set up model relationships
+        # Setup model relationships
         logger.info("Setting up model relationships...")
         setup_relationships()
         logger.info("Model relationships set up")
-
+        
         # Configure SQLAlchemy mappers
         logger.info("Configuring SQLAlchemy mappers...")
         configure_mappers()
@@ -120,18 +132,67 @@ async def lifespan(app: FastAPI):
         
         # Initialize Redis client
         logger.info("Initializing Redis client...")
-        await get_redis_client()  # Use await for async function
-        logger.info("Redis client initialized")
+        try:
+            # Use a timeout to prevent hanging if Redis is unresponsive
+            redis_init_task = asyncio.create_task(get_redis_service())
+            redis_service = await asyncio.wait_for(redis_init_task, timeout=5.0)
+            logger.info("Redis client initialized")
+        except asyncio.TimeoutError:
+            logger.error("Redis initialization timed out - continuing without Redis")
+        except Exception as e:
+            logger.error(f"Failed to initialize Redis: {str(e)} - continuing without Redis")
         
         yield
+    
     except Exception as e:
-        logger.error(f"Error during startup: {str(e)}")
-        raise
+        logger.error(f"Error during application startup: {str(e)}")
+        # Yield even if setup fails to prevent application crash
+        yield
+    
     finally:
-        # Cleanup
+        # Shutdown
         logger.info("Shutting down application...")
-        await close_redis_client()  # Use await for async function
-        logger.info("Redis client closed")
+        
+        # Close Redis connections
+        try:
+            logger.info("Closing Redis connections...")
+            try:
+                redis_service = await get_redis_service()
+                if redis_service is not None:
+                    await redis_service.close()
+                    logger.info("Redis client closed")
+                else:
+                    logger.info("No Redis client to close")
+            except Exception as e:
+                logger.error(f"Error closing Redis connections: {str(e)}")
+        except Exception as e:
+            logger.error(f"Exception accessing Redis service during shutdown: {str(e)}")
+        
+        # Close database connections
+        try:
+            logger.info("Closing database connections...")
+            
+            # Close async engine
+            if async_engine is not None and hasattr(async_engine, 'dispose'):
+                try:
+                    await async_engine.dispose()
+                    logger.info("Async engine disposed")
+                except Exception as e:
+                    logger.error(f"Error disposing async engine: {str(e)}")
+            
+            # Close sync engine
+            if sync_engine is not None and hasattr(sync_engine, 'dispose'):
+                try:
+                    sync_engine.dispose()
+                    logger.info("Sync engine disposed")
+                except Exception as e:
+                    logger.error(f"Error disposing sync engine: {str(e)}")
+                    
+            logger.info("Database connections closed")
+        except Exception as e:
+            logger.error(f"Exception closing database connections: {str(e)}")
+        
+        logger.info("Application shutdown completed")
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
@@ -143,9 +204,24 @@ def create_app() -> FastAPI:
     )
 
     # Add CORS middleware first
+    cors_origins = settings.CORS_ORIGINS
+    # Convert to a proper list if it's a Pydantic FieldInfo
+    if not isinstance(cors_origins, list):
+        try:
+            # Try to convert to list if possible
+            cors_origins = list(cors_origins)
+        except (TypeError, ValueError):
+            # Fallback to safe default
+            cors_origins = ["*"]
+    
+    # Ensure CloudFront domain is in the list
+    cloudfront_domain = "https://d3irpl0o2ddv9y.cloudfront.net"
+    if cloudfront_domain not in cors_origins:
+        cors_origins.append(cloudfront_domain)
+            
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.CORS_ORIGINS,
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
         allow_headers=["*"],
@@ -161,10 +237,17 @@ def create_app() -> FastAPI:
     # Add OPTIONS handler for all routes
     @app.options("/{full_path:path}")
     async def options_handler(request: Request):
+        origin = request.headers.get("origin", "*")
+        # Ensure CloudFront domain is allowed
+        cloudfront_domain = "https://d3irpl0o2ddv9y.cloudfront.net"
+        
+        # If origin is our CloudFront domain, use it specifically, otherwise use the settings
+        allowed_origin = origin if origin == cloudfront_domain or origin in settings.CORS_ORIGINS else "*"
+        
         return JSONResponse(
             content={},
             headers={
-                "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+                "Access-Control-Allow-Origin": allowed_origin,
                 "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
                 "Access-Control-Allow-Headers": "*",
                 "Access-Control-Allow-Credentials": "true",
@@ -183,6 +266,7 @@ def create_app() -> FastAPI:
     app.include_router(price_tracking_router, prefix=f"{settings.API_V1_PREFIX}/price-tracking", tags=["Price Tracking"])
     app.include_router(price_prediction_router, prefix=f"{settings.API_V1_PREFIX}/price-prediction", tags=["Price Prediction"])
     app.include_router(health_router, prefix=f"{settings.API_V1_PREFIX}/health", tags=["System"])
+    app.include_router(ai_router, prefix=f"{settings.API_V1_PREFIX}/ai", tags=["AI"])
     
     # Include WebSocket router
     app.include_router(websocket_router, tags=["WebSocket"])
@@ -210,7 +294,6 @@ def create_app() -> FastAPI:
         """
         from core.database import get_async_db_session as get_db
         from core.services.redis import get_redis_service
-        import asyncio
         
         health_status = {
             "status": "healthy",

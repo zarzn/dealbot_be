@@ -12,6 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.exceptions import DatabaseError, RepositoryError
 from core.utils.redis import get_redis_client
+from core.services.redis import get_redis_service, UUIDEncoder
+from core.database import get_session
+from core.exceptions import ResourceNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -29,24 +32,29 @@ class AnalyticsRepository:
         return self._redis
 
     async def get_deal_analysis(self, deal_id: UUID) -> Optional[Dict[str, Any]]:
-        """Get cached analysis for a deal.
+        """Get deal analysis from cache.
         
         Args:
             deal_id: The UUID of the deal
             
         Returns:
-            Dict containing deal analysis or None if not cached
-            
-        Raises:
-            DatabaseError: If there is an error retrieving the analysis
+            Dict containing analysis data or None if not found
         """
+        # TEMPORARY: Disable Redis caching to avoid recursion issues
+        logger.info(f"Deal analysis cache temporarily disabled for deal_id {deal_id}")
+        return None
+        
+        # Commented out code below
         try:
             redis = await self._get_redis()
             if not redis:
                 return None
-                
+            
+            # Convert UUID to string for cache key    
+            deal_id_str = str(deal_id)
+            
             # Try to get from cache
-            cache_key = f"deal:analysis:{deal_id}"
+            cache_key = f"deal:analysis:{deal_id_str}"
             cached_data = await redis.get(cache_key)
             
             if not cached_data:
@@ -70,25 +78,40 @@ class AnalyticsRepository:
             deal_id: The UUID of the deal
             analysis_data: Dict containing analysis data
             ttl: Time to live in seconds
-            
-        Raises:
-            DatabaseError: If there is an error saving the analysis
         """
+        # TEMPORARY: Disable Redis caching to avoid recursion issues
+        logger.info(f"Deal analysis cache temporarily disabled for deal_id {deal_id}")
+        return
+        
+        # Commented out code below
         try:
             redis = await self._get_redis()
             if not redis:
                 return
                 
+            # Convert UUID to string for cache key
+            deal_id_str = str(deal_id)
+            
             # Save to cache
-            cache_key = f"deal:analysis:{deal_id}"
+            cache_key = f"deal:analysis:{deal_id_str}"
+            
+            # First convert any UUID objects to strings
+            # Use a simpler approach to avoid recursion issues
+            serializable_data = {}
+            for key, value in analysis_data.items():
+                if isinstance(value, UUID):
+                    serializable_data[key] = str(value)
+                else:
+                    serializable_data[key] = value
+            
             await redis.set(
                 cache_key,
-                json.dumps(analysis_data),
+                json.dumps(serializable_data, cls=UUIDEncoder),
                 ex=ttl
             )
         except Exception as e:
             logger.error(f"Error saving deal analysis to cache: {str(e)}")
-            # Log but don't raise to avoid breaking the main flow
+            # Continue execution without raising
 
     async def get_market_analytics(self, market_id: UUID) -> Dict[str, Any]:
         """Get analytics for a specific market.

@@ -143,7 +143,7 @@ SECRET_KEY="your-secret-key"
 # Database Configuration
 POSTGRES_USER="aideals_user"
 POSTGRES_PASSWORD="from-secrets-manager"
-POSTGRES_DB="aideals_production"
+POSTGRES_DB="agentic_deals"
 POSTGRES_HOST="your-rds-instance.region.rds.amazonaws.com"
 POSTGRES_PORT="5432"
 

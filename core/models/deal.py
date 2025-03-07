@@ -47,14 +47,24 @@ class DealSearch(BaseModel):
     sort_order: Optional[str] = "desc"
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=20, ge=1, le=100)
+    use_realtime_scraping: Optional[bool] = Field(default=False)
 
-    @field_validator('max_price')
+    @field_validator("max_price")
     @classmethod
     def validate_max_price(cls, v, values):
-        """Validate max_price is greater than min_price."""
-        if v is not None and values.get('min_price') is not None:
-            if v < values['min_price']:
-                raise ValueError("max_price must be greater than min_price")
+        """Validate that max_price is greater than min_price if both are provided."""
+        # Fix for newer Pydantic versions where values is a ValidationInfo object
+        if v is not None:
+            min_price = None
+            if hasattr(values, 'data'):
+                # New Pydantic version (v2+)
+                min_price = values.data.get('min_price') if values.data else None
+            elif isinstance(values, dict):
+                # Fallback for older Pydantic versions
+                min_price = values.get('min_price')
+            
+            if min_price is not None and v < min_price:
+                raise ValueError("max_price must be greater than or equal to min_price")
         return v
 
 class DealFilter(BaseModel):
@@ -173,8 +183,16 @@ class DealBase(BaseModel):
     @classmethod
     def validate_expiry(cls, v: Optional[datetime]) -> Optional[datetime]:
         """Validate expiry date is in the future."""
-        if v is not None and v <= datetime.utcnow():
-            raise ValueError("Expiry date must be in the future")
+        if v is not None:
+            # If v is timezone-aware, make sure we compare with a timezone-aware utcnow
+            if v.tzinfo is not None:
+                current_time = datetime.now(timezone.utc)
+            else:
+                # If v is timezone-naive, use naive utcnow
+                current_time = datetime.utcnow()
+                
+            if v <= current_time:
+                raise ValueError("Expiry date must be in the future")
         return v
 
 class DealCreate(DealBase):
@@ -207,11 +225,11 @@ class DealUpdate(BaseModel):
 class DealResponse(DealBase):
     """Deal response model."""
     id: UUID
-    goal_id: UUID
+    goal_id: Optional[UUID] = None
     market_id: UUID
     found_at: datetime
     status: DealStatus
-    category: Optional[str]
+    category: str
     seller_info: Optional[Dict[str, Any]]
     availability: Optional[Dict[str, Any]]
     latest_score: Optional[float]
@@ -228,6 +246,22 @@ class DealResponse(DealBase):
     )
     created_at: datetime
     updated_at: datetime
+    is_tracked: Optional[bool] = Field(
+        False,
+        description="Whether the deal is tracked by the current user"
+    )
+    features: Optional[List[str]] = Field(
+        None,
+        description="List of product features"
+    )
+    market_name: Optional[str] = Field(
+        None,
+        description="Name of the marketplace (Amazon, Walmart, etc.)"
+    )
+    ai_analysis: Optional[Dict[str, Any]] = Field(
+        None, 
+        description="AI-generated analysis of the deal including scoring and recommendations"
+    )
 
     class Config:
         """Pydantic model configuration."""

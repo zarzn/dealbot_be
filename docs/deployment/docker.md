@@ -45,7 +45,7 @@ services:
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-12345678}
-      - POSTGRES_DB=${POSTGRES_DB:-deals}
+      - POSTGRES_DB=${POSTGRES_DB:-agentic_deals}
     ports:
       - "5432:5432"
     volumes:
@@ -186,7 +186,7 @@ Docker Compose files use environment variables with default values for non-sensi
 environment:
   - POSTGRES_USER=${POSTGRES_USER:-postgres}
   - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-12345678}
-  - POSTGRES_DB=${POSTGRES_DB:-deals}
+  - POSTGRES_DB=${POSTGRES_DB:-agentic_deals}
 ```
 
 This pattern allows for:
@@ -359,21 +359,3 @@ If the backend cannot connect to Redis:
    ```bash
    docker-compose ps redis
    ```
-
-2. Check Redis logs:
-   ```bash
-   docker-compose logs redis
-   ```
-
-3. Verify environment variables in `.env.development` or `.env.production`
-
-## Best Practices
-
-1. Use environment variables for configuration
-2. Set resource limits for containers
-3. Implement health checks for all services
-4. Use volumes for persistent data
-5. Secure sensitive information
-6. Monitor container performance
-7. Regularly update base images
-8. Use multi-stage builds for production images 

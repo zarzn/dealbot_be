@@ -305,13 +305,13 @@ class User(Base):
     notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
     agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
     tracked_deals = relationship("TrackedDeal", back_populates="user", cascade="all, delete-orphan")
-    user_preferences = relationship("UserPreferences", back_populates="user", cascade="all, delete-orphan", overlaps="preferences")
+    user_preferences = relationship("UserPreferences", back_populates="user", cascade="all, delete-orphan")
     price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
     price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
     markets = relationship("Market", back_populates="user")
     
-    # Add relationships from relationships.py to fix conflicts
-    preferences = relationship("UserPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan", overlaps="user_preferences")
+    # Rename the relationship to avoid conflict with the JSONB column
+    preferences_relation = relationship("UserPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan", overlaps="user_preferences")
     token_wallet = relationship("TokenWallet", back_populates="user", uselist=False, cascade="all, delete-orphan", overlaps="token_wallets")
 
     def __init__(self, **kwargs):
@@ -320,8 +320,8 @@ class User(Base):
         This method handles the preferences vs preferences_data distinction to avoid
         the error: 'dict' object has no attribute '_sa_instance_state'
         """
-        # Extract preferences_data without affecting relationships
-        self._preferences_dict = kwargs.pop('preferences_data', None)
+        # Extract preferences_data if provided and store it for the JSONB column
+        preferences_data = kwargs.pop('preferences', None)
         
         # Hash password if provided
         if 'password' in kwargs and kwargs['password'] and not kwargs['password'].startswith('$2b$'):
@@ -330,8 +330,9 @@ class User(Base):
         # Initialize other attributes
         super().__init__(**kwargs)
         
-        # We don't set self.preferences directly because it's a relationship
-        # The JSONB column will be set during DB operations separately
+        # Set the preferences JSONB column if data was provided
+        if preferences_data is not None:
+            self.preferences = preferences_data
 
     @staticmethod
     def hash_password(password: str) -> str:

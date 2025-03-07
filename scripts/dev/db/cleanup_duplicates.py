@@ -1,9 +1,10 @@
 """Script to clean up duplicate token balances."""
 from sqlalchemy import create_engine, text
+import sys
 
 def cleanup_duplicates():
     """Clean up duplicate token balances."""
-    engine = create_engine('postgresql://postgres:12345678@localhost:5432/deals')
+    engine = create_engine('postgresql://postgres:12345678@localhost:5432/agentic_deals')
     
     with engine.begin() as conn:
         # Delete duplicates keeping only the latest record for each user

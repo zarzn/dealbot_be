@@ -5,7 +5,7 @@ async def reset_db():
     conn = await asyncpg.connect(
         user='postgres',
         password='12345678',
-        database='deals',
+        database='agentic_deals',
         host='localhost'
     )
     
@@ -38,7 +38,7 @@ async def check_version():
     conn = await asyncpg.connect(
         user='postgres',
         password='12345678',
-        database='deals',
+        database='agentic_deals',
         host='localhost'
     )
     
@@ -63,7 +63,7 @@ async def check_db():
     conn = await asyncpg.connect(
         user='postgres',
         password='12345678',
-        database='deals',
+        database='agentic_deals',
         host='localhost'
     )
     

@@ -13,7 +13,8 @@ class ProductionConfig(BaseConfig):
     # CORS - Restrict to specific origins in production
     CORS_ORIGINS: List[str] = [
         "https://deals.yourdomain.com",
-        "https://api.deals.yourdomain.com"
+        "https://api.deals.yourdomain.com",
+        "https://d3irpl0o2ddv9y.cloudfront.net"
     ]
     CORS_CREDENTIALS: bool = True
     

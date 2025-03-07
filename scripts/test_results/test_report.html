@@ -1,99 +1,44 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Test Results Summary</title>
+    <meta charset="utf-8"/>
+    <title>AI Agentic Deals System Test Reports</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         h1 { color: #333; }
-        .summary { margin-bottom: 20px; }
-        .category { margin-bottom: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
-        .category h2 { margin-top: 0; }
-        .passed { color: green; }
-        .failed { color: red; }
-        .skipped { color: orange; }
-        .total { color: blue; }
-        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
-        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f2f2f2; }
-        tr:nth-child(even) { background-color: #f9f9f9; }
+        .report-link { 
+            display: block; 
+            margin: 10px 0; 
+            padding: 10px; 
+            background-color: #f0f0f0; 
+            border-radius: 5px;
+            text-decoration: none;
+            color: #333;
+        }
+        .report-link:hover { background-color: #e0e0e0; }
+        .timestamp { color: #666; font-size: 0.8em; }
     </style>
 </head>
 <body>
-    <h1>Test Results Summary</h1>
+    <h1>AI Agentic Deals System Test Reports</h1>
+    <p class="timestamp">Generated on: 2025-03-05 22:14:40</p>
     
-    <div class="summary">
-        <h2>Overall Summary</h2>
-        <p><span class="total">Total Tests in Codebase: 316</span></p>
-        <p><span class="total">Tests Executed: 96</span></p>
-        <p><span class="passed">Passed Tests: 92</span></p>
-        <p><span class="failed">Failed Tests: 4</span></p>
-        <p><span class="skipped">Skipped Tests: 3</span></p>
-    </div>
-    
-    <h2>Test Counts by Category</h2>
-    <table>
-        <tr>
-            <th>Category</th>
-            <th>Total Tests in Category</th>
-            <th>% of All Tests</th>
-        </tr>        <tr>
-            <td>Core</td>
-            <td>93</td>
-            <td>29.4%</td>
-        </tr>        <tr>
-            <td>Feature</td>
-            <td>28</td>
-            <td>8.9%</td>
-        </tr>        <tr>
-            <td>Service</td>
-            <td>162</td>
-            <td>51.3%</td>
-        </tr>        <tr>
-            <td>Integration</td>
-            <td>33</td>
-            <td>10.4%</td>
-        </tr>    </table>
-    
-    <h2>Results by Category</h2>
-    <table>
-        <tr>
-            <th>Category</th>
-            <th>Total Tests Run</th>
-            <th>Passed</th>
-            <th>Failed</th>
-            <th>Status</th>
-            <th>Dependency Status</th>
-        </tr>        <tr>
-            <td>Core</td>
-            <td>96</td>
-            <td>92</td>
-            <td>4</td>
-            <td class="failed">Failed</td>
-            <td>Met</td>
-        </tr>        <tr>
-            <td>Feature</td>
-            <td>0</td>
-            <td>0</td>
-            <td>0</td>
-            <td class="passed">Passed</td>
-            <td>Not Met (Skipped)</td>
-        </tr>        <tr>
-            <td>Service</td>
-            <td>0</td>
-            <td>0</td>
-            <td>0</td>
-            <td class="passed">Passed</td>
-            <td>Not Met (Skipped)</td>
-        </tr>        <tr>
-            <td>Integration</td>
-            <td>0</td>
-            <td>0</td>
-            <td>0</td>
-            <td class="passed">Passed</td>
-            <td>Not Met (Skipped)</td>
-        </tr>    </table>
-    
-    <h2>Detailed Reports</h2>
-    <ul>            <li><a href="Core_report.html">Core Tests Detailed Report</a></li>    </ul>
+    <h2>Available Test Reports:</h2>
+    <a href="core_report.html" class="report-link">
+        <strong>core_report.html</strong>
+        <div class="timestamp">Last updated: 2025-03-05 22:07:08</div>
+    </a>
+    <a href="service_report.html" class="report-link">
+        <strong>service_report.html</strong>
+        <div class="timestamp">Last updated: 2025-03-05 22:07:41</div>
+    </a>
+    <a href="feature_report.html" class="report-link">
+        <strong>feature_report.html</strong>
+        <div class="timestamp">Last updated: 2025-03-05 22:09:37</div>
+    </a>
+    <a href="integration_report.html" class="report-link">
+        <strong>integration_report.html</strong>
+        <div class="timestamp">Last updated: 2025-03-05 22:09:49</div>
+    </a>
 </body>
 </html>

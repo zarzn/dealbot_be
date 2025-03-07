@@ -31,7 +31,7 @@
            backend_dir = os.path.join(current_dir, 'backend')
            
            # Run migrations for both main and test databases
-           for db_name in ['deals', 'deals_test']:
+           for db_name in ['agentic_deals', 'agentic_deals_test']:
                # Set the database URL in environment
                os.environ['DATABASE_URL'] = f'postgresql://postgres:12345678@localhost:5432/{db_name}'
                

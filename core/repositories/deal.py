@@ -2,7 +2,7 @@ from typing import List, Optional, Dict, Any, Tuple, Union
 from datetime import datetime, timedelta
 from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_, delete, desc, exists
+from sqlalchemy import select, func, and_, or_, delete, desc, exists, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, Query
 from sqlalchemy.sql import text
@@ -10,6 +10,7 @@ from redis.asyncio import Redis
 import logging
 import asyncio
 import os
+import json
 
 # Import models
 from core.models.deal import (
@@ -982,3 +983,121 @@ class DealRepository(BaseRepository[Deal]):
         except Exception as e:
             logger.error(f"Failed to get deals for user {user_id}: {str(e)}")
             raise DatabaseError(f"Failed to get deals for user: {str(e)}", "get_by_user")
+
+    async def update_deal_analysis(self, deal_id: UUID, analysis: Any) -> bool:
+        """
+        Update the AI analysis for a deal.
+        
+        Args:
+            deal_id: Deal ID
+            analysis: AIAnalysis object or dict
+            
+        Returns:
+            True if update was successful, False otherwise
+        """
+        try:
+            # Convert analysis to dict if it's an object
+            analysis_data = analysis
+            if hasattr(analysis, 'dict') and callable(getattr(analysis, 'dict')):
+                analysis_data = analysis.dict()
+            elif hasattr(analysis, '__dict__'):
+                analysis_data = analysis.__dict__
+                
+            # Remove SQLAlchemy-specific attributes if present
+            if '_sa_instance_state' in analysis_data:
+                del analysis_data['_sa_instance_state']
+                
+            # Update the deal's analysis field
+            query = (
+                update(Deal)
+                .where(Deal.id == deal_id)
+                .values(
+                    analysis=analysis_data,
+                    updated_at=datetime.utcnow()
+                )
+            )
+            
+            result = await self.db.execute(query)
+            await self.db.commit()
+            
+            # Cache updated analysis in Redis if available
+            try:
+                if self.redis:
+                    cache_key = f"deal:{deal_id}:analysis"
+                    await self.redis.set(
+                        cache_key,
+                        json.dumps(analysis_data),
+                        expire=3600  # 1 hour cache
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to cache deal analysis: {str(e)}")
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating deal analysis: {str(e)}")
+            await self.db.rollback()
+            return False
+            
+    async def update_deal_score(self, deal_id: UUID, score: float) -> bool:
+        """
+        Update the score for a deal.
+        
+        Args:
+            deal_id: Deal ID
+            score: Deal score (0-1 scale)
+            
+        Returns:
+            True if update was successful, False otherwise
+        """
+        try:
+            # Ensure score is between 0 and 1
+            normalized_score = max(0.0, min(1.0, float(score)))
+            
+            # Update the deal's latest_score field
+            query = (
+                update(Deal)
+                .where(Deal.id == deal_id)
+                .values(
+                    latest_score=normalized_score,
+                    updated_at=datetime.utcnow()
+                )
+            )
+            
+            result = await self.db.execute(query)
+            await self.db.commit()
+            
+            # Also store as a deal_score entry with timestamp
+            timestamp = datetime.utcnow()
+            try:
+                await self.create_deal_score(
+                    deal_id=deal_id,
+                    score=normalized_score,
+                    confidence=0.8,  # Default confidence
+                    score_type="ai",
+                    score_metadata={
+                        "updated_via": "update_deal_score",
+                        "timestamp": timestamp.isoformat()
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create deal score entry: {str(e)}")
+                
+            # Update cache if available
+            try:
+                if self.redis:
+                    cache_key = f"deal:{deal_id}:score"
+                    await self.redis.set(
+                        cache_key,
+                        str(normalized_score),
+                        expire=3600  # 1 hour cache
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to cache deal score: {str(e)}")
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating deal score: {str(e)}")
+            await self.db.rollback()
+            return False

@@ -1,9 +1,10 @@
 """Script to add unique constraint to token_balances table."""
 from sqlalchemy import create_engine, text
+import sys
 
 def add_unique_constraint():
     """Add unique constraint to token_balances table."""
-    engine = create_engine('postgresql://postgres:12345678@localhost:5432/deals')
+    engine = create_engine('postgresql://postgres:12345678@localhost:5432/agentic_deals')
     
     with engine.begin() as conn:
         # First drop the constraint if it exists

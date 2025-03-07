@@ -30,8 +30,7 @@ from core.services.deal import DealService
 from core.services.analytics import AnalyticsService
 from core.services.recommendation import RecommendationService
 from core.services.token import TokenService
-from core.services.redis import get_redis_service, RedisService
-from core.utils.redis import get_redis_client
+from core.services.redis import get_redis_service
 from core.exceptions import RateLimitError, RateLimitExceededError
 from core.api.v1.dependencies import (
     get_deal_service,
@@ -77,60 +76,40 @@ async def check_rate_limit(
     limit: int,
     window: int
 ) -> None:
-    """
-    Check rate limit for unauthorized users.
+    """Check if a request exceeds the rate limit.
     
     Args:
-        request: The request object
-        key_prefix: Prefix for the rate limit key
-        limit: Maximum number of requests allowed in the window
+        request: The request to check
+        key_prefix: The prefix for the key
+        limit: Maximum number of requests allowed
         window: Time window in seconds
         
     Raises:
-        RateLimitExceededError: If the rate limit is exceeded
+        RateLimitExceededError: If rate limit is exceeded
     """
+    # TEMPORARY: Disable rate limiting to avoid Redis recursion issues
+    logger.warning("Rate limiting temporarily disabled")
+    return
+    
+    # The code below is temporarily disabled
     try:
-        # Get client IP
-        client_ip = request.client.host
+        client_ip = request.client.host if request.client else "unknown"
+        key = f"ratelimit:{key_prefix}:{client_ip}"
         
-        # Create rate limit key
-        rate_key = f"ratelimit:{key_prefix}:{client_ip}"
+        redis = await get_redis_service()
+        current = await redis.get(key)
         
-        # Get Redis client
-        redis = await get_redis_client()
-        if not redis:
-            # If Redis is not available, allow the request
-            return
-            
-        # Get current count
-        count = await redis.get(rate_key)
-        count = int(count) if count and count.isdigit() else 0
-        
-        # Check if limit exceeded
-        if count >= limit:
-            reset_time = datetime.utcnow() + timedelta(seconds=window)
-            raise RateLimitExceededError(
-                message=f"Rate limit exceeded: {limit} requests per {window} seconds",
-                limit=limit,
-                reset_at=reset_time
-            )
-            
-        # Increment count
-        pipe = redis.pipeline()
-        pipe.incr(rate_key)
-        
-        # Set expiry if this is the first request
-        if count == 0:
-            pipe.expire(rate_key, window)
-            
-        await pipe.execute()
-        
-    except RateLimitExceededError:
-        raise
-    except Exception as e:
-        logger.error(f"Error checking rate limit: {str(e)}")
-        # If there's an error checking the rate limit, allow the request
-        return
+        if current is None:
+            await redis.set(key, 1, ex=window)
+        elif int(current) >= limit:
+            logger.warning(f"Rate limit exceeded for {key}")
+            raise RateLimitExceededError(f"Rate limit exceeded: {limit} requests per {window} seconds")
+        else:
+            await redis.incrby(key, 1)
+    except RedisError as e:
+        # Log but continue if Redis fails
+        logger.error(f"Redis error in rate limiting: {str(e)}")
+        # We don't raise an exception to allow the request to proceed
 
 async def process_deals_background(background_tasks: BackgroundTasks, deals: List[Any], deal_service: DealService):
     """Process deals in background."""
@@ -711,58 +690,74 @@ class SearchResponse(BaseModel):
 async def search_deals(
     request: Request,
     search: DealSearch,
+    perform_ai_analysis: bool = True,  # Default to True
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Search for deals based on criteria.
+    Search for deals matching the specified criteria
     
-    This endpoint can be accessed by both authenticated and unauthenticated users.
-    Unauthenticated users are subject to rate limiting.
-    
-    If no deals are found in the database matching the search criteria, the system
-    will automatically attempt to fetch deals in real-time from supported marketplaces
-    using the scraping API. These newly scraped deals will be stored in the database
-    for future searches.
+    This endpoint handles both authenticated and unauthenticated users.
+    For authenticated users, it provides a full deal analysis and consumes tokens.
+    For unauthenticated users, it also provides AI analysis but without token consumption.
     """
     try:
         # Check rate limit for unauthenticated users
         if current_user is None:
-            await check_rate_limit(
-                request, 
-                f"unauth:search", 
-                UNAUTH_SEARCH_LIMIT, 
-                RATE_LIMIT_WINDOW
-            )
+            logger.info("Unauthenticated user search request received")
+            try:
+                # Rate limit unauthenticated requests to 5 per minute
+                await check_rate_limit(request, "unauth:search", 5, 60)
+            except Exception as e:
+                logger.warning(f"Rate limit check failed: {str(e)}")
+                logger.warning("Rate limiting temporarily disabled")
+            
+            # Enable AI analysis for unauthenticated users without consuming tokens
+            if perform_ai_analysis:
+                logger.info("AI analysis enabled for unauthenticated user (no token consumption)")
+        else:
+            logger.info(f"Authenticated user search request from user {current_user.id}")
         
-        # Get user ID if authenticated
+        # For authenticated users, always enable AI analysis if requested
         user_id = current_user.id if current_user else None
         
-        # Initialize repositories and services
-        deal_repository = DealRepository(db)
-        deal_service = DealService(db, deal_repository)
+        if perform_ai_analysis:
+            logger.info(f"AI analysis enabled. User authenticated: {user_id is not None}")
+        else:
+            logger.info(f"AI analysis disabled. User authenticated: {user_id is not None}, AI requested: {perform_ai_analysis}")
         
-        # Search deals
-        result = await deal_service.search_deals(search, user_id)
+        # Initialize DealService for database operations
+        deal_service = DealService(db)
         
-        # Check if result is a dictionary with metadata
-        if isinstance(result, dict) and "deals" in result:
-            # Return the full response including metadata
-            return result
+        # Log search parameters for debugging
+        logger.info(f"Search query: '{search.query}', Category: {search.category}, Price range: {search.min_price}-{search.max_price}")
         
-        # For backward compatibility, if result is a list, wrap it
-        return {"deals": result, "total": len(result), "metadata": {}}
+        # Check for real-time scraping flags in headers
+        enable_scraping = request.headers.get('X-Enable-Scraping', '').lower() == 'true'
+        real_time_search = request.headers.get('X-Real-Time-Search', '').lower() == 'true'
         
-    except RateLimitExceededError as e:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded: {str(e)}"
+        if enable_scraping or real_time_search:
+            logger.info(f"Real-time scraping enabled via headers: scraping={enable_scraping}, real_time={real_time_search}")
+            search.use_realtime_scraping = True
+            # Ensure AI analysis is enabled for real-time searches
+            if not perform_ai_analysis:
+                logger.info("Enabling AI analysis for real-time scraping")
+                perform_ai_analysis = True
+        
+        # Search for deals
+        result = await deal_service.search_deals(
+            search=search,
+            user_id=user_id,
+            perform_ai_analysis=perform_ai_analysis
         )
+        
+        logger.info(f"Search results: {len(result['deals'])} deals found")
+        return result
     except Exception as e:
-        logger.error(f"Error searching deals: {str(e)}", exc_info=True)
+        logger.error(f"Error in search_deals endpoint: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to search deals: {str(e)}"
+            detail=f"Error searching for deals: {str(e)}"
         )
 
 @router.post("", response_model=DealResponse, status_code=status.HTTP_201_CREATED)

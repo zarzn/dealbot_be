@@ -23,7 +23,7 @@ services:
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-12345678}
-      - POSTGRES_DB=${POSTGRES_DB:-deals}
+      - POSTGRES_DB=${POSTGRES_DB:-agentic_deals}
     ports:
       - "5432:5432"
     volumes:

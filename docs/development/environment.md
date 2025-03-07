@@ -21,7 +21,7 @@ This is a template file containing all possible configuration variables with des
 ### .env.development
 
 Contains configuration for local development environment:
-- Database name: `deals`
+- Database name: `agentic_deals`
 - Database host: `deals_postgres` (Docker container name)
 - Redis host: `deals_redis` (Docker container name)
 - Debug mode: enabled
@@ -39,7 +39,7 @@ Contains configuration for production deployment:
 ### .env.test
 
 Contains configuration for testing environment:
-- Database name: `deals_test`
+- Database name: `agentic_deals_test`
 - Database host: `localhost`
 - Redis host: `localhost`
 - Debug mode: enabled

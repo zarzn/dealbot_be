@@ -1,0 +1,8 @@
+# Integration Test Results Summary
+
+Generated: 03/05/2025 22:14:39
+
+❌ Integration tests: FAILED or had issues
+
+## Generated Reports:
+- integration_report.html

@@ -208,18 +208,39 @@ async def generate_reset_token(user_id: UUID, token_type: str = "reset", expires
             reason=f"Could not generate {token_type} token: {str(e)}"
         )
 
-async def blacklist_token(token: str, redis_client: Redis) -> None:
-    """Add token to blacklist."""
+async def blacklist_token(token: str, redis_client: Redis = None) -> None:
+    """Add token to blacklist.
+    
+    Args:
+        token: The token to blacklist
+        redis_client: Optional Redis client (for backward compatibility)
+        
+    Raises:
+        TokenError: If token blacklisting fails
+    """
     try:
+        # Get token payload to determine expiration
         payload = jwt.decode(
             token,
             get_jwt_secret_key(),
             algorithms=[settings.JWT_ALGORITHM]
         )
-        exp = datetime.fromtimestamp(payload["exp"])
-        ttl = int((exp - datetime.utcnow()).total_seconds())
-        if ttl > 0:
-            await redis_client.set(f"blacklist:{token}", "1", ex=ttl)
+        
+        # Calculate TTL
+        if "exp" in payload:
+            exp = datetime.fromtimestamp(payload["exp"])
+            ttl = max(1, int((exp - datetime.utcnow()).total_seconds()))
+        else:
+            # Default to 7 days if no expiration in token
+            ttl = 60 * 60 * 24 * 7  # 7 days
+        
+        # Use Redis service
+        redis_service = await get_redis_service()
+        success = await redis_service.blacklist_token(token, ttl)
+        
+        if not success:
+            raise RedisError("Failed to blacklist token")
+            
     except jwt.JWTError as e:
         logger.error(f"Error blacklisting token: {str(e)}")
         raise TokenError(
@@ -229,16 +250,21 @@ async def blacklist_token(token: str, redis_client: Redis) -> None:
         )
 
 async def is_token_blacklisted(token: str) -> bool:
-    """Check if a token is blacklisted."""
+    """Check if a token is blacklisted.
+    
+    Args:
+        token: The token to check
+        
+    Returns:
+        bool: True if blacklisted, False otherwise
+    """
     try:
         # For test environment, simplify blacklist checks
         if settings.TESTING and token and token.startswith("test_"):
             return False
             
-        redis = await get_redis_service()
-        key = f"blacklist:{token}"
-        result = await redis.get(key)
-        return result is not None
+        redis_service = await get_redis_service()
+        return await redis_service.is_token_blacklisted(token)
     except Exception as e:
         logger.error(f"Error checking blacklisted token: {str(e)}")
         # In test environment, ignore Redis errors
@@ -778,6 +804,12 @@ class AuthService:
             elif "status" not in user_dict or not user_dict["status"]:
                 user_dict["status"] = UserStatus.ACTIVE.value
                 
+            # Ensure preferences is a dict
+            if "preferences" in user_dict and user_dict["preferences"] is None:
+                user_dict["preferences"] = {}
+                
+            logger.debug(f"Creating user with data: {user_dict}")
+                
             try:
                 # Create user directly
                 user = User(**user_dict)
@@ -790,7 +822,14 @@ class AuthService:
             except Exception as inner_e:
                 logger.error(f"Error creating user object: {str(inner_e)}")
                 # Fallback to direct SQL insertion if ORM approach fails
-                stmt = insert(User.__table__).values(**user_dict).returning(User.__table__)
+                # Make a copy of user_dict to avoid modifying the original
+                sql_user_dict = user_dict.copy()
+                
+                # Ensure preferences is properly serialized for JSONB
+                if "preferences" in sql_user_dict and isinstance(sql_user_dict["preferences"], dict):
+                    sql_user_dict["preferences"] = json.dumps(sql_user_dict["preferences"])
+                
+                stmt = insert(User.__table__).values(**sql_user_dict).returning(User.__table__)
                 result = await self.db.execute(stmt)
                 user_row = result.fetchone()
                 if not user_row:
@@ -988,9 +1027,8 @@ class AuthService:
             if settings.TESTING:
                 return token in AuthService._test_blacklisted_tokens
                 
-            redis_client = await get_redis_service()
-            is_blacklisted = await redis_client.get(f"blacklist:{token}")
-            return bool(is_blacklisted)
+            redis_service = await get_redis_service()
+            return await redis_service.is_token_blacklisted(token)
         except Exception as e:
             logger.error(f"Error checking token blacklist: {e}")
             return False  # Default to not blacklisted on error
@@ -1150,25 +1188,34 @@ class AuthService:
             return
             
         try:
-            redis_client = await get_redis_service()
+            redis_service = await get_redis_service()
             
             # For testing, we want to be able to blacklist expired tokens
             if skip_expiration_check:
-                # Just get the token ID or hash
-                token_key = f"blacklist:{token}"
-                await redis_client.set(token_key, "1")
-                await redis_client.expire(token_key, 60 * 60 * 24 * 7)  # 7 days
+                # Just blacklist the token with a fixed expiration
+                success = await redis_service.blacklist_token(token, 60 * 60 * 24 * 7)  # 7 days
+                if not success:
+                    raise RedisError("Failed to blacklist token")
                 return
                 
             # Normal flow - validate token before blacklisting
             try:
                 # First verify the token
-                await self.verify_token(token, skip_expiration_check=True)
+                payload = await self.verify_token(token, skip_expiration_check=True)
+                
+                # Calculate token expiration time
+                if "exp" in payload:
+                    exp_timestamp = payload["exp"]
+                    current_timestamp = datetime.now(timezone.utc).timestamp()
+                    ttl = max(1, int(exp_timestamp - current_timestamp))
+                else:
+                    # Default to 7 days if no expiration in token
+                    ttl = 60 * 60 * 24 * 7
                 
                 # Blacklist the token
-                token_key = f"blacklist:{token}"
-                await redis_client.set(token_key, "1")
-                await redis_client.expire(token_key, 60 * 60 * 24 * 7)  # 7 days
+                success = await redis_service.blacklist_token(token, ttl)
+                if not success:
+                    raise RedisError("Failed to blacklist token")
             except Exception as e:
                 logger.error(f"Error in token blacklisting: {e}")
                 raise

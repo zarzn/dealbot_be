@@ -46,13 +46,13 @@ postgres_host = os.getenv("POSTGRES_HOST")
 postgres_port = os.getenv("POSTGRES_PORT", "5432")
 postgres_user = os.getenv("POSTGRES_USER", "postgres")
 postgres_password = os.getenv("POSTGRES_PASSWORD", "12345678")
-postgres_db = os.getenv("POSTGRES_DB", "deals")
+postgres_db = os.getenv("POSTGRES_DB", "agentic_deals")
 
 if postgres_host:
     DATABASE_URL = f"postgresql://{postgres_user}:{postgres_password}@{postgres_host}:{postgres_port}/{postgres_db}"
     logger.info(f"Using environment database host: {postgres_host}")
 else:
-    DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:12345678@deals_postgres:5432/deals")
+    DATABASE_URL = os.getenv("DATABASE_URL", f"postgresql://postgres:12345678@deals_postgres:5432/{postgres_db}")
     logger.info("Using default DATABASE_URL (development)")
 
 logger.info(f"Using database URL: {DATABASE_URL}")

@@ -47,7 +47,7 @@ else:
     os.environ.setdefault("POSTGRES_PASSWORD", "12345678")
     os.environ.setdefault("POSTGRES_HOST", "localhost")
     os.environ.setdefault("POSTGRES_PORT", "5432")
-    os.environ.setdefault("POSTGRES_DB", "deals_test")
+    os.environ.setdefault("POSTGRES_DB", "agentic_deals_test")
     os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
     os.environ.setdefault("REDIS_PASSWORD", "")
     os.environ.setdefault("REDIS_HOST", "localhost")
@@ -112,7 +112,7 @@ from core.main import app
 from core.services.redis import get_redis_service, RedisService
 
 # Test database URL
-TEST_DATABASE_URL = f"postgresql+asyncpg://{os.environ.get('POSTGRES_USER')}:{os.environ.get('POSTGRES_PASSWORD')}@{os.environ.get('POSTGRES_HOST')}:{os.environ.get('POSTGRES_PORT')}/{os.environ.get('POSTGRES_DB')}"
+TEST_DATABASE_URL = f"postgresql+asyncpg://{os.environ.get('POSTGRES_USER')}:{os.environ.get('POSTGRES_PASSWORD')}@{os.environ.get('POSTGRES_HOST')}:{os.environ.get('POSTGRES_PORT')}/agentic_deals_test"
 
 # Create test engine
 test_engine = create_async_engine(

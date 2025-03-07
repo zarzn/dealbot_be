@@ -1,0 +1,8 @@
+# Feature Test Results Summary
+
+Generated: 03/05/2025 22:09:39
+
+❌ Feature tests: FAILED or had issues
+
+## Generated Reports:
+- feature_report.html

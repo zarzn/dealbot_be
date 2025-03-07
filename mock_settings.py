@@ -28,10 +28,10 @@ class MockSettings(BaseModel):
     hosts: List[str] = ["localhost"]
     
     # Database settings
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:12345678@localhost:5432/deals_test"
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:12345678@localhost:5432/agentic_deals_test"
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: str = "12345678"
-    POSTGRES_DB: str = "deals_test"
+    POSTGRES_DB: str = "agentic_deals_test"
     POSTGRES_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
     

@@ -1,0 +1,8 @@
+# LLM Dependencies (with fixed versions)
+langchain==0.3.17
+langchain-community==0.3.16
+langchain-core==0.3.40
+langchain-deepseek==0.1.2
+openai==1.58.1
+langchain-openai==0.3.7
+tiktoken==0.7.0

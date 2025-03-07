@@ -27,7 +27,7 @@ DEBUG=true
 # Database Configuration
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=postgres
-POSTGRES_DB=deals_test
+POSTGRES_DB=agentic_deals_test
 POSTGRES_HOST=localhost
 
 # Redis Configuration

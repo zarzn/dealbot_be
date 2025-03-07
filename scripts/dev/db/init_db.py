@@ -20,33 +20,33 @@ async def init_db():
             host='localhost'
         )
         
-        # Check if deals database exists
+        # Check if agentic_deals database exists
         exists = await sys_conn.fetchval(
-            "SELECT 1 FROM pg_database WHERE datname = 'deals'"
+            "SELECT 1 FROM pg_database WHERE datname = 'agentic_deals'"
         )
         
         if exists:
-            logger.info("Dropping existing deals database...")
-            # Terminate all connections to the deals database
+            logger.info("Dropping existing agentic_deals database...")
+            # Terminate all connections to the agentic_deals database
             await sys_conn.execute("""
                 SELECT pg_terminate_backend(pg_stat_activity.pid)
                 FROM pg_stat_activity
-                WHERE pg_stat_activity.datname = 'deals'
+                WHERE pg_stat_activity.datname = 'agentic_deals'
                 AND pid <> pg_backend_pid();
             """)
             # Drop the database
-            await sys_conn.execute("DROP DATABASE deals")
-            logger.info("Existing deals database dropped")
+            await sys_conn.execute("DROP DATABASE agentic_deals")
+            logger.info("Existing agentic_deals database dropped")
         
-        logger.info("Creating deals database...")
-        await sys_conn.execute("CREATE DATABASE deals")
+        logger.info("Creating agentic_deals database...")
+        await sys_conn.execute("CREATE DATABASE agentic_deals")
         await sys_conn.close()
         
-        # Now connect to deals database to initialize extensions and schemas
+        # Now connect to agentic_deals database to initialize extensions and schemas
         conn = await asyncpg.connect(
             user='postgres',
             password='12345678',
-            database='deals',
+            database='agentic_deals',
             host='localhost'
         )
         

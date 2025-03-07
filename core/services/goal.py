@@ -597,7 +597,7 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             await self._redis.set(
                 cache_key.json(),
                 GoalResponse.model_validate(goal_dict).json(),
-                expire=settings.GOAL_CACHE_TTL
+                ex=settings.GOAL_CACHE_TTL
             )
         except Exception as e:
             logger.warning(f"Failed to cache goal {goal.id}: {str(e)}", exc_info=True)
@@ -698,7 +698,7 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             await self._redis.set(
                 cache_key,
                 json.dumps([response.model_dump() for response in goal_responses]),
-                expire=settings.GOAL_CACHE_TTL
+                ex=settings.GOAL_CACHE_TTL
             )
         except Exception as e:
             logger.warning(f"Failed to cache goals for user {user_id}: {str(e)}", exc_info=True)

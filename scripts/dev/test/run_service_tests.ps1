@@ -99,7 +99,16 @@ sys.exit(exit_code)
     Write-Host "Running tests with script: $tempScriptPath" -ForegroundColor Yellow
     
     try {
-        # Run Python directly in the current terminal
+        # Run Python directly without opening a new window and capture output
+        Write-Host "Running service tests..." -ForegroundColor Cyan
+        
+        # First, remove any existing report to ensure a fresh one is created
+        $reportFile = "$RESULTS_DIR\service_report.html"
+        if (Test-Path $reportFile) {
+            Remove-Item -Path $reportFile -Force
+        }
+        
+        # Run the tests directly (not using Start-Process)
         python $tempScriptPath
         $exitCode = $LASTEXITCODE
     }

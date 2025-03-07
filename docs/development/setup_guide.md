@@ -84,7 +84,7 @@ Copy-Item .env.example .env.test
 ```env
 ENVIRONMENT=test
 DEBUG=true
-POSTGRES_DB=deals_test
+POSTGRES_DB=agentic_deals_test
 POSTGRES_HOST=localhost
 REDIS_HOST=localhost
 ```

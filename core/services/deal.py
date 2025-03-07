@@ -4,7 +4,7 @@ This module provides deal-related services for the AI Agentic Deals System.
 """
 
 from typing import List, Optional, Dict, Any, Union, Callable, TypeVar, cast, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import json
 import asyncio
@@ -12,7 +12,7 @@ import functools
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, SecretStr, ConfigDict
 from sqlalchemy.orm import Session
-from sqlalchemy import func, select, and_, or_
+from sqlalchemy import func, select, and_, or_, case
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
 from ratelimit import limits, sleep_and_retry
@@ -23,8 +23,10 @@ from apscheduler.triggers.interval import IntervalTrigger
 import httpx
 from uuid import UUID, uuid4
 from decimal import Decimal
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 import numpy as np
+import decimal
+import time
 
 from core.models.user import User
 from core.models.market import Market
@@ -83,6 +85,8 @@ from core.services.crawler import WebCrawler
 from core.utils.llm import get_llm_instance
 from core.services.base import BaseService
 from core.services.ai import AIService
+from core.models.goal import Goal
+from core.models.token import TokenBalance
 
 logger = logging.getLogger(__name__)
 
@@ -888,243 +892,261 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
     async def search_deals(
         self,
         search: DealSearch,
-        user_id: Optional[UUID] = None
-    ) -> List[DealResponse]:
-        """Search for deals based on criteria.
+        user_id: Optional[UUID] = None,
+        perform_ai_analysis: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Search for deals based on criteria.
         
-        This method can be used by both authenticated and unauthenticated users.
-        Unauthenticated users will receive a simplified response.
-        
-        If no deals are found in the database, this method will attempt to fetch
-        deals in real-time from supported marketplaces using the scraping API.
+        Args:
+            search: Search parameters and filters
+            user_id: User ID for authentication context
+            perform_ai_analysis: Whether to enrich results with AI analysis
+            
+        Returns:
+            Dict containing deals and metadata
         """
         try:
-            logger.info(f"Searching deals with criteria: {search}")
+            logger.info(f"Searching deals with query: '{search.query}', realtime: {search.use_realtime_scraping}")
+            start_time = time.time()
             
-            # Build query
+            # Determine authentication status for filtering
+            is_authenticated = user_id is not None
+            logger.debug(f"User authentication status: {is_authenticated}")
+            
+            # Construct base query with eager loading
+            # Note: Eagerly load all relationships needed for response to prevent lazy loading issues
             query = select(Deal).options(
                 joinedload(Deal.price_points),
-                joinedload(Deal.tracked_by_users)
+                joinedload(Deal.tracked_by_users),
+                joinedload(Deal.market),
+                joinedload(Deal.price_histories)
             )
-
-            if search.query:
-                # Full-text search on title and description
-                query = query.filter(
-                    or_(
-                        Deal.title.ilike(f"%{search.query}%"),
-                        Deal.description.ilike(f"%{search.query}%")
-                    )
-                )
-        
-            if search.category:
-                query = query.filter(Deal.category == search.category)
-        
-            if search.min_price is not None:
-                query = query.filter(Deal.price >= search.min_price)
-        
-            if search.max_price is not None:
-                query = query.filter(Deal.price <= search.max_price)
-
-            if search.source:
-                query = query.filter(Deal.source == search.source)
-                
-            # Apply sorting
-            if search.sort_by == "price_asc":
-                query = query.order_by(Deal.price.asc())
-            elif search.sort_by == "price_desc":
-                query = query.order_by(Deal.price.desc())
-            elif search.sort_by == "relevance":
-                # For relevance, we might use a more complex scoring mechanism
-                # For now, just sort by created_at
-                query = query.order_by(Deal.created_at.desc())
-            else:
-                # Default sorting
-                query = query.order_by(Deal.created_at.desc())
-                
-            # Execute query
-            result = await self.db.execute(query)
-            deals = result.scalars().all()
             
-            # If no deals found in database, try real-time scraping
-            if not deals and search.query:
-                logger.info(f"No deals found in database for query '{search.query}'. Attempting real-time scraping.")
+            # Apply text search if specified
+            if search.query:
+                logger.debug(f"Applying text search filter: {search.query}")
                 
-                # Get markets from database
-                markets_query = select(Market).where(Market.is_active == True)
-                markets_result = await self.db.execute(markets_query)
-                markets = markets_result.scalars().all()
+                # For multi-word searches, improve the matching
+                search_terms = search.query.lower().strip().split()
                 
-                # If no active markets found, create default ones
-                if not markets:
-                    logger.warning("No active markets found for real-time scraping. Creating default markets.")
-                    try:
-                        # Create default Amazon market
-                        amazon_market = Market(
-                            name="Amazon",
-                            type=MarketType.AMAZON.value.lower(),
-                            description="Amazon marketplace for real-time scraping",
-                            api_endpoint="https://www.amazon.com",
-                            api_key="",
-                            is_active=True,
-                            rate_limit=100,
-                            created_at=datetime.utcnow(),
-                            updated_at=datetime.utcnow()
+                if len(search_terms) > 1:
+                    # For multi-word searches, implement a more precise search strategy
+                    # Match products that contain all search terms in title or description
+                    
+                    # Create a filter for each word that checks if it's contained in the title or description
+                    term_filters = []
+                    for term in search_terms:
+                        term_filter = or_(
+                            Deal.title.ilike(f"%{term}%"),
+                            Deal.description.ilike(f"%{term}%")
                         )
-                        self.db.add(amazon_market)
-                        
-                        # Create default Walmart market
-                        walmart_market = Market(
-                            name="Walmart",
-                            type=MarketType.WALMART.value.lower(),
-                            description="Walmart marketplace for real-time scraping",
-                            api_endpoint="https://www.walmart.com",
-                            api_key="",
-                            is_active=True,
-                            rate_limit=100,
-                            created_at=datetime.utcnow(),
-                            updated_at=datetime.utcnow()
-                        )
-                        self.db.add(walmart_market)
-                        
-                        await self.db.commit()
-                        
-                        # Refresh markets list
-                        markets = [amazon_market, walmart_market]
-                        logger.info("Created default markets for real-time scraping.")
-                    except Exception as e:
-                        logger.error(f"Failed to create default markets: {str(e)}")
-                        await self.db.rollback()
-                
-                if not markets:
-                    logger.warning("No active markets found for real-time scraping")
-                    return []
-                
-                # Initialize market factory for scraping
-                from core.integrations.market_factory import MarketIntegrationFactory
-                from core.utils.redis import get_redis_client
-                
-                redis_client = await get_redis_client()
-                market_factory = MarketIntegrationFactory(redis_client=redis_client)
-                
-                # Track scraped deals
-                scraped_deals = []
-                
-                # Try to scrape from each supported market
-                for market in markets:
-                    try:
-                        # Only try Amazon and Walmart for now as they're supported by the factory
-                        if market.type.lower() not in ["amazon", "walmart"]:
-                            continue
-                            
-                        logger.info(f"Attempting to scrape deals from {market.name} for query '{search.query}'")
-                        
-                        # Search for products in the market
-                        products = await market_factory.search_products(
-                            market=market.type.lower(),
-                            query=search.query,
-                            page=1
-                        )
-                        
-                        if not products:
-                            logger.info(f"No products found in {market.name} for query '{search.query}'")
-                            continue
-                            
-                        logger.info(f"Found {len(products)} products in {market.name} for query '{search.query}'")
-                        
-                        # Process each product and create a deal
-                        for product in products[:10]:  # Limit to 10 products per market
-                            try:
-                                # Extract required fields
-                                deal_data = {
-                                    'user_id': user_id,  # Use the current user's ID if available
-                                    'market_id': market.id,
-                                    'title': product.get('title', product.get('name', '')),
-                                    'description': product.get('description', ''),
-                                    'price': Decimal(str(product.get('price', 0))),
-                                    'currency': product.get('currency', 'USD'),
-                                    'url': product.get('url', ''),
-                                    'source': DealSource.API.value,
-                                    'image_url': product.get('image_url', ''),
-                                    'category': search.category or MarketCategory.ELECTRONICS.value,
-                                    'seller_info': {
-                                        'name': product.get('seller', 'Unknown'),
-                                        'rating': product.get('rating', 0),
-                                        'reviews': product.get('review_count', 0)
-                                    },
-                                    'deal_metadata': {
-                                        'source': market.type.lower(),
-                                        'scraped_at': datetime.utcnow().isoformat(),
-                                        'search_query': search.query
-                                    }
-                                }
-                                
-                                # Set original price if available
-                                if 'original_price' in product and product['original_price']:
-                                    deal_data['original_price'] = Decimal(str(product['original_price']))
-                                
-                                # Create the deal in the database
-                                deal = await self._create_deal_from_scraped_data(deal_data)
-                                if deal:
-                                    scraped_deals.append(deal)
-                                    
-                            except Exception as e:
-                                logger.error(f"Error processing scraped product: {str(e)}")
-                                continue
-                                
-                    except Exception as e:
-                        logger.error(f"Error scraping from {market.name}: {str(e)}")
-                        continue
-                
-                # If we found scraped deals, use those
-                if scraped_deals:
-                    logger.info(f"Successfully scraped {len(scraped_deals)} deals for query '{search.query}'")
-                    deals = scraped_deals
+                        term_filters.append(term_filter)
+                    
+                    # A product must match ALL search terms (AND logic)
+                    query = query.filter(and_(*term_filters))
+                    
+                    # Prioritization - exact phrase match should rank higher than individual words
+                    # Also prioritize title matches over description matches
+                    query = query.order_by(
+                        # Exact phrase match in title is highest priority (0)
+                        case(
+                            (Deal.title.ilike(f"%{search.query}%"), 0),
+                            else_=1
+                        ),
+                        # Next priority is title containing all terms separately (1-3)
+                        case(
+                            (Deal.title.ilike(f"%{search_terms[0]}%"), 2),
+                            else_=3
+                        ),
+                        # Description matches are lower priority (4-5)
+                        case(
+                            (Deal.description.ilike(f"%{search.query}%"), 4),
+                            else_=5
+                        ),
+                        # Then sort by price
+                        Deal.price.asc()
+                    )
                 else:
-                    logger.warning(f"No deals found via real-time scraping for query '{search.query}'")
-                    # Return empty list with metadata indicating scraping was attempted
-                    return {
-                        "deals": [],
-                        "total": 0,
-                        "metadata": {
-                            "scraping_attempted": True,
-                            "query": search.query,
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                    }
-
-        # Convert to response models
+                    # For single-word searches, keep the original approach
+                    query = query.filter(
+                        or_(
+                            Deal.title.ilike(f"%{search.query}%"),
+                            Deal.description.ilike(f"%{search.query}%")
+                        )
+                    ).order_by(
+                        # Prioritize title matches over description matches
+                        case(
+                            (Deal.title.ilike(f"%{search.query}%"), 0),
+                            (Deal.description.ilike(f"%{search.query}%"), 1),
+                            else_=2
+                        ),
+                        # Then sort by price (or other criteria if specified)
+                        Deal.price.asc()
+                    )
+            
+            # Apply additional filters if specified
+            if search.category:
+                logger.debug(f"Filtering by category: {search.category}")
+                query = query.filter(Deal.category == search.category)
+                
+            if search.min_price is not None:
+                logger.debug(f"Filtering by minimum price: {search.min_price}")
+                query = query.filter(Deal.price >= search.min_price)
+                
+            if search.max_price is not None:
+                logger.debug(f"Filtering by maximum price: {search.max_price}")
+                query = query.filter(Deal.price <= search.max_price)
+                
+            if search.source:
+                logger.debug(f"Filtering by source: {search.source}")
+                query = query.filter(Deal.source == search.source)
+            
+            # Set page and limit with defaults
+            page = max(1, search.offset // search.limit + 1 if search.offset else 1)
+            limit = min(100, max(1, search.limit if search.limit else 20))
+            offset = (page - 1) * limit
+            
+            # Apply pagination
+            query = query.limit(limit).offset(offset)
+            
+            # Execute query with pagination
+            result = await self.db.execute(query)
+            deals = result.unique().scalars().all()
+            logger.info(f"Found {len(deals)} deals matching search criteria")
+            
+            # If no results and has query, attempt to find deals via scrapers (feature flag controlled)
+            if len(deals) == 0 and search.query and search.use_realtime_scraping:
+                logger.info(f"No deals found for '{search.query}', triggering real-time scraping")
+                # Initiate real-time scraping
+                try:
+                    scraped_deals = await self._perform_realtime_scraping(search.query, search.category)
+                    logger.info(f"Found {len(scraped_deals)} deals from real-time scraping")
+                    deals = scraped_deals
+                    
+                    # Force AI analysis for real-time scraped deals, regardless of perform_ai_analysis parameter
+                    # This ensures we always get AI recommendations for real-time searches
+                    if not perform_ai_analysis and len(deals) > 0:
+                        logger.info("Enabling AI analysis for real-time scraped deals")
+                        perform_ai_analysis = True
+                except Exception as e:
+                    logger.error(f"Error in real-time scraping: {str(e)}", exc_info=True)
+                    logger.info("Real-time scraping yielded no results")
+            
+            # Process deals to prepare for response
             response_deals = []
+            ai_service = None
+            
+            # Only initialize AI service if needed and user is authenticated
+            if perform_ai_analysis:
+                logger.info("Initializing AI service for deal analysis")
+                try:
+                    from core.services.ai import AIService
+                    ai_service = AIService()
+                    if ai_service and ai_service.llm:
+                        logger.info("AIService and LLM initialized successfully")
+                    else:
+                        logger.warning("AIService initialized but LLM is not available")
+                except Exception as e:
+                    logger.error(f"Error initializing AI service: {str(e)}", exc_info=True)
+            else:
+                logger.info("AI analysis not requested")
+                ai_service = None
+            
+            # Process each deal
             for deal in deals:
-                response_deal = await self._convert_to_response(deal, user_id)
+                deal_analysis = None
+                try:
+                    if ai_service and ai_service.llm:
+                        logger.info(f"Requesting AI analysis for deal {deal.id}")
+                        
+                        # For authenticated users, use normal analysis that consumes tokens
+                        # For unauthenticated users, specify no_token_consumption=True
+                        if is_authenticated:
+                            deal_analysis = await ai_service.analyze_deal(deal)
+                        else:
+                            # Pass flag to indicate no token consumption for unauthorized users
+                            deal_analysis = await ai_service.analyze_deal(deal, no_token_consumption=True)
+                            
+                        if deal_analysis:
+                            logger.info(f"AI analysis completed for deal {deal.id}, score: {deal_analysis.get('score')}")
+                            # Ensure we have a valid score
+                            if 'score' in deal_analysis:
+                                logger.debug(f"AI score for deal {deal.id}: {deal_analysis['score']}")
+                            else:
+                                logger.warning(f"No score found in AI analysis for deal {deal.id}")
+                        else:
+                            logger.warning(f"AI analysis failed for deal {deal.id}")
+                except Exception as e:
+                    logger.error(f"Error in AI analysis for deal {deal.id}: {str(e)}", exc_info=True)
                 
-                # For unauthenticated users, limit the information provided
-                if user_id is None:
-                    # Simplify the response for unauthenticated users
-                    # Remove sensitive or premium information
-                    response_deal.price_history = []
-                    response_deal.market_analysis = None
-                    # Provide a simplified deal score if available
-                    if response_deal.deal_score:
-                        response_deal.deal_score = {
-                            "overall": response_deal.deal_score.get("overall", 0),
-                            "is_good_deal": response_deal.deal_score.get("overall", 0) > 70
-                        }
+                # Log AI analysis for debugging
+                if deal_analysis:
+                    logger.info(f"AI analysis for deal {deal.id}: score={deal_analysis.get('score', 'N/A')}, recommendations={len(deal_analysis.get('recommendations', []))}")
                 
-                response_deals.append(response_deal)
+                # Convert deal to response model with or without analysis
+                deal_response = self._convert_to_response(
+                    deal=deal, 
+                    user_id=user_id,
+                    include_ai_analysis=perform_ai_analysis,
+                    analysis=deal_analysis  # Make sure we pass the full analysis object
+                )
                 
+                # Verify we have the expected values in the response
+                if deal_analysis and perform_ai_analysis:
+                    if 'ai_analysis' not in deal_response:
+                        logger.warning(f"AI analysis is missing from response for deal {deal.id}")
+                    elif 'recommendations' not in deal_response['ai_analysis']:
+                        logger.warning(f"Recommendations are missing from AI analysis for deal {deal.id}")
+                    elif 'score' not in deal_response['ai_analysis']:
+                        logger.warning(f"Score is missing from AI analysis for deal {deal.id}")
+                    else:
+                        # Log for debugging
+                        score = deal_response['ai_analysis']['score']
+                        rec_count = len(deal_response['ai_analysis']['recommendations'])
+                        logger.info(f"Deal response includes AI analysis with score {score} and {rec_count} recommendations")
+                
+                # Add description logging for debugging
+                if hasattr(deal, 'description') and deal.description:
+                    logger.info(f"Deal {deal.id} has description: {deal.description[:100]}...")
+                else:
+                    logger.warning(f"Deal {deal.id} has NO description")
+                
+                # Log the content of the response description
+                logger.info(f"Response for deal {deal.id} has description: {deal_response.get('description', 'NONE')[:100]}...")
+                
+                response_deals.append(deal_response)
+            
+            search_time_ms = int((time.time() - start_time) * 1000)
+            
+            # Return the results
             return {
                 "deals": response_deals,
                 "total": len(response_deals),
                 "metadata": {
-                    "scraping_attempted": bool(not deals and search.query),
-                    "timestamp": datetime.utcnow().isoformat()
+                    "query": search.query,
+                    "filters": {
+                        "category": search.category,
+                        "min_price": search.min_price,
+                        "max_price": search.max_price,
+                        "source": search.source
+                    },
+                    "pagination": {
+                        "page": page,
+                        "limit": limit,
+                        "offset": offset
+                    },
+                    "ai_analysis_performed": perform_ai_analysis,
+                    "scraping_attempted": len(deals) == 0 and search.query is not None and search.use_realtime_scraping,
+                    "scraping_success": len(deals) > 0 and search.query is not None and search.use_realtime_scraping,
+                    "real_time_search": search.use_realtime_scraping,
+                    "search_time_ms": search_time_ms
                 }
             }
-            
         except Exception as e:
-            logger.error(f"Error searching deals: {str(e)}")
-            raise DealError(f"Failed to search deals: {str(e)}")
-            
+            logger.error(f"Error searching deals: {str(e)}", exc_info=True)
+            raise
+
     async def _create_deal_from_scraped_data(self, deal_data: Dict[str, Any]) -> Optional[Deal]:
         """Create a deal from scraped data.
         
@@ -1144,7 +1166,83 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                 logger.info(f"Deal with URL {deal_data['url']} already exists, skipping creation")
                 return existing_deal
                 
+            # Use system admin user ID if no user ID is provided
+            if not deal_data.get('user_id'):
+                # Get system admin user ID from settings
+                from core.config import settings
+                system_user_id = settings.SYSTEM_USER_ID
+                deal_data['user_id'] = UUID(system_user_id)
+                logger.info(f"No user ID provided, using system admin user ID: {system_user_id}")
+
+            # Ensure seller_info contains rating and reviews if available
+            if 'seller_info' not in deal_data:
+                deal_data['seller_info'] = {}
+            
+            # If seller_info doesn't have a rating but the product has one, use that
+            if 'seller_info' in deal_data and (
+                'rating' not in deal_data['seller_info'] or 
+                not deal_data['seller_info']['rating']
+            ):
+                # Check for rating in deal_metadata
+                if 'deal_metadata' in deal_data and deal_data['deal_metadata']:
+                    if 'rating' in deal_data['deal_metadata']:
+                        try:
+                            rating = deal_data['deal_metadata']['rating']
+                            # Convert string ratings to float
+                            if isinstance(rating, str):
+                                rating = float(rating)
+                            deal_data['seller_info']['rating'] = rating
+                            logger.info(f"Using rating from deal_metadata: {rating}")
+                        except (ValueError, TypeError):
+                            logger.warning(f"Failed to parse rating from deal_metadata: {deal_data['deal_metadata'].get('rating')}")
+                # Check for rating directly in deal_data
+                elif 'rating' in deal_data:
+                    try:
+                        rating = deal_data['rating']
+                        if isinstance(rating, str):
+                            rating = float(rating)
+                        deal_data['seller_info']['rating'] = rating
+                        logger.info(f"Using rating from deal_data: {rating}")
+                    except (ValueError, TypeError):
+                        logger.warning(f"Failed to parse rating from deal_data: {deal_data.get('rating')}")
+            
+            # Similar for reviews count
+            if 'seller_info' in deal_data and (
+                'reviews' not in deal_data['seller_info'] or 
+                not deal_data['seller_info'].get('reviews')
+            ):
+                # Check for review_count in deal_metadata
+                if 'deal_metadata' in deal_data and deal_data['deal_metadata']:
+                    if 'review_count' in deal_data['deal_metadata']:
+                        try:
+                            reviews = deal_data['deal_metadata']['review_count']
+                            # Convert string to int
+                            if isinstance(reviews, str):
+                                reviews = int(reviews)
+                            deal_data['seller_info']['reviews'] = reviews
+                            logger.info(f"Using reviews from deal_metadata: {reviews}")
+                        except (ValueError, TypeError):
+                            logger.warning(f"Failed to parse reviews from deal_metadata: {deal_data['deal_metadata'].get('review_count')}")
+                # Check for reviews directly in deal_data
+                elif 'review_count' in deal_data:
+                    try:
+                        reviews = deal_data['review_count']
+                        if isinstance(reviews, str):
+                            reviews = int(reviews)
+                        deal_data['seller_info']['reviews'] = reviews
+                        logger.info(f"Using reviews from deal_data: {reviews}")
+                    except (ValueError, TypeError):
+                        logger.warning(f"Failed to parse reviews from deal_data: {deal_data.get('review_count')}")
+                
             # Create new deal
+            logger.info(f"Creating new deal from scraped data: {deal_data['title']}")
+            logger.info(f"Description available: {bool(deal_data.get('description'))}")
+            if deal_data.get('description'):
+                logger.info(f"Description length: {len(deal_data['description'])}")
+                logger.info(f"Description preview: {deal_data['description'][:100]}")
+            else:
+                logger.warning("No description available for scraped deal")
+                
             new_deal = Deal(
                 user_id=deal_data['user_id'],
                 market_id=deal_data['market_id'],
@@ -1175,50 +1273,249 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             await self.db.rollback()
             return None
 
-    async def _convert_to_response(self, deal: Deal, user_id: Optional[UUID] = None) -> DealResponse:
-        """Convert a deal model to a response model"""
-        # Implement the conversion logic
-        is_tracked = False
-        if user_id and deal.tracked_by_users:
-            is_tracked = any(user.id == user_id for user in deal.tracked_by_users)
+    def _convert_to_response(self, deal: Deal, user_id: Optional[UUID] = None, include_ai_analysis: bool = True, analysis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Convert a Deal model to a response model.
+        
+        Args:
+            deal: The Deal instance to convert
+            user_id: Optional user ID to check tracking status
+            include_ai_analysis: Whether to include AI analysis data
+            analysis: Optional pre-generated analysis data
             
-        # Get price history or provide empty list
-        price_history = []
-        if hasattr(deal, 'price_history') and deal.price_history:
-            price_history = [
-                {
-                    "price": str(ph.price),
-                    "timestamp": ph.timestamp.isoformat(),
-                    "source": ph.source
-                } for ph in deal.price_history
-            ]
+        Returns:
+            Deal data in response format
+        """
+        try:
+            logger.info(f"Converting deal {deal.id} to response model, include_ai_analysis={include_ai_analysis}")
             
-        # Default found_at to created_at if not available
-        found_at = deal.found_at if hasattr(deal, 'found_at') and deal.found_at else deal.created_at
+            # Get market name (safely)
+            market_name = "Unknown Market"
+            # DON'T access deal.market directly - use market_id only to avoid lazy loading
+            if hasattr(deal, 'market_id') and deal.market_id:
+                # Use generic name based on ID
+                market_name = f"Market {deal.market_id.hex[:8]}"
+                
+            # Check if deal is tracked by user - carefully to avoid lazy loading
+            is_tracked = False
+            # Only attempt this if tracked_by_users was eagerly loaded
+            if user_id and hasattr(deal, '_sa_instance_state'):
+                # Check if tracked_by_users is already loaded
+                if 'tracked_by_users' in deal._sa_instance_state.loaded_attributes:
+                    tracking_entries = [t for t in deal.tracked_by_users if t.user_id == user_id]
+                    is_tracked = len(tracking_entries) > 0
+                    logger.debug(f"Deal tracking status for user {user_id}: {is_tracked}")
             
-        return DealResponse(
-            id=deal.id,
-            title=deal.title,
-            description=deal.description,
-            price=deal.price,
-            original_price=deal.original_price,
-            currency=deal.currency,
-            source=deal.source,
-            url=deal.url,
-            image_url=deal.image_url,
-            status=deal.status,
-            goal_id=deal.goal_id if hasattr(deal, 'goal_id') else UUID('00000000-0000-0000-0000-000000000000'),
-            market_id=deal.market_id,
-            found_at=found_at,
-            seller_info=deal.seller_info if hasattr(deal, 'seller_info') else {},
-            availability=deal.availability if hasattr(deal, 'availability') else {},
-            latest_score=deal.latest_score if hasattr(deal, 'latest_score') else None,
-            price_history=price_history,
-            market_analysis=deal.market_analysis if hasattr(deal, 'market_analysis') else None,
-            deal_score=deal.deal_score if hasattr(deal, 'deal_score') else None,
-            created_at=deal.created_at,
-            updated_at=deal.updated_at
-        )
+            # Safely handle original price
+            original_price = None
+            if deal.original_price:
+                original_price = float(deal.original_price)
+                
+            # Prepare seller_info with rating if available
+            seller_info = {}
+            if deal.seller_info:
+                seller_info = deal.seller_info
+                
+                # Ensure rating is included if available
+                if 'rating' not in seller_info or not seller_info['rating']:
+                    # Try to get rating from deal_metadata
+                    if deal.deal_metadata and 'rating' in deal.deal_metadata:
+                        try:
+                            rating_value = deal.deal_metadata['rating']
+                            # Normalize rating value
+                            if isinstance(rating_value, str):
+                                rating_value = float(rating_value)
+                            seller_info['rating'] = rating_value
+                        except (ValueError, TypeError):
+                            logger.warning(f"Failed to parse rating from deal_metadata: {deal.deal_metadata.get('rating')}")
+                
+                # Ensure reviews count is included if available
+                if 'reviews' not in seller_info or not seller_info.get('reviews'):
+                    # Try to get reviews from deal_metadata
+                    if deal.deal_metadata and 'review_count' in deal.deal_metadata:
+                        try:
+                            reviews_value = deal.deal_metadata['review_count']
+                            # Normalize reviews value
+                            if isinstance(reviews_value, str):
+                                reviews_value = int(reviews_value)
+                            seller_info['reviews'] = reviews_value
+                        except (ValueError, TypeError):
+                            logger.warning(f"Failed to parse review_count from deal_metadata: {deal.deal_metadata.get('review_count')}")
+            
+            # Create a reviews object for the response
+            reviews = {
+                'average_rating': 0,
+                'count': 0
+            }
+            
+            # Populate reviews from seller_info if available
+            if seller_info and 'rating' in seller_info:
+                reviews['average_rating'] = seller_info['rating']
+            if seller_info and 'reviews' in seller_info:
+                reviews['count'] = seller_info['reviews']
+            
+            # Also check deal_metadata for reviews data
+            if deal.deal_metadata:
+                if 'rating' in deal.deal_metadata and not reviews['average_rating']:
+                    try:
+                        rating = deal.deal_metadata['rating']
+                        if isinstance(rating, str):
+                            rating = float(rating)
+                        reviews['average_rating'] = rating
+                    except (ValueError, TypeError):
+                        pass
+                        
+                if 'review_count' in deal.deal_metadata and not reviews['count']:
+                    try:
+                        count = deal.deal_metadata['review_count']
+                        if isinstance(count, str):
+                            count = int(count)
+                        reviews['count'] = count
+                    except (ValueError, TypeError):
+                        pass
+                        
+            # Build response with our enhanced data
+            response = {
+                "id": str(deal.id),
+                "title": deal.title,
+                "description": deal.description or "",
+                "price": float(deal.price),
+                "original_price": original_price,
+                "currency": deal.currency,
+                "url": deal.url,
+                "image_url": deal.image_url,
+                "source": deal.source,
+                "category": deal.category,
+                "market_id": str(deal.market_id),
+                "goal_id": str(deal.goal_id) if deal.goal_id else None,
+                "market_name": market_name,
+                "found_at": deal.found_at.isoformat() if deal.found_at else None,
+                "expires_at": deal.expires_at.isoformat() if deal.expires_at else None,
+                "status": deal.status,
+                "seller_info": seller_info,
+                "deal_metadata": deal.deal_metadata or {},
+                "availability": {"in_stock": True},  # Default availability
+                "is_tracked": is_tracked,
+                "reviews": reviews,  # Add the reviews object to response
+                "created_at": deal.created_at.isoformat() if deal.created_at else None,
+                "updated_at": deal.updated_at.isoformat() if deal.updated_at else None,
+                "latest_score": float(deal.score) if deal.score else None,
+                "price_history": [],  # Placeholder, filled in by specific endpoints
+                "market_analysis": None,  # Placeholder for market data
+                "deal_score": float(deal.score) if deal.score else None,
+                "features": None,  # For future use
+            }
+            
+            # Handle AI analysis
+            ai_analysis = None
+            if include_ai_analysis:
+                # Use provided analysis or get from deal
+                if analysis:
+                    logger.info(f"Using provided analysis for deal {deal.id}")
+                    ai_analysis = analysis
+                    # Log the source of the score
+                    if 'score' in analysis:
+                        logger.info(f"Using provided AI score: {analysis['score']}")
+                        
+                    # Always verify we have recommendations
+                    if 'recommendations' not in analysis or not analysis['recommendations']:
+                        logger.warning(f"No recommendations in provided analysis, adding defaults")
+                        ai_analysis['recommendations'] = [
+                            f"Consider if this {deal.title} meets your specific needs and budget.",
+                            f"Research additional options in the {deal.category} category for comparison."
+                        ]
+                elif hasattr(deal, 'analysis') and deal.analysis:
+                    logger.info(f"Using deal.analysis for deal {deal.id}")
+                    ai_analysis = deal.analysis
+                    # Log the source of the score
+                    if 'score' in deal.analysis:
+                        logger.info(f"Using deal's stored AI score: {deal.analysis['score']}")
+                        
+                    # Always verify we have recommendations
+                    if 'recommendations' not in deal.analysis or not deal.analysis['recommendations']:
+                        logger.warning(f"No recommendations in deal.analysis, adding defaults")
+                        ai_analysis['recommendations'] = [
+                            f"Consider if this {deal.title} meets your specific needs and budget.",
+                            f"Research additional options in the {deal.category} category for comparison."
+                        ]
+                else:
+                    # Basic score calculation if no analysis available
+                    logger.warning(f"No analysis available for deal {deal.id}, calculating basic score")
+                    
+                    # Calculate discount if possible
+                    discount_percentage = 0
+                    if original_price and deal.price:
+                        discount_percentage = ((original_price - float(deal.price)) / original_price) * 100
+                        basic_score = min(discount_percentage / 100 * 0.8 + 0.2, 1.0)
+                    else:
+                        basic_score = 0.5
+                        
+                    logger.debug(f"Basic score calculated for deal {deal.id}: {basic_score}")
+                    
+                    # Create fallback analysis
+                    ai_analysis = {
+                        "deal_id": str(deal.id),
+                        "score": round(basic_score * 100) / 100,
+                        "confidence": 0.5,
+                        "price_analysis": {
+                            "discount_percentage": discount_percentage if 'discount_percentage' in locals() else 0,
+                            "is_good_deal": False,
+                            "price_trend": "unknown",
+                            "trend_details": {},
+                            "original_price": original_price,
+                            "current_price": float(deal.price)
+                        },
+                        "market_analysis": {
+                            "competition": "Average",
+                            "availability": "Unavailable",
+                            "market_info": {
+                                "name": deal.source.capitalize() if deal.source else "Unknown",
+                                "type": deal.source.lower() if deal.source else "unknown"
+                            },
+                            "price_position": "Mid-range",
+                            "popularity": "Unknown"
+                        },
+                        "recommendations": [
+                            f"Based on the {discount_percentage:.1f}% discount, this appears to be a reasonable deal if you need {deal.title}.",
+                            f"Compare with similar products in the {str(deal.category)} category to ensure you're getting the best value."
+                        ],
+                        "analysis_date": datetime.utcnow().isoformat(),
+                        "expiration_analysis": "Deal expires on " + deal.expires_at.isoformat() if deal.expires_at else "No expiration date provided"
+                    }
+                    logger.info(f"Created fallback AI analysis with score: {ai_analysis['score']}")
+            
+            response["ai_analysis"] = ai_analysis
+            
+            # Add the score to the main response body for easier access
+            if ai_analysis and 'score' in ai_analysis:
+                response['score'] = ai_analysis['score']
+                logger.debug(f"Added AI score to response: {ai_analysis['score']}")
+            
+            logger.info(f"Response model created for deal {deal.id}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error converting deal {deal.id} to response: {str(e)}", exc_info=True)
+            # Return basic deal info on error
+            return {
+                "id": str(deal.id),
+                "title": deal.title,
+                "description": deal.description or "",
+                "url": deal.url,
+                "price": str(deal.price),
+                "currency": deal.currency or "USD",
+                "source": deal.source or "unknown",
+                "status": deal.status if hasattr(deal, "status") else "unknown",
+                "market_id": str(deal.market_id) if hasattr(deal, "market_id") and deal.market_id else "unknown",
+                "category": str(deal.category) if hasattr(deal, "category") else "unknown",
+                "found_at": deal.found_at if hasattr(deal, "found_at") else datetime.utcnow(),
+                "created_at": deal.created_at if hasattr(deal, "created_at") else datetime.utcnow(),
+                "updated_at": deal.updated_at if hasattr(deal, "updated_at") else datetime.utcnow(),
+                "seller_info": {"name": "Unknown", "rating": 0, "reviews": 0},
+                "availability": {},
+                "price_history": [],
+                "latest_score": None,
+                "error": f"Error generating complete response: {str(e)}"
+            }
 
     async def get_deal_by_id(
         self,
@@ -1612,7 +1909,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             
             # Execute query
             result = await self._repository.db.execute(query)
-            deals = result.scalars().all()
+            deals = result.scalars().unique().all()
             
             return list(deals)
         except Exception as e:
@@ -1850,7 +2147,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             )
             
             result = await self._repository.db.execute(query)
-            expired_deals = result.scalars().all()
+            expired_deals = result.scalars().unique().all()
             
             # Update expired deals
             count = 0
@@ -2117,3 +2414,109 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
         except Exception as e:
             logger.error(f"Failed to get deals for user {user_id}: {str(e)}")
             raise DatabaseError(f"Failed to get deals: {str(e)}", "get_deals") from e
+
+    async def _perform_realtime_scraping(self, query: str, category: Optional[str] = None) -> List[Deal]:
+        """
+        Perform real-time scraping for deals based on search query and optional category.
+        
+        Args:
+            query: Search query
+            category: Optional category to filter by
+            
+        Returns:
+            List of Deal objects created from scraped results
+        """
+        logger.info(f"Performing real-time scraping for query: '{query}', category: {category}")
+        
+        created_deals = []
+        
+        try:
+            # Get active markets
+            markets_query = select(Market).where(Market.is_active == True)
+            result = await self.db.execute(markets_query)
+            markets = result.scalars().all()
+            
+            # Import here to avoid circular imports
+            from core.integrations.market_factory import MarketIntegrationFactory
+            
+            # Create market factory
+            market_factory = MarketIntegrationFactory()
+            
+            # For multi-word searches, prepare search terms for post-filtering
+            search_terms = query.lower().strip().split()
+            is_multi_word = len(search_terms) > 1
+            
+            # Search each market
+            for market in markets:
+                logger.info(f"Searching {market.name} for '{query}'")
+                try:
+                    # Use search_products method instead of get_integration
+                    products = await market_factory.search_products(market.type, query)
+                    
+                    # Apply post-filtering for multi-word searches
+                    if is_multi_word:
+                        filtered_products = []
+                        for product in products:
+                            # Get title and description for relevance checking
+                            title = (product.get("title") or product.get("name", "")).lower()
+                            description = product.get("description", "").lower()
+                            
+                            # Check if product contains ALL search terms in either title or description
+                            all_terms_present = True
+                            for term in search_terms:
+                                if term not in title and term not in description:
+                                    all_terms_present = False
+                                    break
+                                    
+                            # If product is relevant, add it to filtered list
+                            if all_terms_present:
+                                filtered_products.append(product)
+                                
+                        # Replace original products with filtered ones
+                        products = filtered_products
+                        logger.info(f"Post-filtering reduced products from {len(products)} to {len(filtered_products)} for query '{query}'")
+                    
+                    # Process each product and create deals
+                    for product in products:
+                        try:
+                            # Create deal from product data
+                            deal_data = {
+                                "user_id": settings.SYSTEM_USER_ID,
+                                "market_id": market.id,
+                                "title": product.get("title") or product.get("name", "Unknown Product"),
+                                "description": product.get("description", ""),
+                                "url": product.get("url", ""),
+                                "price": Decimal(str(product.get("price", 0))),
+                                "original_price": Decimal(str(product.get("original_price", 0))) if product.get("original_price") else None,
+                                "currency": product.get("currency", "USD"),
+                                "source": market.type,
+                                "image_url": product.get("image_url", ""),
+                                "category": category or "OTHER",
+                                "seller_info": {
+                                    "name": product.get("seller", "Unknown"),
+                                    "rating": product.get("rating", 0),
+                                    "reviews": product.get("review_count", 0)
+                                },
+                                "deal_metadata": product,
+                                "status": "active"
+                            }
+                            
+                            # Create the deal
+                            deal = await self._create_deal_from_scraped_data(deal_data)
+                            if deal:
+                                created_deals.append(deal)
+                            
+                        except Exception as e:
+                            logger.error(f"Error processing product: {str(e)}")
+                            continue
+                            
+                except Exception as e:
+                    logger.error(f"Error searching market {market.name}: {str(e)}")
+                    continue
+            
+            logger.info(f"Real-time scraping completed. Created {len(created_deals)} new deals.")
+            return created_deals
+            
+        except Exception as e:
+            logger.error(f"Error in real-time scraping: {str(e)}", exc_info=True)
+            return []

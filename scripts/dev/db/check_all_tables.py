@@ -1,6 +1,6 @@
 """Script to list all tables in both databases.
 
-This script connects to both deals and deals_test databases, lists all tables,
+This script connects to both agentic_deals and agentic_deals_test databases, lists all tables,
 and specifically checks for the wallet_transactions table.
 """
 
@@ -26,7 +26,7 @@ async def check_tables():
     """Check all tables in databases."""
     try:
         # Check both main and test databases
-        for db_name in ['deals', 'deals_test']:
+        for db_name in ['agentic_deals', 'agentic_deals_test']:
             # Connect to the database
             print(f"\nConnecting to the {db_name} database...")
             conn = await asyncpg.connect(

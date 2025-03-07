@@ -5,11 +5,14 @@ This module provides integration with ScraperAPI for web scraping capabilities.
 
 from typing import Optional, Dict, Any, List, Union
 import aiohttp
+import json
+import logging
 import asyncio
 from datetime import datetime
 from urllib.parse import urlencode, quote_plus, quote
+
 from pydantic import SecretStr
-import json
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
 from core.config import settings
 from core.utils.logger import get_logger
@@ -19,7 +22,7 @@ from core.exceptions.market_exceptions import (
     MarketConnectionError,
     ProductNotFoundError
 )
-from core.utils.redis import RedisClient
+from core.services.redis import get_redis_service
 
 logger = get_logger(__name__)
 
@@ -30,7 +33,7 @@ class ScraperAPIService:
         self,
         api_key: Optional[Union[str, SecretStr]] = None,
         base_url: Optional[str] = None,
-        redis_client: Optional[RedisClient] = None
+        redis_client: Optional[Any] = None
     ):
         # Handle API key initialization
         if api_key is None:
@@ -42,23 +45,17 @@ class ScraperAPIService:
             self.api_key = str(api_key)
 
         self.base_url = base_url or settings.SCRAPER_API_BASE_URL
-        self.redis_client = redis_client or RedisClient()
+        self.redis_client = redis_client
+        # Redis client will be initialized asynchronously in the first request
+        
+        # Rate limiting
+        self.semaphore = asyncio.Semaphore(5)  # Limit concurrent requests
+        self.timeout = aiohttp.ClientTimeout(total=30)  # 30 second timeout
         
         # Configure limits from settings
         self.concurrent_limit = settings.SCRAPER_API_CONCURRENT_LIMIT
         self.requests_per_second = settings.SCRAPER_API_REQUESTS_PER_SECOND
         self.monthly_limit = settings.SCRAPER_API_MONTHLY_LIMIT
-        
-        # Initialize rate limiting semaphore
-        self.semaphore = asyncio.Semaphore(self.concurrent_limit)
-        
-        # Configure timeout
-        self.timeout = aiohttp.ClientTimeout(
-            total=60,  # 60 seconds total timeout
-            connect=10,  # 10 seconds connection timeout
-            sock_connect=10,  # 10 seconds to establish socket connection
-            sock_read=30  # 30 seconds to read socket data
-        )
 
     def _get_api_key(self) -> str:
         """Get API key value, handling both string and SecretStr types."""
@@ -75,6 +72,10 @@ class ScraperAPIService:
     ) -> Dict[str, Any]:
         """Make a request to ScraperAPI with retries and caching."""
         params = params or {}
+        
+        # Initialize Redis client if needed
+        if self.redis_client is None:
+            await self._init_redis_client()
         
         # Check if this is a structured data endpoint
         is_structured = 'structured' in target_url
@@ -143,7 +144,7 @@ class ScraperAPIService:
                                         await self.redis_client.set(
                                             cache_key,
                                             result,
-                                            expire=cache_ttl
+                                            ex=cache_ttl
                                         )
                                     except Exception as e:
                                         logger.warning(f"Redis cache saving error (ignoring and continuing): {str(e)}")
@@ -231,6 +232,10 @@ class ScraperAPIService:
     
     async def _track_credit_usage(self, request_type: str = 'ecommerce'):
         """Track API credit usage."""
+        # Initialize Redis client if needed
+        if self.redis_client is None:
+            await self._init_redis_client()
+            
         if not self.redis_client:
             logger.warning("Redis client not available, skipping credit tracking")
             return
@@ -238,11 +243,14 @@ class ScraperAPIService:
         try:
             credits = 5 if request_type == 'ecommerce' else 1
             date_key = datetime.utcnow().strftime('%Y-%m')
+            key = f'scraper_api:credits:{date_key}'
             
-            async with self.redis_client.pipeline() as pipe:
-                pipe.incrby(f'scraper_api:credits:{date_key}', credits)
-                pipe.expire(f'scraper_api:credits:{date_key}', 60 * 60 * 24 * 35)  # 35 days
-                await pipe.execute()
+            # Use direct Redis client methods instead of pipeline
+            try:
+                await self.redis_client.incrby(key, credits)
+                await self.redis_client.expire(key, 60 * 60 * 24 * 35)  # 35 days
+            except Exception as e:
+                logger.warning(f"Redis credit tracking operation failed: {str(e)}")
         except Exception as e:
             logger.warning(f"Redis credit tracking error (ignoring and continuing): {str(e)}")
             # Continue without tracking if Redis fails
@@ -396,6 +404,47 @@ class ScraperAPIService:
                         logger.warning(f"Could not extract valid price for product {product_id}")
                         continue
                     
+                    # Extract original price / list price
+                    original_price = None
+                    for orig_price_field in ['original_price', 'list_price', 'was_price', 'regular_price', 'msrp', 'strike_price']:
+                        if orig_price_field in product and product[orig_price_field]:
+                            try:
+                                orig_price_str = str(product[orig_price_field])
+                                # Remove currency symbols and commas
+                                orig_price_str = orig_price_str.replace('$', '').replace(',', '').strip()
+                                # Handle ranges (take the higher price)
+                                if ' - ' in orig_price_str:
+                                    orig_price_str = orig_price_str.split(' - ')[1]
+                                original_price = float(orig_price_str)
+                                
+                                # Ensure original price is higher than current price
+                                if original_price <= price:
+                                    logger.debug(f"Original price {original_price} is not higher than current price {price}, ignoring")
+                                    original_price = None
+                                break
+                            except (ValueError, TypeError) as e:
+                                logger.debug(f"Failed to parse original price '{product[orig_price_field]}' for product {product_id}: {e}")
+                                continue
+                    
+                    # Try to extract from price info if it's a dictionary
+                    if original_price is None and 'price_info' in product and isinstance(product['price_info'], dict):
+                        price_info = product['price_info']
+                        for orig_key in ['original', 'was', 'list', 'msrp', 'regular']:
+                            if orig_key in price_info and price_info[orig_key]:
+                                try:
+                                    orig_price_str = str(price_info[orig_key])
+                                    orig_price_str = orig_price_str.replace('$', '').replace(',', '').strip()
+                                    original_price = float(orig_price_str)
+                                    
+                                    # Ensure original price is higher than current price
+                                    if original_price <= price:
+                                        logger.debug(f"Original price {original_price} from price_info is not higher than current price {price}, ignoring")
+                                        original_price = None
+                                    break
+                                except (ValueError, TypeError) as e:
+                                    logger.debug(f"Failed to parse original price from price_info: {e}")
+                                    continue
+                    
                     # Extract image URL
                     image_url = None
                     for img_field in ['image', 'main_image', 'productImage', 'image_url', 'thumbnail']:
@@ -403,13 +452,115 @@ class ScraperAPIService:
                             image_url = str(product[img_field])
                             break
                     
+                    # Extract category
+                    category = 'electronics'  # Default
+                    if 'category' in product:
+                        category = product['category']
+                    elif 'categories' in product and isinstance(product['categories'], list) and product['categories']:
+                        category = product['categories'][0]
+                    
+                    # Extract product features
+                    features = []
+                    if 'features' in product and isinstance(product['features'], list):
+                        features = product['features']
+                    elif 'specifications' in product and isinstance(product['specifications'], list):
+                        features = [f"{spec.get('name', '')}: {spec.get('value', '')}" for spec in product['specifications']]
+                    
+                    # Extract seller info
+                    seller_info = {
+                        'name': product.get('seller', 'Amazon'),
+                        'rating': float(product.get('seller_rating', 0)),
+                        'condition': product.get('condition', 'New')
+                    }
+                    
+                    # Add reviews count to seller info if available
+                    review_count = int(product.get('rating', {}).get('numberOfReviews', product.get('numberOfReviews', 0))) if isinstance(product.get('rating'), dict) else int(product.get('reviews', product.get('numberOfReviews', 0)))
+                    if review_count > 0:
+                        seller_info['reviews'] = review_count
+                    
+                    # Get product rating (prefer average rating if available)
+                    product_rating = float(product.get('rating', {}).get('averageRating', product.get('averageRating', 0.0))) if isinstance(product.get('rating'), dict) else float(product.get('rating', product.get('averageRating', 0.0)))
+                    
+                    # If seller rating is not available but product rating is, use product rating for seller
+                    if seller_info['rating'] == 0 and product_rating > 0:
+                        seller_info['rating'] = product_rating
+                    
+                    # Extract shipping info
+                    shipping_info = {
+                        'free_shipping': 'free_shipping' in product and product['free_shipping'] is True
+                    }
+                    if 'shipping' in product:
+                        if isinstance(product['shipping'], dict):
+                            shipping_info.update(product['shipping'])
+                        elif isinstance(product['shipping'], str):
+                            shipping_info['message'] = product['shipping']
+                    
+                    # Calculate a basic deal score based on discount and reviews
+                    deal_score = 5.0  # Default middle score
+                    if original_price and price:
+                        discount = (original_price - price) / original_price
+                        # Score 0-5 based on discount (0-50%)
+                        discount_score = min(5, discount * 10)
+                        
+                        # Get review score (0-5)
+                        review_score = min(5, float(product.get('rating', 0)))
+                        
+                        # Combine scores
+                        deal_score = (discount_score + review_score) / 2
+                    
+                    # Extract description - check multiple possible field names
+                    description = None
+                    for desc_field in ['description', 'product_description', 'about', 'about_product', 'overview', 'details', 'summary']:
+                        if desc_field in product and product[desc_field]:
+                            # Check if it's a string or a list
+                            if isinstance(product[desc_field], str) and len(product[desc_field].strip()) > 0:
+                                description = product[desc_field].strip()
+                                logger.debug(f"Found description in field '{desc_field}': {description[:100]}...")
+                                break
+                            elif isinstance(product[desc_field], list) and len(product[desc_field]) > 0:
+                                # Join list items into a string
+                                description = " ".join([str(item) for item in product[desc_field] if item])
+                                logger.debug(f"Found description in list field '{desc_field}': {description[:100]}...")
+                                break
+                    
+                    # If no description found in primary fields, check for it in other structures
+                    if not description:
+                        # Check in product_information if it exists
+                        if 'product_information' in product and isinstance(product['product_information'], dict):
+                            for key, value in product['product_information'].items():
+                                if 'description' in key.lower() and value:
+                                    description = value if isinstance(value, str) else str(value)
+                                    logger.debug(f"Found description in product_information: {key}")
+                                    break
+                        
+                        # Check in the features as a fallback
+                        if not description and 'features' in product and isinstance(product['features'], list) and product['features']:
+                            description = "Features: " + " ".join(str(f) for f in product['features'])
+                            logger.debug(f"Using features as description fallback: {description[:100]}...")
+                    
+                    # Fallback to a generic description based on the product title if still no description
+                    if not description or len(description.strip()) == 0:
+                        title = product.get('title') or product.get('name', 'Product')
+                        description = f"This is a {title} available on Amazon. No detailed description is available."
+                        logger.debug("Created generic description")
+
+                    # Make sure description is not None before adding to normalized_product
+                    if not description:
+                        description = ""
+
+                    # Add debug log to check the final description
+                    logger.info(f"Final description for product {product_id}: {description[:100]}...")
+                    
+                    # Now create the normalized product with the description included
                     normalized_product = {
                         'id': product_id,
                         'asin': product_id,
                         'title': title,
                         'name': title,
+                        'description': description,  # Include the description here
                         'price': price,
                         'price_string': f"${price:.2f}",
+                        'original_price': original_price,
                         'currency': 'USD',
                         'url': f"https://www.amazon.com/dp/{product_id}",
                         'market_type': 'amazon',
@@ -417,12 +568,18 @@ class ScraperAPIService:
                         'review_count': int(product.get('rating', {}).get('numberOfReviews', product.get('numberOfReviews', 0))) if isinstance(product.get('rating'), dict) else int(product.get('reviews', product.get('numberOfReviews', 0))),
                         'image_url': image_url or '',
                         'availability': bool(product.get('available', True)),
+                        'category': category,
+                        'features': features[:5],  # Limit features to top 5
+                        'seller_info': seller_info,
+                        'shipping_info': shipping_info,
+                        'deal_score': deal_score,
                         'metadata': {
                             'source': 'amazon',
                             'timestamp': datetime.utcnow().isoformat(),
                             'raw_fields': list(product.keys())
                         }
                     }
+                    
                     normalized_products.append(normalized_product)
                     
                 except Exception as e:
@@ -465,12 +622,48 @@ class ScraperAPIService:
                     product_id=product_id
                 )
 
+            # Extract description from various potential fields
+            description = None
+            for field in ['description', 'product_description', 'about', 'about_product', 'overview']:
+                if field in result and result[field]:
+                    desc_content = result[field]
+                    if isinstance(desc_content, str) and len(desc_content.strip()) > 0:
+                        description = desc_content
+                        logger.debug(f"Found description in field: {field}")
+                        break
+                    elif isinstance(desc_content, list) and desc_content:
+                        description = " ".join([str(item) for item in desc_content if item])
+                        logger.debug(f"Found description list in field: {field}")
+                        break
+
+            # Check product information if no description found
+            if not description and 'product_information' in result and result['product_information']:
+                for key, value in result['product_information'].items():
+                    if 'description' in key.lower() and value:
+                        description = value if isinstance(value, str) else str(value)
+                        logger.debug(f"Found description in product_information: {key}")
+                        break
+
+            # Check for features if no description found
+            if not description and 'features' in result and result['features']:
+                features = result.get('features', [])
+                if features and isinstance(features, list):
+                    description = " ".join([str(feature) for feature in features if feature])
+                    logger.debug("Created description from features")
+
+            # Create generic description as last resort
+            if not description or len(description.strip()) == 0:
+                title = result.get('name', 'Product')
+                description = f"This is a {title} available on Amazon. No detailed description is available."
+                logger.debug("Created generic description")
+
             # Normalize the response
             normalized_product = {
                 'id': product_id,
                 'asin': product_id,
                 'name': result.get('name'),
                 'title': result.get('name'),
+                'description': description,  # Include the extracted description
                 'price': float(result.get('price', {}).get('current_price', 0.0)),
                 'price_string': result.get('price', {}).get('current_price_string', '$0.00'),
                 'currency': result.get('price', {}).get('currency', 'USD'),
@@ -644,10 +837,47 @@ class ScraperAPIService:
                                 image_url = f"https:{image_url}"
                             break
                     
+                    # Extract description - check multiple possible field names
+                    description = None
+                    for desc_field in ['description', 'product_description', 'about', 'about_product', 'overview', 'details', 'summary']:
+                        if desc_field in product and product[desc_field]:
+                            # Check if it's a string or a list
+                            if isinstance(product[desc_field], str) and len(product[desc_field].strip()) > 0:
+                                description = product[desc_field].strip()
+                                logger.debug(f"Found description in field '{desc_field}': {description[:100]}...")
+                                break
+                            elif isinstance(product[desc_field], list) and len(product[desc_field]) > 0:
+                                # Join list items into a string
+                                description = " ".join([str(item) for item in product[desc_field] if item])
+                                logger.debug(f"Found description in list field '{desc_field}': {description[:100]}...")
+                                break
+                    
+                    # If no description found in primary fields, check for it in other structures
+                    if not description:
+                        # Check in product_information if it exists
+                        if 'product_information' in product and isinstance(product['product_information'], dict):
+                            for key, value in product['product_information'].items():
+                                if 'description' in key.lower() and value:
+                                    description = str(value)
+                                    logger.debug(f"Found description in product_information.{key}: {description[:100]}...")
+                                    break
+                        
+                        # Check in the features as a fallback
+                        if not description and 'features' in product and isinstance(product['features'], list) and product['features']:
+                            description = "Features: " + " ".join(str(f) for f in product['features'])
+                            logger.debug(f"Using features as description fallback: {description[:100]}...")
+                    
+                    # Fallback to a generic description based on the product title if still no description
+                    if not description:
+                        description = f"Product details for {title}. Check the seller's website for more information."
+                        logger.debug(f"Using generic description fallback for product {product_id}")
+                    
+                    # Now create the normalized product with the description included
                     normalized_product = {
                         'id': product_id,
                         'title': title,
                         'name': title,
+                        'description': description,  # Include the description here
                         'price': price,
                         'price_string': f"${price:.2f}",
                         'currency': 'USD',
@@ -780,10 +1010,47 @@ class ScraperAPIService:
                     image_url = f"https:{image_url}"
                 break
 
-        return {
+        # Extract description - check multiple possible field names
+        description = None
+        for desc_field in ['description', 'product_description', 'about', 'about_product', 'overview', 'details', 'summary']:
+            if desc_field in product and product[desc_field]:
+                # Check if it's a string or a list
+                if isinstance(product[desc_field], str) and len(product[desc_field].strip()) > 0:
+                    description = product[desc_field].strip()
+                    logger.debug(f"Found description in field '{desc_field}': {description[:100]}...")
+                    break
+                elif isinstance(product[desc_field], list) and len(product[desc_field]) > 0:
+                    # Join list items into a string
+                    description = " ".join([str(item) for item in product[desc_field] if item])
+                    logger.debug(f"Found description in list field '{desc_field}': {description[:100]}...")
+                    break
+        
+        # If no description found in primary fields, check for it in other structures
+        if not description:
+            # Check in product_information if it exists
+            if 'product_information' in product and isinstance(product['product_information'], dict):
+                for key, value in product['product_information'].items():
+                    if 'description' in key.lower() and value:
+                        description = str(value)
+                        logger.debug(f"Found description in product_information.{key}: {description[:100]}...")
+                        break
+            
+            # Check in the features as a fallback
+            if not description and 'features' in product and isinstance(product['features'], list) and product['features']:
+                description = "Features: " + " ".join(str(f) for f in product['features'])
+                logger.debug(f"Using features as description fallback: {description[:100]}...")
+        
+        # Fallback to a generic description based on the product title if still no description
+        if not description:
+            description = f"Product details for {title}. Check the seller's website for more information."
+            logger.debug(f"Using generic description fallback for product {product_id}")
+        
+        # Now create the normalized product with the description included
+        normalized_product = {
             'id': product_id,
             'title': title,
             'name': title,
+            'description': description,  # Include the description here
             'price': price,
             'price_string': f"${price:.2f}",
             'currency': 'USD',
@@ -799,3 +1066,30 @@ class ScraperAPIService:
                 'raw_fields': list(product.keys())
             }
         }
+
+        return normalized_product
+
+    async def _init_redis_client(self):
+        """Initialize the Redis client if it's not provided."""
+        if self.redis_client is not None:
+            return
+        
+        try:
+            # Use the Redis service instead of creating a new client
+            redis_service = await get_redis_service()
+            
+            # Test connection with a simple ping
+            try:
+                if await redis_service.ping():
+                    self.redis_client = redis_service
+                    logger.debug("Redis client initialized successfully")
+                else:
+                    logger.warning("Redis ping test failed, continuing without Redis")
+                    self.redis_client = None
+            except Exception as ping_error:
+                logger.warning(f"Redis ping test failed: {str(ping_error)}, continuing without Redis")
+                self.redis_client = None
+        
+        except Exception as e:
+            logger.warning(f"Failed to initialize Redis client: {str(e)}, continuing without Redis")
+            self.redis_client = None

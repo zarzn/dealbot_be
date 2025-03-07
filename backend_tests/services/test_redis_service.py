@@ -47,16 +47,26 @@ async def redis_service(redis_mock):
 @pytest.mark.service
 async def test_redis_service_initialization():
     """Test Redis service initialization."""
-    with patch('core.services.redis.RedisService._get_pool', 
-              return_value=AsyncMock()) as mock_get_pool:
-        with patch('core.services.redis.Redis', 
-                  return_value=AsyncMock()) as mock_redis:
-            
-            # Test service initialization
-            service = RedisService()
-            await service.init()
-            assert service._client is not None
-            mock_get_pool.assert_called_once()
+    # Create a mock Redis client and pool
+    mock_pool = AsyncMock()
+    mock_redis = AsyncMock()
+    
+    # Patch both the Redis class and the _get_pool method
+    with patch('core.services.redis.Redis', return_value=mock_redis) as mock_redis_class, \
+         patch.object(RedisService, '_get_pool', return_value=mock_pool):
+        
+        # Initialize the service
+        service = RedisService()
+        await service.init()
+        
+        # Verify the Redis client was created
+        assert service._client is not None
+        # Verify the Redis class was called with the correct arguments
+        mock_redis_class.assert_called_once()
+        # Verify the connection parameters were passed correctly
+        call_args = mock_redis_class.call_args
+        assert 'connection_pool' in call_args[1]
+        assert call_args[1]['connection_pool'] == mock_pool
 
 @pytest.mark.asyncio
 @pytest.mark.service
@@ -65,15 +75,19 @@ async def test_get_redis_service():
     with patch('core.services.redis.RedisService', new_callable=MagicMock) as mock_redis_service:
         # Set up the mock
         mock_instance = MagicMock()
+        mock_instance.init = AsyncMock()  # Make init an async mock
         mock_redis_service.return_value = mock_instance
         
-        # Test the factory function
-        service1 = await get_redis_service()
-        service2 = await get_redis_service()
-        
-        # Should return the same instance (singleton)
-        assert service1 == service2
-        mock_redis_service.assert_called_once()
+        # Patch the global instance to None to force creation of a new instance
+        with patch('core.services.redis._redis_service_instance', None):
+            # Test the factory function
+            service1 = await get_redis_service()
+            service2 = await get_redis_service()
+            
+            # Should return the same instance (singleton)
+            assert service1 == service2
+            mock_redis_service.assert_called_once()
+            mock_instance.init.assert_called_once()
 
 @pytest.mark.asyncio
 @pytest.mark.service
@@ -165,31 +179,40 @@ async def test_redis_setex(redis_service, redis_mock):
 
 @pytest.mark.asyncio
 @pytest.mark.service
-async def test_redis_token_blacklisting(redis_service, redis_mock):
-    """Test token blacklisting functionality."""
+async def test_redis_token_blacklisting():
+    """Test Redis token blacklisting functionality."""
+    # Create a Redis mock
+    redis_mock = AsyncMock()
+    
+    # Create a Redis service with the mock
+    redis_service = RedisService()
+    redis_service._client = redis_mock
+    
     # Setup
     token = "test_token_123"
     expires_delta = 60
     
+    # Mock the setex method to return True
+    redis_mock.setex = AsyncMock(return_value=True)
+    
     # Test blacklisting a token
     await redis_service.blacklist_token(token, expires_delta)
-    redis_mock.setex.assert_called_once_with(
-        f"blacklist:{token}", 
-        expires_delta,
-        "1"
-    )
+    
+    # Verify the setex method was called with the correct arguments
+    redis_mock.setex.assert_called_once_with(f"blacklist:{token}", expires_delta, "1")
+    
+    # Mock the get method for checking if a token is blacklisted
+    redis_mock.get = AsyncMock()
+    redis_mock.get.side_effect = lambda key: None if key != f"blacklist:{token}" else "1"
     
     # Test checking if token is blacklisted
-    redis_mock.exists.return_value = 0
-    is_blacklisted = await redis_service.is_token_blacklisted(token)
+    # First test when token is not blacklisted
+    is_blacklisted = await redis_service.is_token_blacklisted("non_blacklisted_token")
     assert not is_blacklisted
-    redis_mock.exists.assert_called_with(f"blacklist:{token}")
     
-    # Test with blacklisted token
-    redis_mock.exists.return_value = 1
+    # Then test when token is blacklisted
     is_blacklisted = await redis_service.is_token_blacklisted(token)
     assert is_blacklisted
-    redis_mock.exists.assert_called_with(f"blacklist:{token}")
 
 @pytest.mark.asyncio
 @pytest.mark.service

@@ -47,7 +47,7 @@ def setup_relationships():
     User.deals = relationship("Deal", back_populates="user")
     User.goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")
     User.notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
-    User.preferences = relationship("UserPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    User.preferences = relationship("UserPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan", overlaps="user_preferences,preferences_relation")
     User.chat_messages = relationship("ChatMessage", back_populates="user", cascade="all, delete-orphan")
     User.token_transactions = relationship("TokenTransaction", back_populates="user", cascade="all, delete-orphan")
     User.token_balance_history = relationship("TokenBalanceHistory", back_populates="user", cascade="all, delete-orphan")
@@ -95,7 +95,7 @@ def setup_relationships():
     Notification.deal = relationship("Deal", back_populates="notifications")
 
     # UserPreferences relationships
-    UserPreferences.user = relationship("User", back_populates="preferences")
+    UserPreferences.user = relationship("User", back_populates="preferences", overlaps="user_preferences,preferences_relation")
 
     # TrackedDeal relationships
     TrackedDeal.user = relationship("User", back_populates="tracked_deals")

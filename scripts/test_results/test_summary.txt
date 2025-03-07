@@ -1,15 +1,6 @@
 # Test Results Summary
 
-Generated: 03/05/2025 02:48:05
+Generated: 03/05/2025 15:12:49
 
 **Note: Only running Core and Service tests. Integration and Feature tests excluded.**
 
-✅ Core tests: PASSED
-❌ Service tests: FAILED or had issues
-
-## Generated Reports:
-- Core_report.html
-- Feature_report.html
-- Integration_report.html
-- Service_report.html
-- test_report.html

@@ -105,7 +105,8 @@ async def test_list_goals(db_session, goal_service):
         goal = await GoalFactory.create_async(
             db_session=db_session,
             user=user,
-            priority=priorities[i].value
+            priority=priorities[i].value,
+            title=f"Goal for item {i}"  # Add unique suffix to title
         )
         goals.append(goal)
     

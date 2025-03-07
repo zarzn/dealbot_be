@@ -1,5 +1,9 @@
 #!/usr/bin/env pwsh
 
+param (
+    [switch]$SkipDependencyChecks = $false
+)
+
 # AI Agentic Deals System - Complete Test Suite Runner
 Write-Host "🚀 Starting AI Agentic Deals System Complete Test Suite" -ForegroundColor Cyan
 
@@ -13,6 +17,10 @@ Write-Host "Using the following paths:" -ForegroundColor Yellow
 Write-Host "BACKEND_ROOT: $BACKEND_ROOT" -ForegroundColor Yellow
 Write-Host "SCRIPTS_DIR: $SCRIPTS_DIR" -ForegroundColor Yellow
 Write-Host "RESULTS_DIR: $RESULTS_DIR" -ForegroundColor Yellow
+
+if ($SkipDependencyChecks) {
+    Write-Host "Dependency checks are disabled. All test categories will run regardless of dependencies." -ForegroundColor Yellow
+}
 
 # Test categories with their scripts and dependencies
 $TEST_CATEGORIES = [ordered]@{
@@ -50,6 +58,11 @@ function Can-RunCategory {
         [array]$Dependencies
     )
     
+    # If dependency checks are disabled, always return true
+    if ($SkipDependencyChecks) {
+        return $true
+    }
+    
     # If no dependencies, can always run
     if ($Dependencies.Count -eq 0) {
         return $true
@@ -75,6 +88,77 @@ try {
     "" | Out-File -FilePath $summaryFile -Append
     "Generated: $(Get-Date)" | Out-File -FilePath $summaryFile -Append
     "" | Out-File -FilePath $summaryFile -Append
+    
+    # Create a temporary Python script to generate the main report
+    $tempScriptPath = "$env:TEMP\generate_main_report.py"
+    
+    @"
+import sys
+import os
+import pytest
+from datetime import datetime
+
+# Set up paths
+results_dir = r'$RESULTS_DIR'
+test_reports = [
+    os.path.join(results_dir, 'core_report.html'),
+    os.path.join(results_dir, 'service_report.html'),
+    os.path.join(results_dir, 'feature_report.html'),
+    os.path.join(results_dir, 'integration_report.html')
+]
+
+# Generate a main report that links to all other reports
+main_report = os.path.join(results_dir, 'test_report.html')
+
+# Create HTML content
+html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>AI Agentic Deals System Test Reports</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        h1 {{ color: #333; }}
+        .report-link {{ 
+            display: block; 
+            margin: 10px 0; 
+            padding: 10px; 
+            background-color: #f0f0f0; 
+            border-radius: 5px;
+            text-decoration: none;
+            color: #333;
+        }}
+        .report-link:hover {{ background-color: #e0e0e0; }}
+        .timestamp {{ color: #666; font-size: 0.8em; }}
+    </style>
+</head>
+<body>
+    <h1>AI Agentic Deals System Test Reports</h1>
+    <p class="timestamp">Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+    
+    <h2>Available Test Reports:</h2>
+"""
+
+# Add links to individual reports
+for report in test_reports:
+    if os.path.exists(report):
+        report_name = os.path.basename(report)
+        last_modified = datetime.fromtimestamp(os.path.getmtime(report)).strftime('%Y-%m-%d %H:%M:%S')
+        html_content += f"""    <a href="{report_name}" class="report-link">
+        <strong>{report_name}</strong>
+        <div class="timestamp">Last updated: {last_modified}</div>
+    </a>
+"""
+    
+html_content += """</body>
+</html>"""
+
+# Write the HTML file
+with open(main_report, 'w') as f:
+    f.write(html_content)
+
+print(f"Main report generated at: {main_report}")
+"@ | Out-File -FilePath $tempScriptPath -Encoding utf8
     
     # Run tests for each category in order
     foreach ($category in $TEST_CATEGORIES.Keys) {
@@ -129,10 +213,22 @@ try {
     # List all generated HTML reports
     "" | Out-File -FilePath $summaryFile -Append
     "## Generated Reports:" | Out-File -FilePath $summaryFile -Append
+    
+    # Generate the main report
+    Write-Host "`nGenerating main test report..." -ForegroundColor Cyan
+    python $tempScriptPath
+    
+    # Remove the temporary script
+    Remove-Item -Path $tempScriptPath -Force -ErrorAction SilentlyContinue
+    
+    # List the reports
     $reportFiles = Get-ChildItem -Path $RESULTS_DIR -Filter "*_report.html" -ErrorAction SilentlyContinue
     if ($reportFiles) {
         foreach ($file in $reportFiles) {
             "- $($file.Name)" | Out-File -FilePath $summaryFile -Append
+            # Display the last modified time to verify reports are being updated
+            $lastModified = $file.LastWriteTime
+            "  Last updated: $lastModified" | Out-File -FilePath $summaryFile -Append
         }
     } else {
         "No report files were generated." | Out-File -FilePath $summaryFile -Append

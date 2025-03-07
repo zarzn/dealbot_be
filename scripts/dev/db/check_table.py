@@ -1,7 +1,8 @@
 from sqlalchemy import create_engine, text
+import sys
 
 # Create engine
-engine = create_engine('postgresql://postgres:12345678@localhost:5432/deals')
+engine = create_engine('postgresql://postgres:12345678@localhost:5432/agentic_deals')
 
 # Query to check table structure
 query = text('''

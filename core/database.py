@@ -58,11 +58,11 @@ elif is_test:
     echo = False  # Disable SQL logging in tests to improve performance
     echo_pool = False  # Disable pool logging in tests
 else:
-    # Development environment - use settings as defined
-    pool_size = settings.DB_POOL_SIZE
-    max_overflow = settings.DB_MAX_OVERFLOW
+    # Development environment - use settings as defined but increased for high load
+    pool_size = 20  # Significantly increased pool size for development (from 5)
+    max_overflow = 30  # Significantly increased max overflow for development (from 10)
     pool_timeout = settings.DB_POOL_TIMEOUT
-    pool_recycle = settings.DB_POOL_RECYCLE
+    pool_recycle = 900  # Reduced recycle time to free connections faster (from 1800)
     pool_pre_ping = True
     echo = settings.DEBUG  # Use debug setting for SQL logging
     echo_pool = False  # Disable pool logging to reduce noise
@@ -290,12 +290,24 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 async def get_async_db_session() -> AsyncSession:
-    """Get async database session."""
+    """Get async database session.
+    
+    Note: The caller is responsible for closing this session when done.
+    It's recommended to use get_db() or AsyncDatabaseSession instead
+    for automatic session management.
+    
+    Returns:
+        AsyncSession: Database session that must be manually closed
+    """
     session = AsyncSessionLocal()
     try:
+        # Just create and return the session
+        # The caller is responsible for closing it
         return session
     except Exception as e:
+        # Close the session if there's an error during creation
         await session.close()
+        logger.error(f"Error creating database session: {str(e)}")
         raise e
 
 @contextmanager
@@ -335,7 +347,7 @@ async def check_db_connection() -> bool:
     """Check database connection health efficiently.
     
     This function performs minimal health checks to avoid creating additional load.
-    In production, it will check for critical issues but avoid expensive operations.
+    It focuses on basic connectivity to ensure the database is reachable.
     
     Returns:
         bool: True if database connection is healthy, False otherwise
@@ -345,67 +357,32 @@ async def check_db_connection() -> bool:
         options = {"timeout": 3.0}
         
         # Use a lightweight connection for basic health check
-        async with async_engine.connect().execution_options(**options) as conn:
+        # Properly await the connect method and execution_options
+        conn = await async_engine.connect()
+        conn = await conn.execution_options(**options)
+        
+        try:
             # Basic connection test - most lightweight operation possible
-            await conn.execute(text("SELECT 1"))
+            result = await conn.execute(text("SELECT 1"))
+            value = await result.scalar()
             
-            # For AWS health checks, just return True after basic connectivity check
-            if os.environ.get("AWS_EXECUTION_ENV") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
-                return True
-            
-            # Skip detailed health checks in high traffic periods or if in a stressed state
-            if metrics.connection_failures_count > 5 or metrics.slow_queries_count > 10:
-                logger.info("Skipping detailed health checks due to recent connection issues")
-                return True
-            
-            # Database-specific health checks
-            if 'postgresql' in str(settings.DATABASE_URL).lower():
-                # Only run these checks in non-production or if explicitly configured
-                if not is_production or settings.ENABLE_DETAILED_HEALTH_CHECKS:
-                    try:
-                        # Check if the database is in recovery mode (standby)
-                        result = await conn.execute(text("SELECT pg_is_in_recovery()"))
-                        is_in_recovery = await result.scalar()
-                        
-                        # Only check for long-running transactions on primary instances
-                        # and only in production (less frequently)
-                        if not is_in_recovery and is_production and time.time() % 60 < 5:  # Run approximately every minute
-                            result = await conn.execute(text("""
-                                SELECT count(*) FROM pg_stat_activity 
-                                WHERE state = 'active' 
-                                AND (now() - xact_start) > '5 minutes'::interval
-                                LIMIT 1
-                            """))
-                            long_running_txns = await result.scalar()
-                            
-                            if long_running_txns > 0:
-                                logger.warning(f"Found {long_running_txns} long-running transactions")
-                    except Exception as e:
-                        logger.error(f"Error during PostgreSQL specific health checks: {str(e)}")
-                        # Don't fail the health check for this specific error
-            
-            elif 'sqlite' in str(settings.DATABASE_URL).lower():
-                # Only run these checks in dev/test or if explicitly configured
-                if not is_production or settings.ENABLE_DETAILED_HEALTH_CHECKS:
-                    try:
-                        # Use quick_check instead of integrity_check for better performance
-                        result = await conn.execute(text("PRAGMA quick_check(1)"))
-                        check_result = await result.scalar()
-                        
-                        if check_result != 'ok':
-                            logger.warning(f"SQLite quick_check returned: {check_result}")
-                    except Exception as e:
-                        logger.error(f"Error performing SQLite health checks: {str(e)}")
-                        # Don't fail the health check for this specific error
-            
+            # Verify we got the expected result
+            if value != 1:
+                logger.warning(f"Database health check returned unexpected value: {value}")
+                await conn.close()
+                return False
+                
+            logger.debug("Database health check passed")
+            await conn.close()
             return True
-    except SQLAlchemyError as e:
-        logger.error(f"Database health check failed: {str(e)}")
-        metrics.connection_failures.inc()
-        return False
+            
+        except Exception as e:
+            # Make sure to close the connection even if there's an error
+            await conn.close()
+            raise e
+            
     except Exception as e:
-        logger.error(f"Unexpected error during database health check: {str(e)}")
-        metrics.connection_failures.inc()
+        logger.error(f"Database health check failed: {str(e)}")
         return False
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

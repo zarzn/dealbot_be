@@ -2,12 +2,13 @@
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
+import json
 
 def check_markets():
     """Check markets in the database."""
     try:
         # Create engine with correct connection string
-        engine = create_engine('postgresql://postgres:12345678@localhost:5432/deals')
+        engine = create_engine('postgresql://postgres:12345678@localhost:5432/agentic_deals')
         Session = sessionmaker(bind=engine)
         session = Session()
 

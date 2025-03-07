@@ -44,7 +44,7 @@ cp .env.example .env.production
 | `SECRET_KEY` | Security key for JWT | Generate securely, keep private |
 | `POSTGRES_HOST` | Database host | `localhost` or `postgres` in Docker |
 | `POSTGRES_PORT` | Database port | `5432` |
-| `POSTGRES_DB` | Database name | `deals_production` |
+| `POSTGRES_DB` | Database name | `agentic_deals` |
 | `POSTGRES_USER` | Database user | `postgres` |
 | `POSTGRES_PASSWORD` | Database password | Strong password, keep private |
 | `REDIS_HOST` | Redis host | `localhost` or `redis` in Docker |
@@ -137,7 +137,7 @@ Before deploying a new version in production:
 
 1. Backup the existing database:
    ```bash
-   pg_dump -U postgres -F c -b -v -f backup_$(date +%Y%m%d%H%M%S).dump deals_production
+   pg_dump -U postgres -F c -b -v -f backup_$(date +%Y%m%d%H%M%S).dump agentic_deals
    ```
 
 2. Apply migrations carefully, testing first in a staging environment.

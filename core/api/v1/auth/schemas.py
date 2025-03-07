@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, validator
 
@@ -10,6 +10,19 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     name: Optional[str] = None
+    preferences: Optional[Dict[str, Any]] = None
+    referral_code: Optional[str] = None
+
+    @validator("password")
+    def validate_password_complexity(cls, v: str) -> str:
+        """Validate password complexity."""
+        import re
+        if not re.match(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$", v):
+            raise ValueError(
+                "Password must contain at least one uppercase letter, "
+                "one lowercase letter, one number, and one special character"
+            )
+        return v
 
 class LoginRequest(BaseModel):
     """Login request schema."""

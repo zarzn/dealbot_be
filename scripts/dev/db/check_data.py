@@ -6,7 +6,7 @@ async def check_data():
     conn = await asyncpg.connect(
         user='postgres',
         password='12345678',
-        database='deals_test',
+        database='agentic_deals_test',
         host='localhost',
         port=5432
     )

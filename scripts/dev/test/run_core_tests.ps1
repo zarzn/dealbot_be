@@ -89,7 +89,9 @@ exit_code = pytest.main([
     '-k', 'not integration and not feature',
     '--html='+os.path.join(results_dir, 'core_report.html'), 
     '--self-contained-html',
-    '--timeout=60'  # Add timeout for individual tests
+    '--timeout=60',  # Add timeout for individual tests
+    '--no-header',   # Remove header for cleaner output
+    '--tb=native'    # Use native traceback format for better readability
 ])
 
 sys.exit(exit_code)
@@ -99,19 +101,18 @@ sys.exit(exit_code)
     Write-Host "Running tests with script: $tempScriptPath" -ForegroundColor Yellow
     
     try {
-        # Run Python with timeout
-        $process = Start-Process -FilePath "python" -ArgumentList $tempScriptPath -PassThru
+        # Run Python directly without opening a new window and capture output
+        Write-Host "Running core tests..." -ForegroundColor Cyan
         
-        # Wait for up to 5 minutes
-        $completed = $process.WaitForExit(300000)
-        
-        if (-not $completed) {
-            Write-Host "Test execution timed out after 5 minutes, forcibly terminating..." -ForegroundColor Red
-            $process.Kill()
-            $exitCode = 2 # Custom code for timeout
-        } else {
-            $exitCode = $process.ExitCode
+        # First, remove any existing report to ensure a fresh one is created
+        $reportFile = "$RESULTS_DIR\core_report.html"
+        if (Test-Path $reportFile) {
+            Remove-Item -Path $reportFile -Force
         }
+        
+        # Run the tests directly (not using Start-Process)
+        python $tempScriptPath
+        $exitCode = $LASTEXITCODE
     }
     catch {
         Write-Host "Error running tests: $_" -ForegroundColor Red

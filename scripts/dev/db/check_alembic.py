@@ -1,6 +1,6 @@
 """Script to check alembic version in databases.
 
-This script connects to both deals and deals_test databases and checks
+This script connects to both agentic_deals and agentic_deals_test databases and checks
 the current alembic version to verify if migrations have been applied.
 """
 
@@ -16,7 +16,7 @@ async def check_alembic_version():
     """Check alembic version in databases."""
     try:
         # Check both main and test databases
-        for db_name in ['deals', 'deals_test']:
+        for db_name in ['agentic_deals', 'agentic_deals_test']:
             # Connect to the database
             print(f"\nConnecting to the {db_name} database...")
             conn = await asyncpg.connect(

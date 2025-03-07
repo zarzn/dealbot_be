@@ -142,6 +142,9 @@ async def get_optional_user(
     except HTTPException:
         return None
 
+# Add an alias for backward compatibility
+get_current_user_optional = get_optional_user
+
 async def get_admin_user(
     current_user: User = Depends(get_current_user)
 ) -> User:

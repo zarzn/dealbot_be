@@ -1,0 +1,36 @@
+{
+    "Certificate": {
+        "CertificateArn": "arn:aws:acm:us-east-1:586794462529:certificate/4af39d7c-b4d4-473c-a2f3-0696f1b22441",
+        "DomainName": "rebaton.ai",
+        "SubjectAlternativeNames": [
+            "rebaton.ai"
+        ],
+        "DomainValidationOptions": [
+            {
+                "DomainName": "rebaton.ai",
+                "ValidationDomain": "rebaton.ai",
+                "ValidationStatus": "PENDING_VALIDATION",
+                "ResourceRecord": {
+                    "Name": "_5565263aeabd07e264bead8b7e5c207a.rebaton.ai.",
+                    "Type": "CNAME",
+                    "Value": "_4e8b839fc308004769f6d919f9bf586a.zfyfvmchrl.acm-validations.aws."
+                },
+                "ValidationMethod": "DNS"
+            }
+        ],
+        "Subject": "CN=rebaton.ai",
+        "Issuer": "Amazon",
+        "CreatedAt": "2025-03-05T15:00:33.755000+08:00",
+        "Status": "PENDING_VALIDATION",
+        "KeyAlgorithm": "RSA-2048",
+        "SignatureAlgorithm": "SHA256WITHRSA",
+        "InUseBy": [],
+        "Type": "AMAZON_ISSUED",
+        "KeyUsages": [],
+        "ExtendedKeyUsages": [],
+        "RenewalEligibility": "INELIGIBLE",
+        "Options": {
+            "CertificateTransparencyLoggingPreference": "ENABLED"
+        }
+    }
+}

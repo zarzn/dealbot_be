@@ -11,17 +11,19 @@ WORKDIR /app
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
+COPY requirements-llm.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements-llm.txt
 
 # Copy the rest of the application
 COPY . .
 
 # Make scripts executable
-RUN chmod +x scripts/start.sh
+RUN chmod +x scripts/deployment/start.sh
 
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
 # Run the startup script
-CMD ["./scripts/start.sh"] 
+CMD ["./scripts/deployment/start.sh"] 

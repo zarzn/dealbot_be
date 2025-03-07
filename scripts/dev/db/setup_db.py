@@ -14,6 +14,7 @@ from sqlalchemy.exc import ProgrammingError
 from passlib.context import CryptContext
 from uuid import uuid4
 import argparse
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -32,29 +33,29 @@ def reset_database_docker():
         # Use docker exec to run commands in the postgres container
         subprocess.run(
             ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-c', 
-             "SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname IN ('deals', 'deals_test') AND pid <> pg_backend_pid()"],
+             "SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname IN ('agentic_deals', 'agentic_deals_test') AND pid <> pg_backend_pid()"],
             check=True
         )
         
         # Drop and recreate databases
         subprocess.run(
             ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-c', 
-             "DROP DATABASE IF EXISTS deals"],
+             "DROP DATABASE IF EXISTS agentic_deals"],
             check=True
         )
         subprocess.run(
             ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-c', 
-             "DROP DATABASE IF EXISTS deals_test"],
+             "DROP DATABASE IF EXISTS agentic_deals_test"],
             check=True
         )
         subprocess.run(
             ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-c', 
-             "CREATE DATABASE deals"],
+             "CREATE DATABASE agentic_deals"],
             check=True
         )
         subprocess.run(
             ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-c', 
-             "CREATE DATABASE deals_test"],
+             "CREATE DATABASE agentic_deals_test"],
             check=True
         )
         
@@ -83,15 +84,15 @@ def reset_database_local():
         conn.execute(text("""
             SELECT pg_terminate_backend(pg_stat_activity.pid)
             FROM pg_stat_activity
-            WHERE pg_stat_activity.datname IN ('deals', 'deals_test')
+            WHERE pg_stat_activity.datname IN ('agentic_deals', 'agentic_deals_test')
             AND pid <> pg_backend_pid()
         """))
         
         # Drop and recreate databases
-        conn.execute(text("DROP DATABASE IF EXISTS deals"))
-        conn.execute(text("DROP DATABASE IF EXISTS deals_test"))
-        conn.execute(text("CREATE DATABASE deals"))
-        conn.execute(text("CREATE DATABASE deals_test"))
+        conn.execute(text("DROP DATABASE IF EXISTS agentic_deals"))
+        conn.execute(text("DROP DATABASE IF EXISTS agentic_deals_test"))
+        conn.execute(text("CREATE DATABASE agentic_deals"))
+        conn.execute(text("CREATE DATABASE agentic_deals_test"))
         conn.close()
         engine.dispose()
         
@@ -106,7 +107,7 @@ def init_database_docker():
     """Initialize database with required extensions and test table using Docker."""
     try:
         # Initialize both main and test databases
-        for db_name in ['deals', 'deals_test']:
+        for db_name in ['agentic_deals', 'agentic_deals_test']:
             # Set timezone to UTC
             subprocess.run(
                 ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', db_name, '-c', 
@@ -168,7 +169,7 @@ def init_database_local():
         db_port = os.environ.get('DB_PORT', '5432')
         
         # Initialize both main and test databases
-        for db_name in ['deals', 'deals_test']:
+        for db_name in ['agentic_deals', 'agentic_deals_test']:
             # Connect to database
             connection_string = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
             logger.info(f"Connecting to {db_name} at {db_host}:{db_port}")
@@ -217,7 +218,7 @@ def run_migrations_docker():
     """Run alembic migrations using Docker."""
     try:
         # Run migrations for both main and test databases
-        for db_name in ['deals', 'deals_test']:
+        for db_name in ['agentic_deals', 'agentic_deals_test']:
             # Run alembic inside the Docker container
             result = subprocess.run(
                 ['docker', 'exec', 'deals_backend', 'bash', '-c', 
@@ -256,7 +257,7 @@ def run_migrations_local():
             backend_dir = os.path.join(current_dir, "backend")
         
         # Run migrations for both main and test databases
-        for db_name in ['deals', 'deals_test']:
+        for db_name in ['agentic_deals', 'agentic_deals_test']:
             # Set the database URL in environment
             os.environ['DATABASE_URL'] = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
             logger.info(f"Setting DATABASE_URL to: {os.environ['DATABASE_URL']}")
@@ -282,13 +283,13 @@ def run_migrations_local():
         return False
 
 def create_default_user_docker():
-    """Create a default user in the database using Docker."""
+    """Create a default system admin user in the database using Docker."""
     try:
         # Use docker exec to run SQL commands in the postgres container
         # First check if user already exists
         result = subprocess.run(
-            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'deals', '-c', 
-             "SELECT id FROM users WHERE email = 'gluked@gmail.com'"],
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
+             "SELECT id FROM users WHERE email = 'admin@system.local'"],
             capture_output=True,
             text=True,
             check=True
@@ -296,12 +297,13 @@ def create_default_user_docker():
         
         # If user exists, skip creation
         if "0 rows" not in result.stdout:
-            logger.info("Default user already exists, skipping creation (Docker)")
+            logger.info("System admin user already exists, skipping creation (Docker)")
             return True
         
-        # Create default user
-        hashed_password = get_password_hash("Qwerty123!")
-        user_id = str(uuid4())
+        # Create system admin user with a strong password and a consistent UUID for system operations
+        # Using a fixed UUID for system user to ensure consistency across environments
+        system_user_id = "00000000-0000-4000-a000-000000000001"
+        hashed_password = get_password_hash("Adm1n$yst3m#S3cur3P@ss!")
         
         # Insert user into database
         insert_query = f"""
@@ -309,25 +311,58 @@ def create_default_user_docker():
             id, email, name, password, status, preferences, notification_channels,
             email_verified, created_at, updated_at
         ) VALUES (
-            '{user_id}', 'gluked@gmail.com', 'Anton M', '{hashed_password}', 'active', '{{}}', '[]',
+            '{system_user_id}', 'admin@system.local', 'System Admin', '{hashed_password}', 'active', '{{}}', '[]',
             TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )
         """
         
         subprocess.run(
-            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'deals', '-c', insert_query],
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', insert_query],
             check=True
         )
         
-        logger.info("Default user created successfully (Docker)")
+        logger.info(f"System admin user created successfully with ID: {system_user_id}")
+        
+        # Also create a regular test user for convenience if needed
+        result = subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
+             "SELECT id FROM users WHERE email = 'test@test.com'"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        if "0 rows" not in result.stdout:
+            logger.info("Test user already exists, skipping creation (Docker)")
+            return True
+            
+        test_user_id = str(uuid4())
+        test_password = get_password_hash("Qwerty123!")
+        
+        insert_test_query = f"""
+        INSERT INTO users (
+            id, email, name, password, status, preferences, notification_channels,
+            email_verified, created_at, updated_at
+        ) VALUES (
+            '{test_user_id}', 'test@test.com', 'Test User', '{test_password}', 'active', '{{}}', '[]',
+            TRUE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        """
+        
+        subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', insert_test_query],
+            check=True
+        )
+        
+        logger.info(f"Test user created successfully with ID: {test_user_id}")
         return True
         
     except Exception as e:
-        logger.error(f"Failed to create default user (Docker): {str(e)}")
+        logger.error(f"Failed to create users (Docker): {str(e)}")
         return False
 
 def create_default_user_local():
-    """Create a default user in the database using local connection."""
+    """Create a default system admin user in the database using local connection."""
     try:
         # Get database connection parameters from environment variables
         db_host = os.environ.get('DB_HOST', 'localhost')
@@ -336,46 +371,266 @@ def create_default_user_local():
         db_port = os.environ.get('DB_PORT', '5432')
         
         # Connect to the database
-        connection_string = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/deals'
-        logger.info(f"Connecting to deals database at {db_host}:{db_port}")
+        connection_string = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/agentic_deals'
+        logger.info(f"Connecting to agentic_deals database at {db_host}:{db_port}")
         engine = create_engine(connection_string)
         Session = sessionmaker(bind=engine)
         session = Session()
         
-        # Check if user already exists
-        result = session.execute(text("SELECT id FROM users WHERE email = 'gluked@gmail.com'"))
-        user = result.fetchone()
+        # Check if system admin user already exists
+        result = session.execute(text("SELECT id FROM users WHERE email = 'admin@system.local'"))
+        admin_user = result.fetchone()
         
-        if user:
-            logger.info("Default user already exists, skipping creation (Local)")
+        if not admin_user:
+            # Create system admin user with a strong password and a consistent UUID for system operations
+            system_user_id = "00000000-0000-4000-a000-000000000001"
+            hashed_password = get_password_hash("Adm1n$yst3m#S3cur3P@ss!")
+            
+            # Insert system admin user into database
+            session.execute(
+                text("""
+                INSERT INTO users (
+                    id, email, name, password, status, preferences, notification_channels,
+                    email_verified, created_at, updated_at
+                ) VALUES (
+                    :id, :email, :name, :password, :status, :preferences, :notification_channels,
+                    :email_verified, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """),
+                {
+                    "id": system_user_id,
+                    "email": "admin@system.local",
+                    "name": "System Admin",
+                    "password": hashed_password,
+                    "status": "active",
+                    "preferences": "{}",
+                    "notification_channels": "[]",
+                    "email_verified": True
+                }
+            )
+            session.commit()
+            logger.info(f"System admin user created successfully with ID: {system_user_id}")
+        else:
+            logger.info("System admin user already exists, skipping creation (Local)")
+        
+        # Check if test user already exists
+        result = session.execute(text("SELECT id FROM users WHERE email = 'test@test.com'"))
+        test_user = result.fetchone()
+        
+        if not test_user:
+            # Create a regular test user for convenience
+            test_user_id = str(uuid4())
+            test_password = get_password_hash("Qwerty123!")
+            
+            # Insert test user into database
+            session.execute(
+                text("""
+                INSERT INTO users (
+                    id, email, name, password, status, preferences, notification_channels,
+                    email_verified, created_at, updated_at
+                ) VALUES (
+                    :id, :email, :name, :password, :status, :preferences, :notification_channels,
+                    :email_verified, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )
+                """),
+                {
+                    "id": test_user_id,
+                    "email": "test@test.com",
+                    "name": "Test User",
+                    "password": test_password,
+                    "status": "active",
+                    "preferences": "{}",
+                    "notification_channels": "[]",
+                    "email_verified": True
+                }
+            )
+            session.commit()
+            logger.info(f"Test user created successfully with ID: {test_user_id}")
+        else:
+            logger.info("Test user already exists, skipping creation (Local)")
+        
+        session.close()
+        engine.dispose()
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to create users (Local): {str(e)}")
+        return False
+
+def create_default_markets_docker():
+    """Create default market configurations in the database using Docker."""
+    try:
+        # Use docker exec to run SQL commands in the postgres container
+        # First check if markets already exist
+        result = subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
+             "SELECT id FROM markets WHERE name IN ('Amazon', 'Walmart')"],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        # If markets exist, skip creation
+        if "0 rows" not in result.stdout:
+            logger.info("Default markets already exist, skipping creation (Docker)")
+            return True
+        
+        # Create default markets for Amazon and Walmart
+        amazon_id = str(uuid4())
+        walmart_id = str(uuid4())
+        system_user_id = "00000000-0000-4000-a000-000000000001"
+        
+        # Insert Amazon market
+        amazon_config = {
+            "country": "US",
+            "max_results": 20,
+            "search_index": "All"
+        }
+        
+        amazon_query = f"""
+        INSERT INTO markets (
+            id, name, type, category, description, api_endpoint, api_key, user_id, 
+            status, config, rate_limit, is_active, created_at, updated_at
+        ) VALUES (
+            '{amazon_id}', 'Amazon', 'amazon', 'electronics', 'Amazon marketplace', 
+            'https://api.scraperapi.com/amazon', 'sample_key', '{system_user_id}', 
+            'active', '{json.dumps(amazon_config)}', 50, TRUE, 
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        """
+        
+        subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', amazon_query],
+            check=True
+        )
+        
+        logger.info(f"Amazon market created successfully with ID: {amazon_id}")
+        
+        # Insert Walmart market
+        walmart_config = {
+            "country": "US",
+            "max_results": 20
+        }
+        
+        walmart_query = f"""
+        INSERT INTO markets (
+            id, name, type, category, description, api_endpoint, api_key, user_id, 
+            status, config, rate_limit, is_active, created_at, updated_at
+        ) VALUES (
+            '{walmart_id}', 'Walmart', 'walmart', 'home', 'Walmart marketplace', 
+            'https://api.scraperapi.com/walmart', 'sample_key', '{system_user_id}', 
+            'active', '{json.dumps(walmart_config)}', 50, TRUE, 
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        """
+        
+        subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', walmart_query],
+            check=True
+        )
+        
+        logger.info(f"Walmart market created successfully with ID: {walmart_id}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to create default markets (Docker): {str(e)}")
+        return False
+
+def create_default_markets_local():
+    """Create default market configurations in the database using local connection."""
+    try:
+        # Get database connection parameters from environment variables
+        db_host = os.environ.get('DB_HOST', 'localhost')
+        db_password = os.environ.get('DB_PASSWORD', '12345678')
+        db_user = os.environ.get('DB_USER', 'postgres')
+        db_port = os.environ.get('DB_PORT', '5432')
+        
+        # Connect to the database
+        connection_string = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/agentic_deals'
+        logger.info(f"Connecting to agentic_deals database at {db_host}:{db_port}")
+        engine = create_engine(connection_string)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        
+        # Check if markets already exist
+        result = session.execute(text("SELECT id FROM markets WHERE name IN ('Amazon', 'Walmart')"))
+        markets = result.fetchall()
+        
+        if markets:
+            logger.info("Default markets already exist, skipping creation (Local)")
             session.close()
             engine.dispose()
             return True
         
-        # Create default user
-        hashed_password = get_password_hash("Qwerty123!")
-        user_id = str(uuid4())
+        # Create default markets for Amazon and Walmart
+        amazon_id = str(uuid4())
+        walmart_id = str(uuid4())
+        system_user_id = "00000000-0000-4000-a000-000000000001"
         
-        # Insert user into database
+        # Amazon market configuration
+        amazon_config = {
+            "country": "US",
+            "max_results": 20,
+            "search_index": "All"
+        }
+        
+        # Insert Amazon market
         session.execute(
             text("""
-            INSERT INTO users (
-                id, email, name, password, status, preferences, notification_channels,
-                email_verified, created_at, updated_at
+            INSERT INTO markets (
+                id, name, type, category, description, api_endpoint, api_key, user_id, 
+                status, config, rate_limit, is_active, created_at, updated_at
             ) VALUES (
-                :id, :email, :name, :password, :status, :preferences, :notification_channels,
-                :email_verified, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                :id, :name, :type, :category, :description, :api_endpoint, :api_key, :user_id, 
+                :status, :config, :rate_limit, :is_active, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             """),
             {
-                "id": user_id,
-                "email": "gluked@gmail.com",
-                "name": "Anton M",
-                "password": hashed_password,
+                "id": amazon_id,
+                "name": "Amazon",
+                "type": "amazon",
+                "category": "electronics",
+                "description": "Amazon marketplace",
+                "api_endpoint": "https://api.scraperapi.com/amazon",
+                "api_key": "sample_key",
+                "user_id": system_user_id,
                 "status": "active",
-                "preferences": "{}",
-                "notification_channels": "[]",
-                "email_verified": True
+                "config": json.dumps(amazon_config),
+                "rate_limit": 50,
+                "is_active": True
+            }
+        )
+        
+        # Walmart market configuration
+        walmart_config = {
+            "country": "US",
+            "max_results": 20
+        }
+        
+        # Insert Walmart market
+        session.execute(
+            text("""
+            INSERT INTO markets (
+                id, name, type, category, description, api_endpoint, api_key, user_id, 
+                status, config, rate_limit, is_active, created_at, updated_at
+            ) VALUES (
+                :id, :name, :type, :category, :description, :api_endpoint, :api_key, :user_id, 
+                :status, :config, :rate_limit, :is_active, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """),
+            {
+                "id": walmart_id,
+                "name": "Walmart",
+                "type": "walmart",
+                "category": "home",
+                "description": "Walmart marketplace",
+                "api_endpoint": "https://api.scraperapi.com/walmart",
+                "api_key": "sample_key",
+                "user_id": system_user_id,
+                "status": "active",
+                "config": json.dumps(walmart_config),
+                "rate_limit": 50,
+                "is_active": True
             }
         )
         
@@ -383,11 +638,11 @@ def create_default_user_local():
         session.close()
         engine.dispose()
         
-        logger.info("Default user created successfully (Local)")
+        logger.info(f"Default markets created successfully: Amazon ({amazon_id}), Walmart ({walmart_id})")
         return True
         
     except Exception as e:
-        logger.error(f"Failed to create default user (Local): {str(e)}")
+        logger.error(f"Failed to create default markets (Local): {str(e)}")
         return False
 
 def determine_environment():
@@ -473,6 +728,17 @@ def setup_database(use_docker=None):
     else:
         if not create_default_user_local():
             logger.error("Default user creation failed")
+            return False
+    
+    # Step 5: Create default markets
+    logger.info("Step 5: Creating default markets...")
+    if use_docker:
+        if not create_default_markets_docker():
+            logger.error("Default markets creation failed")
+            return False
+    else:
+        if not create_default_markets_local():
+            logger.error("Default markets creation failed")
             return False
     
     logger.info("Database setup completed successfully!")

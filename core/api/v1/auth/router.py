@@ -79,13 +79,23 @@ async def register(
         logger.debug(f"Register request data: {user_data}")
         
         # Convert RegisterRequest to UserCreate
-        user_create = UserCreate(
-            email=user_data.email,
-            password=user_data.password,
-            name=user_data.name,
-            referral_code=user_data.referral_code if hasattr(user_data, 'referral_code') else None,
-            status=UserStatus.ACTIVE
-        )
+        user_create_data = {
+            "email": user_data.email,
+            "password": user_data.password,
+            "name": user_data.name,
+            "status": UserStatus.ACTIVE
+        }
+        
+        # Add referral_code if provided
+        if hasattr(user_data, 'referral_code') and user_data.referral_code:
+            user_create_data["referral_code"] = user_data.referral_code
+            
+        # Add preferences if provided
+        if hasattr(user_data, 'preferences') and user_data.preferences:
+            user_create_data["preferences"] = user_data.preferences
+            
+        # Create UserCreate object
+        user_create = UserCreate(**user_create_data)
         
         # Register user
         user = await auth_service.register_user(user_create)

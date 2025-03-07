@@ -39,7 +39,7 @@ else:
     os.environ.setdefault("POSTGRES_PASSWORD", "12345678")
     os.environ.setdefault("POSTGRES_HOST", "localhost")
     os.environ.setdefault("POSTGRES_PORT", "5432")
-    os.environ.setdefault("POSTGRES_DB", "deals_test")
+    os.environ.setdefault("POSTGRES_DB", "agentic_deals_test")
     os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
     os.environ.setdefault("REDIS_PASSWORD", "")
     os.environ.setdefault("REDIS_HOST", "localhost")
@@ -91,10 +91,10 @@ class MockSettings:
     hosts = ["localhost"]
     
     # Database settings
-    DATABASE_URL = "postgresql+asyncpg://postgres:12345678@localhost:5432/deals_test"
+    DATABASE_URL = "postgresql+asyncpg://postgres:12345678@localhost:5432/agentic_deals_test"
     POSTGRES_USER = "postgres"
     POSTGRES_PASSWORD = "12345678"
-    POSTGRES_DB = "deals_test"
+    POSTGRES_DB = "agentic_deals_test"
     POSTGRES_HOST = "localhost"
     POSTGRES_PORT = 5432
     

@@ -98,19 +98,33 @@ sys.exit(exit_code)
     Write-Host "Running tests with script: $tempScriptPath" -ForegroundColor Yellow
     
     try {
-        # Run Python with timeout
-        $process = Start-Process -FilePath "python" -ArgumentList $tempScriptPath -PassThru
+        # Run Python directly without opening a new window
+        Write-Host "Running integration tests..." -ForegroundColor Cyan
+        
+        # First, remove any existing report to ensure a fresh one is created
+        $reportFile = "$RESULTS_DIR\integration_report.html"
+        if (Test-Path $reportFile) {
+            Remove-Item -Path $reportFile -Force
+        }
+        
+        # Run the tests directly with a timeout
+        $job = Start-Job -ScriptBlock { 
+            param($scriptPath)
+            python $scriptPath
+            return $LASTEXITCODE
+        } -ArgumentList $tempScriptPath
         
         # Wait for up to 5 minutes
-        $completed = $process.WaitForExit(300000)
-        
-        if (-not $completed) {
-            Write-Host "Test execution timed out after 5 minutes, forcibly terminating..." -ForegroundColor Red
-            $process.Kill()
-            $exitCode = 2 # Custom code for timeout
+        if (Wait-Job -Job $job -Timeout 300) {
+            $result = Receive-Job -Job $job
+            $exitCode = $result
         } else {
-            $exitCode = $process.ExitCode
+            Write-Host "Test execution timed out after 5 minutes, forcibly terminating..." -ForegroundColor Red
+            Stop-Job -Job $job
+            $exitCode = 2 # Custom code for timeout
         }
+        
+        Remove-Job -Job $job -Force
     }
     catch {
         Write-Host "Error running tests: $_" -ForegroundColor Red

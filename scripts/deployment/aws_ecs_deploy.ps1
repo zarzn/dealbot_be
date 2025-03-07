@@ -11,7 +11,7 @@ param(
     [string]$ImageTag = "latest",
     [string]$ClusterName = "agentic-deals-cluster",
     [string]$ServiceName = "agentic-deals-service",
-    [string]$TaskDefFile = "../../hardcoded-task-definition.json",
+    [string]$TaskDefFile = ".\scripts\deployment\hardcoded-task-definition.json",
     [string]$ECRRepository = "586794462529.dkr.ecr.us-east-1.amazonaws.com/agentic-deals-backend",
     [switch]$SkipBuild = $false,
     [switch]$SkipPush = $false,
@@ -204,7 +204,7 @@ else {
     if ($ForceNewDeployment) {
         Write-StepHeader "Forcing New Deployment"
         
-        $forceCmd = "aws ecs update-service --profile $ProfileName --region $Region --cluster $ClusterName --service $ServiceName --force-new-deployment"
+        $forceCmd = "aws ecs update-service --profile $ProfileName --region $Region --cluster $ClusterName --service $ServiceName --force-new-deployment --no-cli-pager"
         
         Write-Host "Executing: $forceCmd"
         Invoke-Expression $forceCmd
