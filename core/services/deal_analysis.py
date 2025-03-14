@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import select, and_, or_, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import IsolationForest
@@ -17,6 +17,7 @@ from uuid import UUID
 import logging
 import asyncio
 from decimal import Decimal
+import time
 
 from core.models.deal import Deal, DealStatus, DealPriority, AIAnalysis
 from core.models.goal import Goal, GoalStatus
@@ -140,7 +141,7 @@ class DealAnalysisService:
             
             # Create analysis result
             result = AnalysisResult(
-                deal_id=deal.id,
+                deal_id=str(deal.id),
                 score=score,
                 metrics=metrics,
                 analysis_timestamp=datetime.utcnow().isoformat(),
@@ -153,12 +154,12 @@ class DealAnalysisService:
             await self._cache_analysis(deal.id, result.__dict__)
 
             # Track metrics
-            MetricsCollector.track_deal_analysis(
-                deal_id=deal.id,
-                score=score,
-                confidence=confidence,
-                anomaly_score=anomaly_score
-            )
+            # MetricsCollector.track_deal_analysis(
+            #     deal_id=deal.id,
+            #     score=score,
+            #     confidence=confidence,
+            #     analysis_time=time.time() - start_time
+            # )
 
             return result
 
@@ -555,22 +556,20 @@ class DealAnalysisService:
                 similar = await self.session.execute(
                     select(Deal).where(
                         and_(
-                            Deal.market_type == deal.market_type,
+                            Deal.market_id == deal.market_id,
                             Deal.id != deal.id,
-                            Deal.created_at >= datetime.utcnow() - timedelta(days=30),
-                            Deal.is_active == True
+                            Deal.status == DealStatus.COMPLETED.value
                         )
-                    ).order_by(func.random()).limit(10)
+                    ).order_by(text("RANDOM()")).limit(10)
                 )
                 return [d.__dict__ for d in similar.scalars().all()]
             except Exception as e:
-                if attempt == max_retries - 1:
-                    logger.error(
-                        f"Failed to get similar deals after {max_retries} attempts: {str(e)}",
-                        exc_info=True
-                    )
-                    raise
-                await asyncio.sleep(1 * (attempt + 1))
+                logger.warning(f"Failed to get similar deals (attempt {attempt+1}/{max_retries}): {str(e)}")
+                await asyncio.sleep(1)  # Add a small delay before retrying
+        
+        # If all retries failed, return an empty list
+        logger.warning(f"Maximum retries reached for getting similar deals for deal {deal.id}")
+        return []
 
     async def _detect_anomalies(
         self,

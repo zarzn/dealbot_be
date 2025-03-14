@@ -1,8 +1,8 @@
 # Integration Test Results Summary
 
-Generated: 03/05/2025 22:14:39
+Generated: 03/14/2025 03:26:47
 
-❌ Integration tests: FAILED or had issues
+❌ Integration test: FAILED (Exit code: 4)
 
 ## Generated Reports:
-- integration_report.html
+No report file was generated.

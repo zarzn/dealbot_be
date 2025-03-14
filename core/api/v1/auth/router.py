@@ -100,6 +100,14 @@ async def register(
         # Register user
         user = await auth_service.register_user(user_create)
         
+        # Add default values for fields expected in UserResponse
+        user.email_verified = False
+        user.active_goals_count = 0
+        user.total_deals_found = 0
+        user.success_rate = 0.0
+        user.total_tokens_spent = 0.0
+        user.total_rewards_earned = 0.0
+        
         # Create tokens
         tokens = await auth_service.create_tokens(user)
         

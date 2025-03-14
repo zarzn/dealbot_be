@@ -1,8 +1,8 @@
 # Core Test Results Summary
 
-Generated: 03/06/2025 16:01:03
+Generated: 03/14/2025 04:12:10
 
 ❌ Core tests: FAILED or had issues
 
 ## Generated Reports:
-No report file was generated.
+- core_report.html

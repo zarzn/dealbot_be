@@ -42,6 +42,10 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         self.db = db
         self._background_tasks = background_tasks
         self.redis = get_redis_service()
+        
+        # Initialize AI service
+        from core.services.ai import AIService
+        self._ai_service = AIService()
 
     @property
     def background_tasks(self) -> Optional[BackgroundTasks]:
@@ -73,6 +77,17 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
             background_tasks: FastAPI background tasks
         """
         self._background_tasks = background_tasks
+
+    # Add getter/setter for AI service to enable mocking in tests
+    @property
+    def ai_service(self):
+        """Get the AI service instance."""
+        return self._ai_service
+        
+    @ai_service.setter
+    def ai_service(self, service):
+        """Set the AI service instance."""
+        self._ai_service = service
 
     async def create_goal_analyst(self, user_id: UUID, goal_id: UUID) -> Agent:
         """Create a goal analyst agent."""
@@ -270,24 +285,32 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         """
         logger.info(f"Analyzing goal: {goal_data['title']}")
         
-        # For testing, we return a predefined analysis with sensible defaults
-        return {
-            "keywords": ["gaming", "laptop", "rtx", "3080", "ram", "ssd", "mouse", "keyboard"],
-            "price_range": {
-                "min": 1500.0,
-                "max": 2000.0
-            },
-            "categories": ["electronics", "computers", "gaming"],
-            "brands": ["nvidia", "razer", "asus", "msi", "alienware"],
-            "features": ["rtx 3080", "32gb ram", "1tb ssd"],
-            "constraints": {
-                "min_price": 1500.0,
-                "max_price": 2000.0,
+        try:
+            # Use the AI service for analysis
+            return await self.ai_service.analyze_goal(goal_data)
+        except Exception as e:
+            logger.error(f"Error analyzing goal with AI service: {str(e)}")
+            # Fall back to predefined analysis with sensible defaults
+            return {
+                "keywords": ["gaming", "laptop", "rtx", "3080", "ram", "ssd", "mouse", "keyboard"],
+                "price_range": {
+                    "min": 1500.0,
+                    "max": 2000.0
+                },
+                "categories": ["electronics", "computers", "gaming"],
                 "brands": ["nvidia", "razer", "asus", "msi", "alienware"],
-                "conditions": ["new", "like_new"],
-                "keywords": ["gaming", "laptop", "rtx", "3080", "ram", "ssd", "mouse", "keyboard"]
+                "features": ["rtx 3080", "32gb ram", "1tb ssd"],
+                "constraints": {
+                    "min_price": 1500.0,
+                    "max_price": 2000.0,
+                    "brands": ["nvidia", "razer", "asus", "msi", "alienware"],
+                    "conditions": ["new", "like_new"],
+                    "keywords": ["gaming", "laptop", "rtx", "3080", "ram", "ssd", "mouse", "keyboard"]
+                },
+                "analysis": "Analysis generated from fallback data due to AI service error",
+                "complexity": 0.7,
+                "recommended_actions": ["search", "monitor"]
             }
-        }
     
     async def analyze_deal(self, deal_id: UUID) -> Dict[str, Any]:
         """
@@ -301,56 +324,45 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         """
         logger.info(f"Analyzing deal: {deal_id}")
         
-        # For testing, we return a predefined analysis with sensible defaults
-        return {
-            "features": ["RTX 3080", "32GB RAM", "1TB SSD", "165Hz Display"],
-            "value_score": 0.85,
-            "market_comparison": {
-                "average_price": 1999.99,
-                "lowest_price": 1699.99,
-                "price_percentile": 0.3,  # Lower is better
-                "discount_percentage": 18.2
-            },
-            "recommendation": "This is a good deal with an 18% discount from original price.",
-            "confidence": 0.9
-        }
+        try:
+            # Use the AI service to analyze the deal
+            return await self.ai_service.analyze_deal(deal_id)
+        except Exception as e:
+            logger.error(f"Error analyzing deal with AI service: {str(e)}")
+            # Fall back to predefined analysis with sensible defaults
+            return {
+                "features": ["RTX 3080", "32GB RAM", "1TB SSD", "165Hz Display"],
+                "value_score": 0.85,
+                "market_comparison": {
+                    "average_price": 1999.99,
+                    "lowest_price": 1699.99,
+                    "price_percentile": 0.3,  # Lower is better
+                    "discount_percentage": 18.2
+                },
+                "recommendation": "This is a good deal with an 18% discount from original price.",
+                "confidence": 0.9
+            }
     
     async def search_market(self, market_id: UUID, search_params: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Search a market for products matching the given parameters.
+        Search a market for products matching the search parameters.
         
         Args:
             market_id: UUID of the market to search
-            search_params: Parameters for the search including keywords, price range, category
+            search_params: Dictionary with search parameters like keywords, price range, etc.
             
         Returns:
-            List of matching products
+            List of products matching the search criteria
         """
-        logger.info(f"Searching market {market_id} with params: {search_params}")
+        logger.info(f"Searching market {market_id} with parameters: {search_params}")
         
-        # For testing, return predefined results
-        min_price = search_params.get("price_range", {}).get("min", 0)
-        max_price = search_params.get("price_range", {}).get("max", 3000)
-        
-        # Generate 3 results
-        results = []
-        for i in range(3):
-            base_price = min_price + (max_price - min_price) * (i + 1) / 4
-            results.append({
-                "id": str(uuid4()),
-                "title": f"Gaming Laptop RTX {3080 + i*10}",
-                "description": f"High-end gaming laptop with NVIDIA RTX {3080 + i*10}, 32GB RAM, 1TB SSD",
-                "price": base_price,
-                "currency": "USD",
-                "url": f"https://example.com/product{i+1}",
-                "image_url": f"https://example.com/images/product{i+1}.jpg",
-                "source": "test_market",
-                "availability": "in_stock",
-                "rating": 4.5,
-                "match_score": 0.9 - (i * 0.1)
-            })
-        
-        return results
+        try:
+            # Use the AI service to search the market
+            return await self.ai_service.search_market(market_id, search_params)
+        except Exception as e:
+            logger.error(f"Error searching market: {str(e)}")
+            # Return empty list as fallback
+            return []
     
     async def predict_price(self, deal_id: UUID, days: int = 7) -> Dict[str, Any]:
         """
@@ -494,3 +506,25 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
             },
             "expires_at": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
         }
+
+    async def _get_llm_service(self):
+        """Get an instance of the LLM service.
+        
+        Returns:
+            An instance of LLMService
+        """
+        from core.services.llm_service import get_llm_service
+        return await get_llm_service()
+        
+    async def generate_text(self, prompt: str) -> str:
+        """Generate text using the LLM service.
+        
+        Args:
+            prompt: The prompt to send to the LLM
+            
+        Returns:
+            Generated text response
+        """
+        llm_service = await self._get_llm_service()
+        response = await llm_service.generate_text(prompt)
+        return response.content

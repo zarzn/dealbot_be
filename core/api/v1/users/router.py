@@ -13,9 +13,8 @@ from uuid import uuid4, UUID
 from core.database import get_db
 from core.services.auth import (
     Token,
-    authenticate_user,
     create_tokens,
-    refresh_tokens,
+    AuthService,
     TokenRefreshError,
     get_current_user,
     verify_password,
@@ -139,7 +138,8 @@ async def login(
         logger.info(f"Login attempt for user: {form_data.username}")
         logger.debug(f"Received form data: username={form_data.username}, password_length={len(form_data.password) if form_data.password else 0}")
         
-        user = await authenticate_user(form_data.username, form_data.password, db)
+        auth_service = AuthService(db)
+        user = await auth_service.authenticate_user(form_data.username, form_data.password)
         if not user:
             logger.warning(f"Failed login attempt for user: {form_data.username}")
             raise HTTPException(
@@ -217,13 +217,12 @@ async def refresh_token(
 ) -> Any:
     """Refresh access token using refresh token"""
     try:
-        from core.services.redis import get_redis_service
-        redis = await get_redis_service()
-        access_token, refresh_token = await refresh_tokens(request.refresh_token, db, redis)
+        auth_service = AuthService(db)
+        tokens = await auth_service.refresh_tokens(request.refresh_token)
         return TokenResponse(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            token_type="Bearer"
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            token_type=tokens.token_type
         )
     except TokenRefreshError as e:
         raise HTTPException(

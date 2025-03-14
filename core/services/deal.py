@@ -9,6 +9,7 @@ import logging
 import json
 import asyncio
 import functools
+import traceback
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, SecretStr, ConfigDict
 from sqlalchemy.orm import Session
@@ -27,6 +28,8 @@ from sqlalchemy.orm import joinedload, selectinload
 import numpy as np
 import decimal
 import time
+import math
+import re
 
 from core.models.user import User
 from core.models.market import Market
@@ -796,14 +799,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             return 0.8
 
     async def _cache_deal(self, deal: Deal) -> None:
-        """Cache deal data in Redis with extended information and separate TTLs
-        
-        Args:
-            deal: Deal object to cache
-            
-        Raises:
-            RedisError: If caching operation fails
-        """
+        """Cache deal data in Redis with extended information and separate TTLs"""
         try:
             # Skip caching if Redis is not available
             if not self._redis:
@@ -840,18 +836,24 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             }
             
             # Cache different components with appropriate TTLs
-            async with self._redis.pipeline() as pipe:
-                pipe.set(f"deal:{deal.id}:full", json.dumps(cache_data), ex=CACHE_TTL_FULL)
-                pipe.set(f"deal:{deal.id}:basic", json.dumps(deal_dict), ex=CACHE_TTL_BASIC)
-                pipe.set(
+            try:
+                # Get pipeline and properly await it
+                pipeline = await self._redis.pipeline()
+                
+                # Now use pipeline normally
+                pipeline.set(f"deal:{deal.id}:full", json.dumps(cache_data), ex=CACHE_TTL_FULL)
+                pipeline.set(f"deal:{deal.id}:basic", json.dumps(deal_dict), ex=CACHE_TTL_BASIC)
+                pipeline.set(
                     f"deal:{deal.id}:price_history",
                     json.dumps(price_history),
                     ex=CACHE_TTL_PRICE_HISTORY
                 )
-                await pipe.execute()
-            
-            logger.debug(f"Successfully cached deal {deal.id}")
-            
+                await pipeline.execute()
+                
+                logger.debug(f"Successfully cached deal {deal.id}")
+            except Exception as pipe_error:
+                logger.error(f"Redis pipeline error for deal {deal.id}: {str(pipe_error)}")
+                
         except Exception as e:
             logger.error(f"Failed to cache deal {deal.id}: {str(e)}")
             # Don't raise the exception - caching is not critical
@@ -907,12 +909,64 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             Dict containing deals and metadata
         """
         try:
-            logger.info(f"Searching deals with query: '{search.query}', realtime: {search.use_realtime_scraping}")
             start_time = time.time()
+            logger.info(f"Searching deals with query: '{search.query}', realtime: {search.use_realtime_scraping}")
             
             # Determine authentication status for filtering
             is_authenticated = user_id is not None
             logger.debug(f"User authentication status: {is_authenticated}")
+            
+            # Set default AI analysis to True if specified
+            if perform_ai_analysis:
+                logger.info("AI analysis requested for search results")
+            
+            # Initialize AI service if needed for analysis
+            ai_service = None
+            # Only initialize AI if needed AND if AI-enhanced search is requested
+            should_use_ai = perform_ai_analysis or (search.use_ai_enhanced_search is True)
+            if should_use_ai:
+                try:
+                    from core.services.ai import AIService
+                    ai_service = AIService()
+                    logger.info("AI service initialized for search analysis")
+                except Exception as e:
+                    logger.error(f"Error initializing AI service: {str(e)}")
+                    perform_ai_analysis = False
+            
+            # Step 1: AI-enhanced query analysis (if query exists and AI is enabled)
+            ai_query_analysis = None
+            enhanced_search = search.copy()
+            
+            # Only use AI query analysis if specifically enabled
+            if search.query and search.use_ai_enhanced_search and ai_service and ai_service.llm:
+                try:
+                    logger.info(f"Performing AI analysis on search query: '{search.query}'")
+                    ai_query_analysis = await ai_service.analyze_search_query(search.query)
+                    
+                    if ai_query_analysis:
+                        logger.info(f"AI query analysis results: {json.dumps(ai_query_analysis)}")
+                        
+                        # Update search parameters with AI-derived values if not already specified
+                        if ai_query_analysis.get("category") and not enhanced_search.category:
+                            enhanced_search.category = _map_ai_category_to_enum(ai_query_analysis.get("category"))
+                            logger.info(f"AI set category to: {enhanced_search.category}")
+                            
+                        if ai_query_analysis.get("min_price") is not None and enhanced_search.min_price is None:
+                            enhanced_search.min_price = float(ai_query_analysis.get("min_price"))
+                            logger.info(f"AI set min_price to: {enhanced_search.min_price}")
+                            
+                        if ai_query_analysis.get("max_price") is not None and enhanced_search.max_price is None:
+                            enhanced_search.max_price = float(ai_query_analysis.get("max_price"))
+                            logger.info(f"AI set max_price to: {enhanced_search.max_price}")
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout during AI query analysis for '{search.query}'")
+                    # Continue with original search parameters
+                    logger.info("Continuing with original search parameters")
+                except Exception as e:
+                    logger.error(f"Error in AI query analysis: {str(e)}", exc_info=True)
+                    # Continue with original search parameters
+                    logger.info("Continuing with original search parameters due to AI analysis error")
             
             # Construct base query with eager loading
             # Note: Eagerly load all relationships needed for response to prevent lazy loading issues
@@ -924,11 +978,11 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             )
             
             # Apply text search if specified
-            if search.query:
-                logger.debug(f"Applying text search filter: {search.query}")
+            if enhanced_search.query:
+                logger.debug(f"Applying text search filter: {enhanced_search.query}")
                 
                 # For multi-word searches, improve the matching
-                search_terms = search.query.lower().strip().split()
+                search_terms = enhanced_search.query.lower().strip().split()
                 
                 if len(search_terms) > 1:
                     # For multi-word searches, implement a more precise search strategy
@@ -951,7 +1005,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                     query = query.order_by(
                         # Exact phrase match in title is highest priority (0)
                         case(
-                            (Deal.title.ilike(f"%{search.query}%"), 0),
+                            (Deal.title.ilike(f"%{enhanced_search.query}%"), 0),
                             else_=1
                         ),
                         # Next priority is title containing all terms separately (1-3)
@@ -961,7 +1015,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                         ),
                         # Description matches are lower priority (4-5)
                         case(
-                            (Deal.description.ilike(f"%{search.query}%"), 4),
+                            (Deal.description.ilike(f"%{enhanced_search.query}%"), 4),
                             else_=5
                         ),
                         # Then sort by price
@@ -971,14 +1025,14 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                     # For single-word searches, keep the original approach
                     query = query.filter(
                         or_(
-                            Deal.title.ilike(f"%{search.query}%"),
-                            Deal.description.ilike(f"%{search.query}%")
+                            Deal.title.ilike(f"%{enhanced_search.query}%"),
+                            Deal.description.ilike(f"%{enhanced_search.query}%")
                         )
                     ).order_by(
                         # Prioritize title matches over description matches
                         case(
-                            (Deal.title.ilike(f"%{search.query}%"), 0),
-                            (Deal.description.ilike(f"%{search.query}%"), 1),
+                            (Deal.title.ilike(f"%{enhanced_search.query}%"), 0),
+                            (Deal.description.ilike(f"%{enhanced_search.query}%"), 1),
                             else_=2
                         ),
                         # Then sort by price (or other criteria if specified)
@@ -986,25 +1040,25 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                     )
             
             # Apply additional filters if specified
-            if search.category:
-                logger.debug(f"Filtering by category: {search.category}")
-                query = query.filter(Deal.category == search.category)
+            if enhanced_search.category:
+                logger.debug(f"Filtering by category: {enhanced_search.category}")
+                query = query.filter(Deal.category == enhanced_search.category)
                 
-            if search.min_price is not None:
-                logger.debug(f"Filtering by minimum price: {search.min_price}")
-                query = query.filter(Deal.price >= search.min_price)
+            if enhanced_search.min_price is not None:
+                logger.debug(f"Filtering by minimum price: {enhanced_search.min_price}")
+                query = query.filter(Deal.price >= enhanced_search.min_price)
                 
-            if search.max_price is not None:
-                logger.debug(f"Filtering by maximum price: {search.max_price}")
-                query = query.filter(Deal.price <= search.max_price)
+            if enhanced_search.max_price is not None:
+                logger.debug(f"Filtering by maximum price: {enhanced_search.max_price}")
+                query = query.filter(Deal.price <= enhanced_search.max_price)
                 
-            if search.source:
-                logger.debug(f"Filtering by source: {search.source}")
-                query = query.filter(Deal.source == search.source)
+            if enhanced_search.source:
+                logger.debug(f"Filtering by source: {enhanced_search.source}")
+                query = query.filter(Deal.source == enhanced_search.source)
             
             # Set page and limit with defaults
-            page = max(1, search.offset // search.limit + 1 if search.offset else 1)
-            limit = min(100, max(1, search.limit if search.limit else 20))
+            page = max(1, enhanced_search.offset // enhanced_search.limit + 1 if enhanced_search.offset else 1)
+            limit = min(100, max(1, enhanced_search.limit if enhanced_search.limit else 20))
             offset = (page - 1) * limit
             
             # Apply pagination
@@ -1013,19 +1067,38 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             # Execute query with pagination
             result = await self.db.execute(query)
             deals = result.unique().scalars().all()
-            logger.info(f"Found {len(deals)} deals matching search criteria")
+            logger.info(f"Found {len(deals)} deals matching search criteria from database")
             
-            # If no results and has query, attempt to find deals via scrapers (feature flag controlled)
-            if len(deals) == 0 and search.query and search.use_realtime_scraping:
-                logger.info(f"No deals found for '{search.query}', triggering real-time scraping")
-                # Initiate real-time scraping
+            # If no results and has query, attempt to find deals via scrapers with AI-enhanced parameters
+            if len(deals) == 0 and enhanced_search.query and enhanced_search.use_realtime_scraping:
+                logger.info(f"No deals found in database, triggering real-time scraping with AI-enhanced parameters")
+                
+                # Prepare scraping parameters using AI analysis if available
+                scraper_query = enhanced_search.query
+                scraper_category = enhanced_search.category
+                
+                # Use AI-derived keywords for more effective searching if available
+                if ai_query_analysis and ai_query_analysis.get("keywords"):
+                    keywords = ai_query_analysis.get("keywords")
+                    if keywords and len(keywords) > 0:
+                        # Join keywords into a more effective search query
+                        scraper_query = " ".join(keywords)
+                        logger.info(f"Using AI-derived keywords for scraping: '{scraper_query}'")
+                
                 try:
-                    scraped_deals = await self._perform_realtime_scraping(search.query, search.category)
+                    # Initiate real-time scraping with enhanced parameters
+                    scraped_deals = await self._perform_realtime_scraping(
+                        query=scraper_query,
+                        category=scraper_category,
+                        min_price=enhanced_search.min_price,
+                        max_price=enhanced_search.max_price,
+                        ai_query_analysis=ai_query_analysis
+                    )
+                    
                     logger.info(f"Found {len(scraped_deals)} deals from real-time scraping")
                     deals = scraped_deals
                     
-                    # Force AI analysis for real-time scraped deals, regardless of perform_ai_analysis parameter
-                    # This ensures we always get AI recommendations for real-time searches
+                    # Force AI analysis for real-time scraped deals
                     if not perform_ai_analysis and len(deals) > 0:
                         logger.info("Enabling AI analysis for real-time scraped deals")
                         perform_ai_analysis = True
@@ -1033,119 +1106,90 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                     logger.error(f"Error in real-time scraping: {str(e)}", exc_info=True)
                     logger.info("Real-time scraping yielded no results")
             
-            # Process deals to prepare for response
-            response_deals = []
-            ai_service = None
-            
-            # Only initialize AI service if needed and user is authenticated
-            if perform_ai_analysis:
-                logger.info("Initializing AI service for deal analysis")
-                try:
-                    from core.services.ai import AIService
-                    ai_service = AIService()
-                    if ai_service and ai_service.llm:
-                        logger.info("AIService and LLM initialized successfully")
-                    else:
-                        logger.warning("AIService initialized but LLM is not available")
-                except Exception as e:
-                    logger.error(f"Error initializing AI service: {str(e)}", exc_info=True)
-            else:
-                logger.info("AI analysis not requested")
-                ai_service = None
-            
-            # Process each deal
+            # Step 3: Batch analyze products for relevance to original query
+            # Convert deals to dictionaries first for batch processing
+            deal_dicts = []
             for deal in deals:
-                deal_analysis = None
+                deal_dict = self._convert_to_response(deal, user_id, include_ai_analysis=False)
+                deal_dicts.append(deal_dict)
+            
+            # If AI analysis is requested and we have deals, perform batch analysis
+            response_deals = []
+            if perform_ai_analysis and deal_dicts and ai_service and ai_service.llm and search.query and search.use_ai_enhanced_search:
                 try:
-                    if ai_service and ai_service.llm:
-                        logger.info(f"Requesting AI analysis for deal {deal.id}")
+                    logger.info(f"Performing batch AI analysis on {len(deal_dicts)} deals")
+                    
+                    # Check time elapsed so far
+                    current_time = time.time()
+                    elapsed_time = current_time - start_time
+                
+                    # Only perform batch analysis if we have enough time remaining (under 28 seconds)
+                    if elapsed_time < 28:
+                        # Batch analyze products against original query
+                        analyzed_deals = await ai_service.batch_analyze_products(
+                            products=deal_dicts, 
+                            search_query=search.query
+                        )
                         
-                        # For authenticated users, use normal analysis that consumes tokens
-                        # For unauthenticated users, specify no_token_consumption=True
-                        if is_authenticated:
-                            deal_analysis = await ai_service.analyze_deal(deal)
+                        # Only include deals with good matching scores
+                        if analyzed_deals:
+                            logger.info(f"AI batch analysis returned {len(analyzed_deals)} deals")
+                            # Sort by matching score (descending)
+                            analyzed_deals.sort(
+                                key=lambda d: d.get("ai_analysis", {}).get("score", 0), 
+                                reverse=True
+                            )
+                            response_deals = analyzed_deals
                         else:
-                            # Pass flag to indicate no token consumption for unauthorized users
-                            deal_analysis = await ai_service.analyze_deal(deal, no_token_consumption=True)
-                            
-                        if deal_analysis:
-                            logger.info(f"AI analysis completed for deal {deal.id}, score: {deal_analysis.get('score')}")
-                            # Ensure we have a valid score
-                            if 'score' in deal_analysis:
-                                logger.debug(f"AI score for deal {deal.id}: {deal_analysis['score']}")
-                            else:
-                                logger.warning(f"No score found in AI analysis for deal {deal.id}")
-                        else:
-                            logger.warning(f"AI analysis failed for deal {deal.id}")
-                except Exception as e:
-                    logger.error(f"Error in AI analysis for deal {deal.id}: {str(e)}", exc_info=True)
-                
-                # Log AI analysis for debugging
-                if deal_analysis:
-                    logger.info(f"AI analysis for deal {deal.id}: score={deal_analysis.get('score', 'N/A')}, recommendations={len(deal_analysis.get('recommendations', []))}")
-                
-                # Convert deal to response model with or without analysis
-                deal_response = self._convert_to_response(
-                    deal=deal, 
-                    user_id=user_id,
-                    include_ai_analysis=perform_ai_analysis,
-                    analysis=deal_analysis  # Make sure we pass the full analysis object
-                )
-                
-                # Verify we have the expected values in the response
-                if deal_analysis and perform_ai_analysis:
-                    if 'ai_analysis' not in deal_response:
-                        logger.warning(f"AI analysis is missing from response for deal {deal.id}")
-                    elif 'recommendations' not in deal_response['ai_analysis']:
-                        logger.warning(f"Recommendations are missing from AI analysis for deal {deal.id}")
-                    elif 'score' not in deal_response['ai_analysis']:
-                        logger.warning(f"Score is missing from AI analysis for deal {deal.id}")
+                            logger.warning("AI batch analysis returned no matching deals")
+                            # Fall back to all deals
+                            response_deals = deal_dicts
                     else:
-                        # Log for debugging
-                        score = deal_response['ai_analysis']['score']
-                        rec_count = len(deal_response['ai_analysis']['recommendations'])
-                        logger.info(f"Deal response includes AI analysis with score {score} and {rec_count} recommendations")
-                
-                # Add description logging for debugging
-                if hasattr(deal, 'description') and deal.description:
-                    logger.info(f"Deal {deal.id} has description: {deal.description[:100]}...")
-                else:
-                    logger.warning(f"Deal {deal.id} has NO description")
-                
-                # Log the content of the response description
-                logger.info(f"Response for deal {deal.id} has description: {deal_response.get('description', 'NONE')[:100]}...")
-                
-                response_deals.append(deal_response)
+                        logger.warning(f"Time threshold reached ({elapsed_time:.2f}s), skipping batch AI analysis")
+                        # Use standard approach for individual deals
+                        response_deals = deal_dicts
+                except Exception as e:
+                    logger.error(f"Error in batch AI analysis: {str(e)}", exc_info=True)
+                    # Fall back to regular analysis
+                    response_deals = deal_dicts
+            else:
+                # If no AI analysis, just use the deal dictionaries
+                response_deals = deal_dicts
             
-            search_time_ms = int((time.time() - start_time) * 1000)
+            # Ensure we have results - if response_deals is empty but we had original deals, use them
+            if not response_deals and deal_dicts:
+                logger.warning("AI filtering removed all results, falling back to original results")
+                response_deals = deal_dicts
             
-            # Return the results
+            # Calculate statistics and return response
+            current_time = time.time()
+            elapsed_time = current_time - start_time
+            
+            logger.info(f"Search completed in {elapsed_time:.2f} seconds, returning {len(response_deals)} deals")
+            
+            # Prepare final response
             return {
-                "deals": response_deals,
-                "total": len(response_deals),
-                "metadata": {
-                    "query": search.query,
-                    "filters": {
-                        "category": search.category,
-                        "min_price": search.min_price,
-                        "max_price": search.max_price,
-                        "source": search.source
-                    },
-                    "pagination": {
+                "deals": response_deals,  # Changed from "results" to "deals" to match router expectation
+                "count": len(response_deals),
+                "total": len(deals),  # Original count before AI filtering
                         "page": page,
-                        "limit": limit,
-                        "offset": offset
-                    },
-                    "ai_analysis_performed": perform_ai_analysis,
-                    "scraping_attempted": len(deals) == 0 and search.query is not None and search.use_realtime_scraping,
-                    "scraping_success": len(deals) > 0 and search.query is not None and search.use_realtime_scraping,
-                    "real_time_search": search.use_realtime_scraping,
-                    "search_time_ms": search_time_ms
-                }
+                "pages": math.ceil(len(deals) / limit) if limit > 0 else 0,
+                "execution_time": elapsed_time,
+                "ai_enhanced": ai_query_analysis is not None
             }
+            
         except Exception as e:
-            logger.error(f"Error searching deals: {str(e)}", exc_info=True)
-            raise
+            logger.error(f"Error in search_deals: {str(e)}", exc_info=True)
+            # Return an empty result on error
+            return {
+                "deals": [],
+                "count": 0,
+                "total": 0,
+                "page": 1,
+                "pages": 0,
+                "error": str(e),
+                "execution_time": time.time() - start_time
+            }
 
     async def _create_deal_from_scraped_data(self, deal_data: Dict[str, Any]) -> Optional[Deal]:
         """Create a deal from scraped data.
@@ -1437,6 +1481,10 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                             f"Consider if this {deal.title} meets your specific needs and budget.",
                             f"Research additional options in the {deal.category} category for comparison."
                         ]
+                # Check for AI analysis in the deal_metadata (e.g., from real-time scraping)
+                elif deal.deal_metadata and 'ai_analysis' in deal.deal_metadata:
+                    logger.info(f"Using AI analysis from deal_metadata for deal {deal.id}")
+                    ai_analysis = deal.deal_metadata['ai_analysis']
                 else:
                     # Basic score calculation if no analysis available
                     logger.warning(f"No analysis available for deal {deal.id}, calculating basic score")
@@ -1483,6 +1531,27 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                     }
                     logger.info(f"Created fallback AI analysis with score: {ai_analysis['score']}")
             
+                # Ensure we have a properly formatted AI analysis object
+                if ai_analysis and not isinstance(ai_analysis, dict):
+                    logger.warning(f"AI analysis for deal {deal.id} is not a dictionary, converting")
+                    try:
+                        ai_analysis = dict(ai_analysis)
+                    except (TypeError, ValueError):
+                        logger.error(f"Failed to convert AI analysis to dictionary, using fallback")
+                        ai_analysis = {
+                            "deal_id": str(deal.id),
+                            "score": 0.5,
+                            "confidence": 0.3,
+                            "price_analysis": {},
+                            "market_analysis": {},
+                            "recommendations": [
+                                "This is a fallback analysis due to formatting issues with the original analysis.",
+                                f"Research this {deal.title} thoroughly before purchasing."
+                            ],
+                            "analysis_date": datetime.utcnow().isoformat()
+                        }
+
+            # Always include AI analysis in the response if available
             response["ai_analysis"] = ai_analysis
             
             # Add the score to the main response body for easier access
@@ -2415,13 +2484,22 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             logger.error(f"Failed to get deals for user {user_id}: {str(e)}")
             raise DatabaseError(f"Failed to get deals: {str(e)}", "get_deals") from e
 
-    async def _perform_realtime_scraping(self, query: str, category: Optional[str] = None) -> List[Deal]:
-        """
-        Perform real-time scraping for deals based on search query and optional category.
+    async def _perform_realtime_scraping(
+        self, 
+        query: str, 
+        category: Optional[str] = None,
+        min_price: Optional[float] = None,
+        max_price: Optional[float] = None,
+        ai_query_analysis: Optional[Dict[str, Any]] = None
+    ) -> List[Deal]:
+        """Real-time scraping of deals based on user search.
         
         Args:
             query: Search query
             category: Optional category to filter by
+            min_price: Optional minimum price to filter by
+            max_price: Optional maximum price to filter by
+            ai_query_analysis: Optional AI-generated query analysis
             
         Returns:
             List of Deal objects created from scraped results
@@ -2429,6 +2507,8 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
         logger.info(f"Performing real-time scraping for query: '{query}', category: {category}")
         
         created_deals = []
+        all_filtered_products = []  # Initialize list to collect filtered products from all markets
+        max_products = 15  # Reduce from 20 to 15 to improve performance
         
         try:
             # Get active markets
@@ -2446,72 +2526,519 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             search_terms = query.lower().strip().split()
             is_multi_word = len(search_terms) > 1
             
+            # Let the AI determine which terms are important in the context
+            # instead of using hardcoded stopwords
+            normalized_search_terms = []
+            
+            for term in search_terms:
+                # Skip only very short terms or single digits
+                if len(term) <= 1 or (term.isdigit() and len(term) <= 1):
+                    continue
+                normalized_search_terms.append(term)
+            
+            # If we've lost too many terms, restore some original ones
+            if len(normalized_search_terms) < 1 and len(search_terms) > 0:
+                normalized_search_terms = [term for term in search_terms if len(term) > 2]
+            
+            logger.info(f"Original search terms: {search_terms}")
+            logger.info(f"Normalized search terms: {normalized_search_terms}")
+            search_terms = normalized_search_terms
+            
+            # Prepare advanced filtering parameters from AI analysis
+            brands = []
+            features = []
+            quality_requirements = []
+            
+            # Add some helper functions for advanced string matching that work universally
+            def basic_similarity(string1, string2):
+                """Calculate basic similarity between two strings (0.0 to 1.0)"""
+                if not string1 or not string2:
+                    return 0.0
+                    
+                s1, s2 = string1.lower(), string2.lower()
+                # Check for exact match
+                if s1 == s2:
+                    return 1.0
+                    
+                # Check for substring
+                if s1 in s2 or s2 in s1:
+                    return 0.8
+                    
+                # Simple similarity: common characters divided by average length
+                common_chars = sum(1 for c in s1 if c in s2)
+                avg_len = (len(s1) + len(s2)) / 2
+                return common_chars / avg_len if avg_len > 0 else 0
+            
+            def flexible_term_match(term, text):
+                """Universal term matching approach that works for any type of product without predefined lists"""
+                if not term or not text:
+                    return False
+                    
+                # Direct matching
+                if term.lower() in text.lower():
+                    return True
+                
+                # Numbers are important in product searches (model numbers, etc.)
+                # Extract digits from both strings
+                term_digits = ''.join(c for c in term if c.isdigit())
+                text_digits = ''.join(c for c in text if c.isdigit())
+                
+                # If both have digits and they match
+                if term_digits and text_digits and term_digits in text_digits:
+                    return True
+                
+                # Simple word-by-word matching
+                term_words = term.lower().split()
+                text_words = text.lower().split()
+                
+                matched_words = 0
+                for word in term_words:
+                    if any(word in tw for tw in text_words) or any(tw in word for tw in text_words):
+                        matched_words += 1
+                
+                # If we match most of the words
+                if matched_words >= len(term_words) * 0.7:
+                    return True
+                
+                # Check similarity for longer terms
+                if len(term) > 3 and basic_similarity(term, text) > 0.7:
+                    return True
+                    
+                return False
+            
+            # Extract additional filtering criteria from AI analysis if available
+            if ai_query_analysis:
+                logger.info("Using AI query analysis for enhanced filtering")
+                
+                # Extract brand preferences if available
+                if "brands" in ai_query_analysis and ai_query_analysis["brands"]:
+                    brands = [brand.lower() for brand in ai_query_analysis["brands"] if brand]
+                    logger.info(f"Using brand filters: {brands}")
+                
+                # Extract feature requirements if available
+                if "features" in ai_query_analysis and ai_query_analysis["features"]:
+                    features = [feature.lower() for feature in ai_query_analysis["features"] if feature]
+                    logger.info(f"Using feature requirements: {features}")
+                
+                # Extract quality requirements if available
+                if "quality_requirements" in ai_query_analysis and ai_query_analysis["quality_requirements"]:
+                    quality_requirements = [req.lower() for req in ai_query_analysis["quality_requirements"] if req]
+                    logger.info(f"Using quality requirements: {quality_requirements}")
+                
+                # Override category if AI detected a more specific one and none was provided
+                if not category and ai_query_analysis.get("category"):
+                    category = _map_ai_category_to_enum(ai_query_analysis.get("category"))
+                    logger.info(f"Using AI-detected category: {category}")
+                
+                # Override price limits if AI detected them and none were provided
+                if min_price is None and ai_query_analysis.get("min_price") is not None:
+                    min_price = ai_query_analysis.get("min_price")
+                    logger.info(f"Using AI-detected minimum price: ${min_price}")
+                    
+                if max_price is None and ai_query_analysis.get("max_price") is not None:
+                    max_price = ai_query_analysis.get("max_price")
+                    logger.info(f"Using AI-detected maximum price: ${max_price}")
+            
             # Search each market
             for market in markets:
+                # SPEED OPTIMIZATION: Skip Walmart to save search time
+                if market.type.lower() != "amazon":
+                    logger.info(f"Skipping {market.type} search to optimize performance")
+                    continue
+                    
+                # Stop if we already have enough products
+                if len(created_deals) >= max_products:
+                    logger.info(f"Reached maximum of {max_products} products, stopping further scraping")
+                    break
+                    
                 logger.info(f"Searching {market.name} for '{query}'")
                 try:
-                    # Use search_products method instead of get_integration
-                    products = await market_factory.search_products(market.type, query)
-                    
-                    # Apply post-filtering for multi-word searches
-                    if is_multi_word:
-                        filtered_products = []
-                        for product in products:
-                            # Get title and description for relevance checking
-                            title = (product.get("title") or product.get("name", "")).lower()
-                            description = product.get("description", "").lower()
-                            
-                            # Check if product contains ALL search terms in either title or description
-                            all_terms_present = True
-                            for term in search_terms:
-                                if term not in title and term not in description:
-                                    all_terms_present = False
-                                    break
-                                    
-                            # If product is relevant, add it to filtered list
-                            if all_terms_present:
-                                filtered_products.append(product)
-                                
-                        # Replace original products with filtered ones
-                        products = filtered_products
-                        logger.info(f"Post-filtering reduced products from {len(products)} to {len(filtered_products)} for query '{query}'")
-                    
-                    # Process each product and create deals
-                    for product in products:
-                        try:
-                            # Create deal from product data
-                            deal_data = {
-                                "user_id": settings.SYSTEM_USER_ID,
-                                "market_id": market.id,
-                                "title": product.get("title") or product.get("name", "Unknown Product"),
-                                "description": product.get("description", ""),
-                                "url": product.get("url", ""),
-                                "price": Decimal(str(product.get("price", 0))),
-                                "original_price": Decimal(str(product.get("original_price", 0))) if product.get("original_price") else None,
-                                "currency": product.get("currency", "USD"),
-                                "source": market.type,
-                                "image_url": product.get("image_url", ""),
-                                "category": category or "OTHER",
-                                "seller_info": {
-                                    "name": product.get("seller", "Unknown"),
-                                    "rating": product.get("rating", 0),
-                                    "reviews": product.get("review_count", 0)
-                                },
-                                "deal_metadata": product,
-                                "status": "active"
+                    # Prepare market-specific search parameters
+                    search_params = {}
+                    if ai_query_analysis:
+                        # Convert the AI analysis into market-specific search parameters
+                        if market.type.lower() == "amazon":
+                            # For Amazon, we can use more specific parameters
+                            search_params = {
+                                "query": query,  # Changed 'keywords' to 'query' to match the expected parameter name
+                                "category": category,
+                                "min_price": min_price,
+                                "max_price": max_price
                             }
                             
-                            # Create the deal
-                            deal = await self._create_deal_from_scraped_data(deal_data)
-                            if deal:
-                                created_deals.append(deal)
+                            # Add branded search if available
+                            if ai_query_analysis.get("brands") and len(ai_query_analysis["brands"]) > 0:
+                                primary_brand = ai_query_analysis["brands"][0]
+                                search_params["query"] = f"{primary_brand} {query}"  # Changed 'keywords' to 'query'
+                                logger.info(f"Enhanced Amazon search with brand: {primary_brand}")
+                                
+                        elif market.type.lower() == "walmart":
+                            # For Walmart, adapt parameters to their API format
+                            search_params = {
+                                # No need to include 'query' here as it will be provided as a positional argument
+                                "category": category,  # Changed 'category_id' to 'category' to match the expected parameter name
+                                "min_price": min_price,
+                                "max_price": max_price
+                            }
+                        else:
+                            # Generic params for other markets
+                            search_params = {
+                                # No need to include 'query' here as it will be provided as a positional argument
+                                "category": category,
+                                "min_price": min_price,
+                                "max_price": max_price
+                            }
                             
+                        logger.info(f"Using AI-enhanced search parameters for {market.type}: {search_params}")
+                    
+                    # Use search_products method with enhanced parameters if available
+                    try:
+                        # MarketIntegrationFactory.search_products only accepts (market, query, page)
+                        # Create enhanced query instead of trying to pass other parameters
+                        enhanced_query = query
+                        if ai_query_analysis and "brands" in ai_query_analysis and ai_query_analysis["brands"]:
+                            enhanced_query = f"{ai_query_analysis['brands'][0]} {enhanced_query}"
+                        
+                        # Only use the parameters that the method actually accepts
+                        products = await market_factory.search_products(market.type, enhanced_query)
+                        logger.info(f"Found {len(products)} products from {market.type}")
+                    except TypeError as e:
+                        logger.error(f"Parameter error searching {market.type}: {str(e)}")
+                        # Fallback to basic search without additional parameters
+                        try:
+                            products = await market_factory.search_products(market.type, query)
+                            logger.info(f"Fallback search found {len(products)} products from {market.type}")
                         except Exception as e:
-                            logger.error(f"Error processing product: {str(e)}")
-                            continue
+                            logger.error(f"Error searching {market.type}: {str(e)}")
+                            products = []
+                    
+                    # Apply post-filtering for multi-word searches and AI criteria
+                    filtered_products = []
+                    product_scores = []  # Track products with their relevance scores for fallback
+                    
+                    for product in products:
+                        # Get title and description for relevance checking
+                        title = (product.get("title") or product.get("name", "")).lower()
+                        description = product.get("description", "").lower()
+                        product_price = float(product.get("price", 0))
+                        
+                        # Calculate a basic relevance score for fallback
+                        relevance_score = 0
+                        
+                        # Skip products outside price range if specified
+                        # Don't apply price filters if both min and max are 0 or very small values
+                        # (likely due to parsing errors like "$00")
+                        should_apply_price_filters = not (
+                            (min_price is not None and min_price < 1.0 and 
+                             max_price is not None and max_price < 1.0)
+                        )
+                        
+                        if should_apply_price_filters:
+                            if min_price is not None and product_price < min_price:
+                                # Less relevant but keep for fallback
+                                relevance_score -= 5
+                                product_scores.append((product, relevance_score))
+                                continue
+                            if max_price is not None and product_price > max_price:
+                                # Less relevant but keep for fallback
+                                relevance_score -= 10
+                                product_scores.append((product, relevance_score))
+                                continue
+                        else:
+                            logger.info(f"Skipping price filtering for invalid price range: min={min_price}, max={max_price}")
+                        
+                        # Apply multi-word filtering with reduced strictness
+                        if is_multi_word:
+                            # Use a simple scoring approach rather than specific categorization
+                            matched_terms = 0
+                            total_similarity = 0.0
                             
+                            # Get AI-identified keywords for higher priority matching
+                            ai_keywords = []
+                            if ai_query_analysis and "keywords" in ai_query_analysis:
+                                ai_keywords = [kw.lower() for kw in ai_query_analysis["keywords"] if kw]
+                            
+                            # Calculate how many search terms match the product
+                            for term in search_terms:
+                                if flexible_term_match(term, title) or flexible_term_match(term, description):
+                                    matched_terms += 1
+                                    # Bonus points for AI-identified important keywords
+                                    if ai_keywords and any(kw in term or term in kw for kw in ai_keywords):
+                                        relevance_score += 4  # Extra points for matches on AI-identified terms
+                                    else:
+                                        relevance_score += 2  # Base score for term match
+                                    
+                                    # Add similarity score for better ranking
+                                    title_sim = basic_similarity(term, title)
+                                    desc_sim = basic_similarity(term, description)
+                                    total_similarity += max(title_sim, desc_sim)
+                                    relevance_score += int(max(title_sim, desc_sim) * 3)  # Bonus for similarity
+                                else:
+                                    logger.debug(f"Term '{term}' not matched in: {title}")
+                            
+                            # Calculate required matches - more lenient with 40% threshold
+                            # Use even lower threshold if AI has identified important keywords
+                            threshold_pct = 0.4
+                            if ai_keywords and any(flexible_term_match(kw, title) or flexible_term_match(kw, description) for kw in ai_keywords):
+                                threshold_pct = 0.3  # Even more lenient if we match important AI keywords
+                                
+                            required_matches = max(1, int(len(search_terms) * threshold_pct))
+                            
+                            if matched_terms < required_matches:
+                                # Not enough terms matched - but add to fallback with score
+                                relevance_score -= (required_matches - matched_terms) * 3
+                                product_scores.append((product, relevance_score))
+                                logger.debug(f"Multi-word filter: Product scored {relevance_score}, matched {matched_terms}/{len(search_terms)} terms: {title}")
+                                continue
+                            else:
+                                # Bonus for matching more terms and higher similarity
+                                relevance_score += matched_terms
+                                relevance_score += int(total_similarity * 2)
+                        
+                        # Apply brand filtering if specified, but less strictly
+                        if brands:
+                            brand_matches = False
+                            # Try to find brand in product data
+                            product_brand = product.get("brand", "").lower()
+                            
+                            # Also check brand mentions in title and description
+                            for brand in brands:
+                                if (flexible_term_match(brand, product_brand) or 
+                                    flexible_term_match(brand, title) or 
+                                    flexible_term_match(brand, description)):
+                                    brand_matches = True
+                                    relevance_score += 5  # Brands are important, high score
+                                    break
+                                    
+                            if not brand_matches and brands:
+                                # Skip if brand doesn't match and brands were specified
+                                # But keep for fallback with penalty
+                                relevance_score -= 5
+                                product_scores.append((product, relevance_score))
+                                logger.debug(f"Brand filter: No match for brands {brands} in: {title}")
+                                continue
+                        
+                        # Apply feature filtering - lowered threshold to 30%
+                        if features:
+                            matched_features = 0
+                            for feature in features:
+                                if flexible_term_match(feature, title) or flexible_term_match(feature, description):
+                                    matched_features += 1
+                                    relevance_score += 3  # Features are important
+                                    
+                            # Only keep products that match at least 30% of the required features
+                            min_features = max(1, int(len(features) * 0.3))
+                            
+                            if matched_features < min_features:
+                                # Not enough features matched, but keep for fallback
+                                relevance_score -= (min_features - matched_features) * 2
+                                product_scores.append((product, relevance_score))
+                                logger.debug(f"Feature filter: Only matched {matched_features}/{len(features)} features in: {title}")
+                                continue
+                        
+                        # Apply quality requirements - similar approach to features but even less strict
+                        if quality_requirements:
+                            matched_quality = 0
+                            for req in quality_requirements:
+                                if flexible_term_match(req, title) or flexible_term_match(req, description):
+                                    matched_quality += 1
+                                    relevance_score += 2
+                                
+                                # If no quality requirements match at all, add small penalty but don't exclude
+                                if matched_quality == 0 and quality_requirements:
+                                    relevance_score -= 2
+                                    # But don't exclude the product
+                            
+                        # Product passed all filters
+                        relevance_score += 10  # Bonus for passing all filters
+                        product_scores.append((product, relevance_score))
+                        filtered_products.append(product)
+                    
+                    # Replace original products with filtered ones
+                    original_count = len(products)
+                    products = filtered_products
+                    logger.info(f"Post-filtering reduced products from {original_count} to {len(filtered_products)} for query '{query}'")
+                    
+                    # Add filtered products from this market to all_filtered_products list
+                    all_filtered_products.extend(filtered_products)
+                    
+                    # Store market info in the product for later processing
+                    for product in filtered_products:
+                        product['market'] = market.type
+                
                 except Exception as e:
                     logger.error(f"Error searching market {market.name}: {str(e)}")
+                    continue
+            
+            # After all markets are processed, use the combined filtered products from all markets
+            logger.info(f"Found a total of {len(all_filtered_products)} products across all markets after filtering")
+            
+            # Early filtering - use relevance scores to limit products before expensive AI analysis
+            if len(all_filtered_products) > max_products * 2:
+                logger.info(f"Pre-filtering products before AI analysis: {len(all_filtered_products)} → {max_products * 2}")
+                # Sort products by their basic match score if available
+                if product_scores:
+                    sorted_products = sorted(product_scores, key=lambda x: x[1], reverse=True)
+                    # Get just the product objects from the top scored items
+                    all_filtered_products = [p[0] for p in sorted_products[:max_products * 2]]
+                else:
+                    # If no scores available, just take the first batch
+                    all_filtered_products = all_filtered_products[:max_products * 2]
+            
+            # If we have zero results after filtering, use fallback mechanism to return some results
+            if len(all_filtered_products) == 0 and product_scores:
+                logger.warning("All products were filtered out by strict criteria. Using fallback mechanism.")
+                
+                # Sort products by relevance score (highest first)
+                sorted_products = sorted(product_scores, key=lambda x: x[1], reverse=True)
+                
+                # Take top 5 most relevant products
+                fallback_count = min(5, len(sorted_products))
+                logger.info(f"Selecting top {fallback_count} products as fallback results from {len(sorted_products)} total")
+                
+                for i in range(fallback_count):
+                    product, score = sorted_products[i]
+                    logger.info(f"Fallback product {i+1}: '{product.get('title', '')}' with relevance score {score}")
+                    
+                    # Add market information if it's missing
+                    if 'market' not in product:
+                        # Try to determine market from product data or default to UNKNOWN
+                        if 'marketplace' in product:
+                            product['market'] = product['marketplace']
+                        elif 'source' in product:
+                            product['market'] = product['source']
+                        else:
+                            product['market'] = "UNKNOWN"
+                    
+                    all_filtered_products.append(product)
+                
+                logger.info(f"Added {len(all_filtered_products)} fallback products to results")
+            
+            # Process the combined filtered products - limit to max capacity
+            if len(all_filtered_products) > max_products:
+                logger.info(f"Limiting to {max_products} products out of {len(all_filtered_products)} total available")
+                all_filtered_products = all_filtered_products[:max_products]
+               
+            # Perform batch AI analysis on all filtered products before creating deals
+            if ai_query_analysis and all_filtered_products:
+                try:
+                    from core.services.ai import AIService
+                    ai_service = AIService()
+                    
+                    if ai_service and ai_service.llm:
+                        logger.info(f"Performing batch AI analysis on {len(all_filtered_products)} products")
+                        
+                        # Add a timeout to ensure AI analysis doesn't take too long
+                        try:
+                            # Create a task for AI analysis with timeout
+                            ai_analysis_task = asyncio.create_task(
+                                ai_service.batch_analyze_products(
+                                    products=all_filtered_products,
+                                    search_query=query
+                                )
+                            )
+                            
+                            # Wait for the task with a timeout (10 seconds)
+                            analyzed_products = await asyncio.wait_for(ai_analysis_task, timeout=10.0)
+                            
+                            if analyzed_products:
+                                logger.info(f"AI analysis completed for {len(analyzed_products)} out of {len(all_filtered_products)} products")
+                                
+                                # Replace all filtered products with only those that AI found relevant
+                                # This ensures we only create deals for relevant products
+                                all_filtered_products = analyzed_products
+                                
+                                # Log the scores for debugging
+                                for product in all_filtered_products:
+                                    if 'ai_analysis' in product:
+                                        score = product['ai_analysis'].get('score', 0)
+                                        logger.info(f"Product '{product.get('title', 'Unknown')}' has AI relevance score: {score}")
+                            else:
+                                logger.warning("Batch AI analysis returned no relevant products")
+                                # Don't return empty results, use the original filtered products as a fallback
+                                logger.info("Using filtered products as fallback when AI returns no results")
+                                
+                                # Create simple AI analysis scores for each product for consistency
+                                for product in all_filtered_products:
+                                    product['ai_analysis'] = {
+                                        'score': 0.7,  # Default reasonable score
+                                        'relevance': 'medium',
+                                        'match_reason': 'Basic text match without AI analysis'
+                                    }
+                        except asyncio.TimeoutError:
+                            logger.warning("AI analysis timed out, using non-AI analyzed products")
+                            # If AI analysis takes too long, proceed with the current filtered products
+                            # Create simple AI analysis scores for each product for consistency
+                            for product in all_filtered_products:
+                                product['ai_analysis'] = {
+                                    'score': 0.7,  # Default reasonable score
+                                    'relevance': 'medium',
+                                    'match_reason': 'Basic text match without AI analysis'
+                                }
+                    else:
+                        logger.warning("AI service or LLM not available for product analysis")
+                except Exception as e:
+                    logger.error(f"Error performing batch AI analysis: {str(e)}")
+                    logger.error(traceback.format_exc())
+                
+            # Process each product in the combined list
+            for product in all_filtered_products:
+                try:
+                    # If there's no AI analysis, add a simple one with a moderate score
+                    if 'ai_analysis' not in product:
+                        product['ai_analysis'] = {
+                            'score': 0.65,  # Slightly lower than fallback but still reasonable
+                            'relevance': 'moderate',
+                            'match_reason': 'Basic keyword match'
+                        }
+                        logger.info(f"Added default AI analysis for product: {product.get('title', 'Unknown')}")
+                    
+                    # Skip products with very low relevance scores (below 0.5)
+                    if product['ai_analysis'].get('score', 0) < 0.5:
+                        logger.info(f"Skipping product with very low relevance score ({product['ai_analysis'].get('score', 0)}): {product.get('title', 'Unknown')}")
+                        continue
+                    
+                    # Get the market for this product
+                    market_type = product.get("source") or product.get("market", "unknown")
+                    market_obj = next((m for m in markets if m.type.lower() == market_type.lower()), markets[0] if markets else None)
+                    
+                    if not market_obj:
+                        logger.warning(f"No market found for product from {market_type}, skipping")
+                        continue
+                    
+                    # Create deal from product data
+                    deal_data = {
+                        "user_id": settings.SYSTEM_USER_ID,
+                        "market_id": market_obj.id,
+                        "title": product.get("title") or product.get("name", "Unknown Product"),
+                        "description": product.get("description", ""),
+                        "url": product.get("url", ""),
+                        "price": Decimal(str(product.get("price", 0))),
+                        "original_price": Decimal(str(product.get("original_price", 0))) if product.get("original_price") else None,
+                        "currency": product.get("currency", "USD"),
+                        "source": market_obj.type,
+                        "image_url": product.get("image_url", ""),
+                        "category": category or "OTHER",
+                        "seller_info": {
+                            "name": product.get("seller", "Unknown"),
+                            "rating": product.get("rating", 0),
+                            "reviews": product.get("review_count", 0)
+                        },
+                        "deal_metadata": product,
+                        "status": "active"
+                    }
+                    
+                    # Add AI query analysis data to deal metadata to improve future analysis
+                    if ai_query_analysis:
+                        deal_data["deal_metadata"]["ai_query_analysis"] = ai_query_analysis
+                            
+                    # Create the deal
+                    deal = await self._create_deal_from_scraped_data(deal_data)
+                    if deal:
+                        created_deals.append(deal)
+                        
+                except Exception as e:
+                    logger.error(f"Error processing product: {str(e)}")
                     continue
             
             logger.info(f"Real-time scraping completed. Created {len(created_deals)} new deals.")
@@ -2520,3 +3047,53 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
         except Exception as e:
             logger.error(f"Error in real-time scraping: {str(e)}", exc_info=True)
             return []
+
+def _map_ai_category_to_enum(category: str) -> str:
+    """Map AI-generated category to a valid MarketCategory enum value."""
+    category_lower = category.lower()
+    
+    # Direct mappings
+    category_map = {
+        "electronics": MarketCategory.ELECTRONICS,
+        "fashion": MarketCategory.FASHION,
+        "home": MarketCategory.HOME,
+        "toys": MarketCategory.TOYS,
+        "books": MarketCategory.BOOKS,
+        "sports": MarketCategory.SPORTS,
+        "automotive": MarketCategory.AUTOMOTIVE,
+        "health": MarketCategory.HEALTH,
+        "beauty": MarketCategory.BEAUTY,
+        "grocery": MarketCategory.GROCERY,
+        "perfume": MarketCategory.BEAUTY,
+        "fragrance": MarketCategory.BEAUTY,
+        "cologne": MarketCategory.BEAUTY
+    }
+    
+    # Check for direct match
+    if category_lower in category_map:
+        return category_map[category_lower].value
+    
+    # Check for substring matches
+    if "electronic" in category_lower or "tech" in category_lower or "gaming" in category_lower or "computer" in category_lower:
+        return MarketCategory.ELECTRONICS.value
+    if "fashion" in category_lower or "cloth" in category_lower or "apparel" in category_lower:
+        return MarketCategory.FASHION.value
+    if "home" in category_lower or "kitchen" in category_lower or "furniture" in category_lower:
+        return MarketCategory.HOME.value
+    if "toy" in category_lower or "game" in category_lower:
+        return MarketCategory.TOYS.value
+    if "book" in category_lower or "media" in category_lower:
+        return MarketCategory.BOOKS.value
+    if "sport" in category_lower or "fitness" in category_lower or "outdoor" in category_lower:
+        return MarketCategory.SPORTS.value
+    if "auto" in category_lower or "car" in category_lower:
+        return MarketCategory.AUTOMOTIVE.value
+    if "health" in category_lower or "wellness" in category_lower:
+        return MarketCategory.HEALTH.value
+    if "beauty" in category_lower or "cosmetic" in category_lower or "perfume" in category_lower or "cologne" in category_lower or "fragrance" in category_lower:
+        return MarketCategory.BEAUTY.value
+    if "grocery" in category_lower or "food" in category_lower:
+        return MarketCategory.GROCERY.value
+    
+    # Default
+    return MarketCategory.OTHER.value

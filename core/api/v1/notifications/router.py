@@ -31,6 +31,7 @@ from core.models.user import User, UserInDB
 from core.api.v1.notifications.websocket import handle_websocket
 from core.services.token import TokenService
 from core.services.analytics import AnalyticsService
+from core.services.auth import create_access_token
 from core.api.v1.dependencies import (
     get_token_service,
     get_analytics_service
@@ -51,6 +52,27 @@ router = APIRouter(tags=["notifications"])
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time notifications."""
     await handle_websocket(websocket)
+
+@router.get("/websocket-token")
+async def get_websocket_token(current_user: User = Depends(get_current_user)):
+    """Generate a token for WebSocket authentication.
+    
+    Returns:
+        Dict with token that can be used for WebSocket authentication
+    """
+    try:
+        # Create a short-lived token specifically for WebSocket connections
+        token = await create_access_token(
+            data={"sub": str(current_user.id)},
+            expires_delta=timedelta(minutes=60)  # 1 hour expiration for WebSocket tokens
+        )
+        return {"token": token}
+    except Exception as e:
+        logger.error(f"Failed to generate WebSocket token: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate WebSocket token"
+        )
 
 @router.get(
     "",

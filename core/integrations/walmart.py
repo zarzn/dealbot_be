@@ -62,7 +62,7 @@ class WalmartIntegration(MarketBase):
         min_price: Optional[float] = None,
         max_price: Optional[float] = None,
         sort_by: Optional[str] = None,
-        limit: int = 10
+        limit: int = 25
     ) -> List[Dict[str, Any]]:
         """Search for products on Walmart."""
         try:

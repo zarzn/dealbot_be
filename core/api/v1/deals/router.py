@@ -46,6 +46,8 @@ from core.repositories.market import MarketRepository
 from core.services.deal_analysis import DealAnalysisService
 from core.services.market import MarketService
 from core.exceptions import NotFoundException, ValidationError
+from core.services.ai import AIService
+from core.api.v1.ai.router import get_ai_service
 
 logger = logging.getLogger(__name__)
 
@@ -732,14 +734,20 @@ async def search_deals(
         # Log search parameters for debugging
         logger.info(f"Search query: '{search.query}', Category: {search.category}, Price range: {search.min_price}-{search.max_price}")
         
-        # Check for real-time scraping flags in headers
+        # Always enable real-time scraping by default when querying with text
+        # This ensures we'll get results even if nothing is in the database
+        if search.query:
+            search.use_realtime_scraping = True
+            logger.info("Enabling real-time scraping by default for text query")
+        
+        # Check for real-time scraping flags in headers as well
         enable_scraping = request.headers.get('X-Enable-Scraping', '').lower() == 'true'
         real_time_search = request.headers.get('X-Real-Time-Search', '').lower() == 'true'
         
         if enable_scraping or real_time_search:
-            logger.info(f"Real-time scraping enabled via headers: scraping={enable_scraping}, real_time={real_time_search}")
+            logger.info(f"Real-time scraping explicitly enabled via headers: scraping={enable_scraping}, real_time={real_time_search}")
             search.use_realtime_scraping = True
-            # Ensure AI analysis is enabled for real-time searches
+            # Ensure AI analysis is ALWAYS enabled for real-time searches
             if not perform_ai_analysis:
                 logger.info("Enabling AI analysis for real-time scraping")
                 perform_ai_analysis = True

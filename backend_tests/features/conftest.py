@@ -20,32 +20,18 @@ async def mock_redis_for_features():
     that Redis operations use a mock implementation instead of trying to
     connect to a real Redis server.
     """
-    # Patch both the get_redis_service function AND the RedisService initialization
-    with patch('core.services.redis.get_redis_service', return_value=get_mock_redis_service()) as _:
-        with patch('core.services.redis.RedisService._client', redis_mock):
-            # Reset the mock Redis state
-            await redis_mock.flushdb()
-            
-            # Pre-populate with test data if needed
-            await redis_mock.set("test_key", "test_value")
-            
-            # Add task metadata for test expectations
-            for i in range(3):
-                task_key = f"task:task_{i}"
-                task_data = {
-                    "id": f"task_{i}",
-                    "status": "completed",
-                    "created_at": "2025-02-27T08:00:00+00:00",
-                    "completed_at": "2025-02-27T08:01:00+00:00"
-                }
-                await redis_mock.set(task_key, task_data)
-            
-            logger.info("Redis mock initialized for feature test")
-            yield
-            
-            # Cleanup
-            await redis_mock.flushdb()
-            logger.info("Redis mock cleaned up after feature test")
+    # Get the mock Redis service
+    mock_redis_service = await get_redis_service_mock()
+    
+    # Patch the get_redis_service function to return our mock
+    with patch('core.services.redis.get_redis_service', return_value=mock_redis_service) as _:
+        # Reset the mock Redis state
+        if hasattr(mock_redis_service, '_client') and mock_redis_service._client:
+            await mock_redis_service._client.flushdb()
+        
+        logger.info("Redis mock initialized for feature test")
+        yield
+        logger.info("Redis mock cleaned up after feature test")
 
 @pytest.fixture(scope="function")
 async def redis_client() -> Redis:

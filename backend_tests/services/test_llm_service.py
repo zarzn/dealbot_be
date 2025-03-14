@@ -11,7 +11,8 @@ from core.services.llm_service import (
     LLMProvider,
     LLMConfig,
     LLMResponse,
-    LLMError
+    LLMError,
+    LLMMessage
 )
 
 @pytest.fixture
@@ -55,7 +56,7 @@ async def test_llm_service_initialization(mock_env_vars):
         max_tokens=2000
     )
     deepseek_service = LLMService(config=deepseek_config)
-    assert deepseek_service.config.provider == LLMProvider.DEEPSEEK_R1
+    assert deepseek_service.config.provider == LLMProvider.DEEPSEEK_R1.value
     assert deepseek_service.config.api_key == "test_deepseek_key"
     
     # Test GPT-4 initialization
@@ -66,7 +67,7 @@ async def test_llm_service_initialization(mock_env_vars):
         max_tokens=3000
     )
     gpt4_service = LLMService(config=gpt4_config)
-    assert gpt4_service.config.provider == LLMProvider.GPT4
+    assert gpt4_service.config.provider == LLMProvider.GPT4.value
     assert gpt4_service.config.api_key == "test_openai_key"
 
 @pytest.mark.asyncio
@@ -75,11 +76,11 @@ async def test_get_llm_service(mock_env_vars):
     """Test the get_llm_service factory function."""
     # Test default service (should be DeepSeek R1 in development)
     default_service = await get_llm_service()
-    assert default_service.config.provider == LLMProvider.DEEPSEEK_R1
+    assert default_service.config.provider == LLMProvider.DEEPSEEK_R1.value
     
     # Test getting specific provider
     deepseek_service = await get_llm_service(provider=LLMProvider.DEEPSEEK_R1)
-    assert deepseek_service.config.provider == LLMProvider.DEEPSEEK_R1
+    assert deepseek_service.config.provider == LLMProvider.DEEPSEEK_R1.value
     
     # Test custom configuration
     custom_config = LLMConfig(
@@ -89,7 +90,7 @@ async def test_get_llm_service(mock_env_vars):
         max_tokens=500
     )
     custom_service = await get_llm_service(config=custom_config)
-    assert custom_service.config.provider == LLMProvider.GPT4
+    assert custom_service.config.provider == LLMProvider.GPT4.value
     assert custom_service.config.api_key == "custom_key"
     assert custom_service.config.temperature == 0.1
     assert custom_service.config.max_tokens == 500
@@ -106,7 +107,9 @@ async def test_llm_service_generate_text(mock_env_vars, mock_llm_responses):
                new_callable=AsyncMock) as mock_deepseek:
         mock_deepseek.return_value = LLMResponse(
             text=mock_llm_responses["deepseek"]["text"],
-            usage=mock_llm_responses["deepseek"]["usage"]
+            usage=mock_llm_responses["deepseek"]["usage"],
+            model=LLMProvider.DEEPSEEK_R1.value,
+            provider=LLMProvider.DEEPSEEK_R1.value
         )
         
         deepseek_config = LLMConfig(
@@ -117,6 +120,7 @@ async def test_llm_service_generate_text(mock_env_vars, mock_llm_responses):
         response = await deepseek_service.generate_text(prompt)
         
         assert response.text == mock_llm_responses["deepseek"]["text"]
+        assert response.content == mock_llm_responses["deepseek"]["text"]
         assert response.usage == mock_llm_responses["deepseek"]["usage"]
         # Check that the method was called with the correct message format and parameters
         mock_deepseek.assert_called_once_with(messages, 0.7, 1000)
@@ -126,7 +130,9 @@ async def test_llm_service_generate_text(mock_env_vars, mock_llm_responses):
                new_callable=AsyncMock) as mock_openai:
         mock_openai.return_value = LLMResponse(
             text=mock_llm_responses["gpt4"]["text"],
-            usage=mock_llm_responses["gpt4"]["usage"]
+            usage=mock_llm_responses["gpt4"]["usage"],
+            model=LLMProvider.GPT4.value,
+            provider=LLMProvider.GPT4.value
         )
         
         gpt4_config = LLMConfig(
@@ -137,9 +143,54 @@ async def test_llm_service_generate_text(mock_env_vars, mock_llm_responses):
         response = await gpt4_service.generate_text(prompt)
         
         assert response.text == mock_llm_responses["gpt4"]["text"]
+        assert response.content == mock_llm_responses["gpt4"]["text"]
         assert response.usage == mock_llm_responses["gpt4"]["usage"]
         # Check that the method was called with the correct message format and parameters
         mock_openai.assert_called_once_with(messages, 0.7, 1000)
+
+@pytest.mark.asyncio
+@pytest.mark.service
+async def test_llm_message_model():
+    """Test the LLMMessage model functionality."""
+    # Test creating a message
+    message = LLMMessage(role="user", content="This is a test message")
+    assert message.role == "user"
+    assert message.content == "This is a test message"
+    
+    # Test converting to dict
+    message_dict = message.model_dump()
+    assert message_dict["role"] == "user"
+    assert message_dict["content"] == "This is a test message"
+
+@pytest.mark.asyncio
+@pytest.mark.service
+async def test_llm_response_model():
+    """Test the LLMResponse model functionality."""
+    # Test creating a response with content
+    response = LLMResponse(content="This is a test response")
+    assert response.content == "This is a test response"
+    assert response.text == "This is a test response"
+    
+    # Test creating a response with text
+    response = LLMResponse(text="This is another test response")
+    assert response.text == "This is another test response"
+    assert response.content == "This is another test response"
+    
+    # Test metadata and other fields
+    response = LLMResponse(
+        content="Test response",
+        model="test-model",
+        provider="test-provider",
+        tokens_used=100,
+        metadata={"test": "metadata"},
+        usage={"prompt_tokens": 50, "completion_tokens": 50}
+    )
+    assert response.model == "test-model"
+    assert response.provider == "test-provider"
+    assert response.tokens_used == 100
+    assert response.metadata == {"test": "metadata"}
+    assert response.usage == {"prompt_tokens": 50, "completion_tokens": 50}
+    assert response.used_fallback is False
 
 @pytest.mark.asyncio
 @pytest.mark.service

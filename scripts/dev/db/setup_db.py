@@ -458,86 +458,109 @@ def create_default_user_local():
         return False
 
 def create_default_markets_docker():
-    """Create default market configurations in the database using Docker."""
+    """Create default markets data for Docker environment."""
     try:
-        # Use docker exec to run SQL commands in the postgres container
-        # First check if markets already exist
-        result = subprocess.run(
-            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
-             "SELECT id FROM markets WHERE name IN ('Amazon', 'Walmart')"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        sql_commands = [
+            # Insert Amazon market
+            """
+            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            VALUES (
+                gen_random_uuid(), 
+                'Amazon', 
+                'amazon', 
+                'Amazon Marketplace Integration', 
+                'active', 
+                'https://api.amazon.com', 
+                '{"api_key": "DEMO_KEY", "region": "us-east-1", "throttle_rate": 60}',
+                NOW(), 
+                NOW()
+            ) ON CONFLICT (name) DO NOTHING;
+            """,
+            
+            # Insert Walmart market
+            """
+            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            VALUES (
+                gen_random_uuid(), 
+                'Walmart', 
+                'walmart', 
+                'Walmart Marketplace Integration', 
+                'active', 
+                'https://api.walmart.com', 
+                '{"api_key": "DEMO_KEY", "throttle_rate": 50}',
+                NOW(), 
+                NOW()
+            ) ON CONFLICT (name) DO NOTHING;
+            """,
+            
+            # Insert eBay market
+            """
+            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            VALUES (
+                gen_random_uuid(), 
+                'eBay', 
+                'ebay', 
+                'eBay Marketplace Integration', 
+                'active', 
+                'https://api.ebay.com', 
+                '{"api_key": "DEMO_KEY", "sandbox": true}',
+                NOW(), 
+                NOW()
+            ) ON CONFLICT (name) DO NOTHING;
+            """,
+            
+            # Create sample deals - using hardcoded system user ID
+            """
+            INSERT INTO deals (id, title, description, url, price, currency, market_id, created_at, updated_at, status, user_id)
+            SELECT 
+                gen_random_uuid(), 
+                'Sample Electronics Deal', 
+                'Great deal on electronics item', 
+                'https://amazon.com/sample1', 
+                99.99, 
+                'USD', 
+                id, 
+                NOW(), 
+                NOW(),
+                'active',
+                '00000000-0000-4000-a000-000000000001'
+            FROM markets WHERE name = 'Amazon'
+            ON CONFLICT DO NOTHING;
+            """,
+            
+            """
+            INSERT INTO deals (id, title, description, url, price, currency, market_id, created_at, updated_at, status, user_id)
+            SELECT 
+                gen_random_uuid(), 
+                'Walmart Special Offer', 
+                'Limited time offer from Walmart', 
+                'https://walmart.com/sample1', 
+                49.99, 
+                'USD', 
+                id, 
+                NOW(), 
+                NOW(),
+                'active',
+                '00000000-0000-4000-a000-000000000001'
+            FROM markets WHERE name = 'Walmart'
+            ON CONFLICT DO NOTHING;
+            """
+        ]
         
-        # If markets exist, skip creation
-        if "0 rows" not in result.stdout:
-            logger.info("Default markets already exist, skipping creation (Docker)")
-            return True
-        
-        # Create default markets for Amazon and Walmart
-        amazon_id = str(uuid4())
-        walmart_id = str(uuid4())
-        system_user_id = "00000000-0000-4000-a000-000000000001"
-        
-        # Insert Amazon market
-        amazon_config = {
-            "country": "US",
-            "max_results": 20,
-            "search_index": "All"
-        }
-        
-        amazon_query = f"""
-        INSERT INTO markets (
-            id, name, type, category, description, api_endpoint, api_key, user_id, 
-            status, config, rate_limit, is_active, created_at, updated_at
-        ) VALUES (
-            '{amazon_id}', 'Amazon', 'amazon', 'electronics', 'Amazon marketplace', 
-            'https://api.scraperapi.com/amazon', 'sample_key', '{system_user_id}', 
-            'active', '{json.dumps(amazon_config)}', 50, TRUE, 
-            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-        )
-        """
-        
-        subprocess.run(
-            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', amazon_query],
-            check=True
-        )
-        
-        logger.info(f"Amazon market created successfully with ID: {amazon_id}")
-        
-        # Insert Walmart market
-        walmart_config = {
-            "country": "US",
-            "max_results": 20
-        }
-        
-        walmart_query = f"""
-        INSERT INTO markets (
-            id, name, type, category, description, api_endpoint, api_key, user_id, 
-            status, config, rate_limit, is_active, created_at, updated_at
-        ) VALUES (
-            '{walmart_id}', 'Walmart', 'walmart', 'home', 'Walmart marketplace', 
-            'https://api.scraperapi.com/walmart', 'sample_key', '{system_user_id}', 
-            'active', '{json.dumps(walmart_config)}', 50, TRUE, 
-            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-        )
-        """
-        
-        subprocess.run(
-            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', walmart_query],
-            check=True
-        )
-        
-        logger.info(f"Walmart market created successfully with ID: {walmart_id}")
+        for sql in sql_commands:
+            subprocess.run(
+                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', sql],
+                check=True,
+            )
+            
+        logger.info("Default markets created successfully (Docker)")
         return True
-        
     except Exception as e:
         logger.error(f"Failed to create default markets (Docker): {str(e)}")
         return False
 
 def create_default_markets_local():
-    """Create default market configurations in the database using local connection."""
+    """Create default markets data for local environment."""
     try:
         # Get database connection parameters from environment variables
         db_host = os.environ.get('DB_HOST', 'localhost')
@@ -545,102 +568,108 @@ def create_default_markets_local():
         db_user = os.environ.get('DB_USER', 'postgres')
         db_port = os.environ.get('DB_PORT', '5432')
         
-        # Connect to the database
+        # Connect to database
         connection_string = f'postgresql://{db_user}:{db_password}@{db_host}:{db_port}/agentic_deals'
-        logger.info(f"Connecting to agentic_deals database at {db_host}:{db_port}")
         engine = create_engine(connection_string)
-        Session = sessionmaker(bind=engine)
-        session = Session()
+        conn = engine.connect()
         
-        # Check if markets already exist
-        result = session.execute(text("SELECT id FROM markets WHERE name IN ('Amazon', 'Walmart')"))
-        markets = result.fetchall()
+        # SQL commands to insert default market data
+        sql_commands = [
+            # Insert Amazon market
+            """
+            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            VALUES (
+                gen_random_uuid(), 
+                'Amazon', 
+                'amazon', 
+                'Amazon Marketplace Integration', 
+                'active', 
+                'https://api.amazon.com', 
+                '{"api_key": "DEMO_KEY", "region": "us-east-1", "throttle_rate": 60}',
+                NOW(), 
+                NOW()
+            ) ON CONFLICT (name) DO NOTHING;
+            """,
+            
+            # Insert Walmart market
+            """
+            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            VALUES (
+                gen_random_uuid(), 
+                'Walmart', 
+                'walmart', 
+                'Walmart Marketplace Integration', 
+                'active', 
+                'https://api.walmart.com', 
+                '{"api_key": "DEMO_KEY", "throttle_rate": 50}',
+                NOW(), 
+                NOW()
+            ) ON CONFLICT (name) DO NOTHING;
+            """,
+            
+            # Insert eBay market
+            """
+            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            VALUES (
+                gen_random_uuid(), 
+                'eBay', 
+                'ebay', 
+                'eBay Marketplace Integration', 
+                'active', 
+                'https://api.ebay.com', 
+                '{"api_key": "DEMO_KEY", "sandbox": true}',
+                NOW(), 
+                NOW()
+            ) ON CONFLICT (name) DO NOTHING;
+            """,
+            
+            # Create sample deals - using hardcoded system user ID
+            """
+            INSERT INTO deals (id, title, description, url, price, currency, market_id, created_at, updated_at, status, user_id)
+            SELECT 
+                gen_random_uuid(), 
+                'Sample Electronics Deal', 
+                'Great deal on electronics item', 
+                'https://amazon.com/sample1', 
+                99.99, 
+                'USD', 
+                id, 
+                NOW(), 
+                NOW(),
+                'active',
+                '00000000-0000-4000-a000-000000000001'
+            FROM markets WHERE name = 'Amazon'
+            ON CONFLICT DO NOTHING;
+            """,
+            
+            """
+            INSERT INTO deals (id, title, description, url, price, currency, market_id, created_at, updated_at, status, user_id)
+            SELECT 
+                gen_random_uuid(), 
+                'Walmart Special Offer', 
+                'Limited time offer from Walmart', 
+                'https://walmart.com/sample1', 
+                49.99, 
+                'USD', 
+                id, 
+                NOW(), 
+                NOW(),
+                'active',
+                '00000000-0000-4000-a000-000000000001'
+            FROM markets WHERE name = 'Walmart'
+            ON CONFLICT DO NOTHING;
+            """
+        ]
         
-        if markets:
-            logger.info("Default markets already exist, skipping creation (Local)")
-            session.close()
-            engine.dispose()
-            return True
+        for sql in sql_commands:
+            conn.execute(text(sql))
+            
+        conn.execute(text("COMMIT"))
         
-        # Create default markets for Amazon and Walmart
-        amazon_id = str(uuid4())
-        walmart_id = str(uuid4())
-        system_user_id = "00000000-0000-4000-a000-000000000001"
-        
-        # Amazon market configuration
-        amazon_config = {
-            "country": "US",
-            "max_results": 20,
-            "search_index": "All"
-        }
-        
-        # Insert Amazon market
-        session.execute(
-            text("""
-            INSERT INTO markets (
-                id, name, type, category, description, api_endpoint, api_key, user_id, 
-                status, config, rate_limit, is_active, created_at, updated_at
-            ) VALUES (
-                :id, :name, :type, :category, :description, :api_endpoint, :api_key, :user_id, 
-                :status, :config, :rate_limit, :is_active, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-            )
-            """),
-            {
-                "id": amazon_id,
-                "name": "Amazon",
-                "type": "amazon",
-                "category": "electronics",
-                "description": "Amazon marketplace",
-                "api_endpoint": "https://api.scraperapi.com/amazon",
-                "api_key": "sample_key",
-                "user_id": system_user_id,
-                "status": "active",
-                "config": json.dumps(amazon_config),
-                "rate_limit": 50,
-                "is_active": True
-            }
-        )
-        
-        # Walmart market configuration
-        walmart_config = {
-            "country": "US",
-            "max_results": 20
-        }
-        
-        # Insert Walmart market
-        session.execute(
-            text("""
-            INSERT INTO markets (
-                id, name, type, category, description, api_endpoint, api_key, user_id, 
-                status, config, rate_limit, is_active, created_at, updated_at
-            ) VALUES (
-                :id, :name, :type, :category, :description, :api_endpoint, :api_key, :user_id, 
-                :status, :config, :rate_limit, :is_active, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-            )
-            """),
-            {
-                "id": walmart_id,
-                "name": "Walmart",
-                "type": "walmart",
-                "category": "home",
-                "description": "Walmart marketplace",
-                "api_endpoint": "https://api.scraperapi.com/walmart",
-                "api_key": "sample_key",
-                "user_id": system_user_id,
-                "status": "active",
-                "config": json.dumps(walmart_config),
-                "rate_limit": 50,
-                "is_active": True
-            }
-        )
-        
-        session.commit()
-        session.close()
+        logger.info("Default markets created successfully (Local)")
+        conn.close()
         engine.dispose()
-        
-        logger.info(f"Default markets created successfully: Amazon ({amazon_id}), Walmart ({walmart_id})")
         return True
-        
     except Exception as e:
         logger.error(f"Failed to create default markets (Local): {str(e)}")
         return False
@@ -741,7 +770,7 @@ def setup_database(use_docker=None):
             logger.error("Default markets creation failed")
             return False
     
-    logger.info("Database setup completed successfully!")
+    logger.info("Database setup completed successfully")
     return True
 
 if __name__ == "__main__":

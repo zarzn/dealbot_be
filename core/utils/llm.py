@@ -225,14 +225,18 @@ def get_llm_instance():
                     # Get model name from settings
                     model_name = getattr(settings, "LLM_MODEL", "deepseek-chat")
                     temperature = getattr(settings, "LLM_TEMPERATURE", 0.7)
-                    max_tokens = getattr(settings, "LLM_MAX_TOKENS", 1000)
                     
-                    logger.info(f"Initializing DeepSeek model: {model_name}")
+                    # Use lower max_tokens to speed up responses
+                    max_tokens = getattr(settings, "LLM_MAX_TOKENS", 1000)
+                    max_tokens = min(max_tokens, 500)  # Further limit max tokens for speed
+                    
+                    logger.info(f"Initializing DeepSeek model: {model_name} with max_tokens={max_tokens}")
                     _llm_instance = ChatDeepSeek(
                         api_key=os.environ.get("DEEPSEEK_API_KEY"),
                         model_name=model_name,
                         temperature=temperature,
-                        max_tokens=max_tokens
+                        max_tokens=max_tokens,
+                        request_timeout=15  # Add 15-second timeout at the API level
                     )
                     logger.info("DeepSeek model initialized successfully")
                     return _llm_instance
@@ -255,16 +259,20 @@ def get_llm_instance():
             else:
                 try:
                     # Get model name from settings
-                    model_name = getattr(settings, "OPENAI_FALLBACK_MODEL", "gpt-4o")
+                    model_name = getattr(settings, "OPENAI_MODEL", "gpt-4o")
                     temperature = getattr(settings, "LLM_TEMPERATURE", 0.7)
-                    max_tokens = getattr(settings, "LLM_MAX_TOKENS", 1000)
                     
-                    logger.info(f"Initializing OpenAI model: {model_name}")
+                    # Use lower max_tokens to speed up responses
+                    max_tokens = getattr(settings, "LLM_MAX_TOKENS", 1000)
+                    max_tokens = min(max_tokens, 500)  # Further limit max tokens for speed
+                    
+                    logger.info(f"Initializing OpenAI model: {model_name} with max_tokens={max_tokens}")
                     _llm_instance = ChatOpenAI(
                         api_key=os.environ.get("OPENAI_API_KEY"),
                         model_name=model_name,
                         temperature=temperature,
-                        max_tokens=max_tokens
+                        max_tokens=max_tokens,
+                        request_timeout=15  # Add 15-second timeout at the API level
                     )
                     logger.info("OpenAI model initialized successfully")
                     return _llm_instance

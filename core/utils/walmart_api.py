@@ -244,7 +244,7 @@ class WalmartAPI:
         min_price: Optional[float] = None,
         max_price: Optional[float] = None,
         sort: str = "best_match",
-        limit: int = 25
+        limit: int = 50
     ) -> List[Dict[str, Any]]:
         """Search for products.
         

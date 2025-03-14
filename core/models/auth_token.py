@@ -33,6 +33,7 @@ class TokenErrorType(str, enum.Enum):
     MISSING = "missing"
     NOT_FOUND = "not_found"
     UNAUTHORIZED = "unauthorized"
+    INVALID_FORMAT = "invalid_format"
 
 class AuthToken(Base):
     """Auth token model."""

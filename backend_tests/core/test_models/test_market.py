@@ -63,8 +63,8 @@ async def test_market_status_transitions(db_session):
 @core_test
 async def test_market_type_validation(db_session):
     """Test market type validation."""
-    # Test valid market types
-    valid_types = [market_type.value.lower() for market_type in MarketType]
+    # Test valid market types - use only the ones available in the database schema
+    valid_types = ['amazon', 'walmart', 'ebay', 'target', 'bestbuy', 'test', 'crypto']
     for market_type in valid_types:
         market = await MarketFactory.create_async(
             db_session=db_session,

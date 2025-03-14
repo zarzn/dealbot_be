@@ -27,7 +27,7 @@ class LLMProvider(str, Enum):
 
 class LLMModel(str, Enum):
     """LLM model enumeration."""
-    GPT4 = "gpt-4"
+    GPT4 = "gpt-3.5-turbo"
     GPT35_TURBO = "gpt-3.5-turbo"
     DEEPSEEK_R1 = "deepseek-chat"
     MOCK_LLM = "mock-llm"

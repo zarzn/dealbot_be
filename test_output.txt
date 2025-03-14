@@ -1,0 +1,91 @@
+[1m============================= test session starts =============================[0m
+platform win32 -- Python 3.11.4, pytest-7.4.4, pluggy-1.5.0 -- C:\Active Projects\AI AGENTIC DEALS SYSTEM\venv\Scripts\python.exe
+cachedir: .pytest_cache
+metadata: {'Python': '3.11.4', 'Platform': 'Windows-10-10.0.22631-SP0', 'Packages': {'pytest': '7.4.4', 'pluggy': '1.5.0'}, 'Plugins': {'anchorpy': '0.20.0', 'anyio': '3.7.1', 'Faker': '22.5.1', 'asyncio': '0.21.1', 'cov': '4.1.0', 'html': '4.1.1', 'metadata': '3.1.1', 'mock': '3.12.0', 'timeout': '2.3.1', 'xdist': '3.6.1', 'xprocess': '0.18.1', 'time-machine': '2.16.0'}}
+rootdir: C:\Active Projects\AI AGENTIC DEALS SYSTEM\backend
+configfile: pytest.ini
+plugins: anchorpy-0.20.0, anyio-3.7.1, Faker-22.5.1, asyncio-0.21.1, cov-4.1.0, html-4.1.1, metadata-3.1.1, mock-3.12.0, timeout-2.3.1, xdist-3.6.1, xprocess-0.18.1, time-machine-2.16.0
+asyncio: mode=Mode.AUTO
+timeout: 300.0s
+timeout method: thread
+timeout func_only: False
+[1mcollecting ... [0mcollected 7 items
+
+backend_tests/features/test_agents/test_agent_factory.py::test_agent_factory_initialization 
+[1m------------------------------- live log setup --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Initialized Redis service with mock client (redis_service_mock.py:42)
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock initialized for feature test (conftest.py:32)
+[1m-------------------------------- live log call --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Initialized LLM service with provider: deepseek-chat, model: deepseek-chat (llm_service.py:138)
+[32mPASSED[0m[32m                                                                   [ 14%][0m
+[1m------------------------------ live log teardown ------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock cleaned up after feature test (conftest.py:34)
+
+backend_tests/features/test_agents/test_agent_factory.py::test_get_agent_factory 
+[1m------------------------------- live log setup --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock initialized for feature test (conftest.py:32)
+[32mPASSED[0m[32m                                                                   [ 28%][0m
+[1m------------------------------ live log teardown ------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock cleaned up after feature test (conftest.py:34)
+
+backend_tests/features/test_agents/test_agent_factory.py::test_create_agent 
+[1m------------------------------- live log setup --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock initialized for feature test (conftest.py:32)
+[1m-------------------------------- live log call --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Setting up MarketAnalystAgent (market_analyst_agent.py:41)
+2025-03-13 18:23:04 [[32m    INFO[0m] Setting up MarketAnalystAgent (market_analyst_agent.py:41)
+2025-03-13 18:23:04 [[32m    INFO[0m] Setting up MarketAnalystAgent (market_analyst_agent.py:41)
+[32mPASSED[0m[32m                                                                   [ 42%][0m
+[1m------------------------------ live log teardown ------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock cleaned up after feature test (conftest.py:34)
+
+backend_tests/features/test_agents/test_agent_factory.py::test_create_agent_with_custom_config 
+[1m------------------------------- live log setup --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock initialized for feature test (conftest.py:32)
+[1m-------------------------------- live log call --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Setting up MarketAnalystAgent (market_analyst_agent.py:41)
+[32mPASSED[0m[32m                                                                   [ 57%][0m
+[1m------------------------------ live log teardown ------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock cleaned up after feature test (conftest.py:34)
+
+backend_tests/features/test_agents/test_agent_factory.py::test_agent_process_message 
+[1m------------------------------- live log setup --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock initialized for feature test (conftest.py:32)
+[1m-------------------------------- live log call --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Setting up MarketAnalystAgent (market_analyst_agent.py:41)
+[32mPASSED[0m[32m                                                                   [ 71%][0m
+[1m------------------------------ live log teardown ------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock cleaned up after feature test (conftest.py:34)
+
+backend_tests/features/test_agents/test_agent_factory.py::test_agent_with_tools 
+[1m------------------------------- live log setup --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock initialized for feature test (conftest.py:32)
+[1m-------------------------------- live log call --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Setting up MarketAnalystAgent (market_analyst_agent.py:41)
+[32mPASSED[0m[32m                                                                   [ 85%][0m
+[1m------------------------------ live log teardown ------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock cleaned up after feature test (conftest.py:34)
+
+backend_tests/features/test_agents/test_agent_factory.py::test_agent_error_handling 
+[1m------------------------------- live log setup --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock initialized for feature test (conftest.py:32)
+[1m-------------------------------- live log call --------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Setting up MarketAnalystAgent (market_analyst_agent.py:41)
+[32mPASSED[0m[32m                                                                   [100%][0m
+[1m------------------------------ live log teardown ------------------------------[0m
+2025-03-13 18:23:04 [[32m    INFO[0m] Redis mock cleaned up after feature test (conftest.py:34)
+
+
+============================ slowest 10 durations =============================
+0.14s setup    backend_tests/features/test_agents/test_agent_factory.py::test_agent_factory_initialization
+0.04s call     backend_tests/features/test_agents/test_agent_factory.py::test_create_agent
+0.01s call     backend_tests/features/test_agents/test_agent_factory.py::test_create_agent_with_custom_config
+0.01s call     backend_tests/features/test_agents/test_agent_factory.py::test_agent_error_handling
+0.01s call     backend_tests/features/test_agents/test_agent_factory.py::test_agent_with_tools
+0.01s call     backend_tests/features/test_agents/test_agent_factory.py::test_agent_process_message
+0.01s teardown backend_tests/features/test_agents/test_agent_factory.py::test_create_agent
+0.01s teardown backend_tests/features/test_agents/test_agent_factory.py::test_agent_error_handling
+0.00s setup    backend_tests/features/test_agents/test_agent_factory.py::test_agent_with_tools
+0.00s teardown backend_tests/features/test_agents/test_agent_factory.py::test_agent_factory_initialization
+[32m============================== [32m[1m7 passed[0m[32m in 0.43s[0m[32m ==============================[0m
+pytest-xprocess reminder::Be sure to terminate the started process by running 'pytest --xkill' if you have not explicitly done so in your fixture with 'xprocess.getinfo(<process_name>).terminate()'.

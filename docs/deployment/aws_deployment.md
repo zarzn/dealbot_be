@@ -553,6 +553,33 @@ Configure health checks at multiple levels:
 
 ## Troubleshooting
 
+### Critical Known Issues
+
+#### ⚠️ SUPER IMPORTANT: API Gateway Integration Configuration Issues
+
+**Issue**: API Gateway integration might be pointing to the wrong port (80 instead of 8000) or incorrect load balancer DNS, causing 504 Gateway Timeout errors and CORS issues, with no visible API request logs in CloudWatch despite API Gateway logging requests.
+
+**Symptoms**:
+- 504 Gateway Timeout errors when calling API endpoints
+- CORS errors in frontend
+- No logs appearing in CloudWatch for API requests
+- API Gateway logs show requests with 200 status
+
+**Root Cause**:
+1. API Gateway integration URI pointing to port 80 instead of port 8000 where the containers are listening
+2. Some endpoints might be pointing to outdated load balancer DNS names
+
+**Resolution**:
+```bash
+# Check and update all API Gateway integration URIs to point to port 8000
+aws apigateway get-method --rest-api-id YOUR_API_ID --resource-id RESOURCE_ID --http-method POST
+aws apigateway update-integration --rest-api-id YOUR_API_ID --resource-id RESOURCE_ID --http-method POST --patch-operations op=replace,path=/uri,value="http://YOUR_LOAD_BALANCER_DNS:8000/api/v1/endpoint/path"
+aws apigateway create-deployment --rest-api-id YOUR_API_ID --stage-name prod
+```
+
+**Verification**:
+After fixing, you should see API request logs appearing in the CloudWatch log group for your ECS container.
+
 ### Common Issues and Solutions
 
 1. **ECS Service Deployment Failures**

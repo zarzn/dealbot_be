@@ -3,10 +3,11 @@ from httpx import AsyncClient
 from unittest.mock import patch, MagicMock, AsyncMock
 from sqlalchemy.ext.asyncio import AsyncSession
 from decimal import Decimal
+import time
 
 from core.models.deal import DealSearch
 from core.services.deal_search import DealSearchService
-from core.models.enums import DealStatus
+from core.models.enums import DealStatus, MarketType
 
 # Test the search endpoint directly
 @pytest.mark.asyncio
@@ -21,213 +22,280 @@ async def test_search_endpoint(client: AsyncClient, db_session: AsyncSession):
         "sort_by": "price",
         "sort_order": "asc",
         "offset": 0,
-        "limit": 20
+        "limit": 20,
+        "market_types": [MarketType.AMAZON.value, MarketType.EBAY.value]
     }
     
     # Mock the DealService to return a valid response
     with patch('core.api.v1.deals.router.DealService') as MockDealService:
         # Configure the mock to return a valid response
         mock_service = MagicMock()
-        mock_search = AsyncMock()
-        
-        # Configure the mock to return a valid response with sample deals
-        mock_search.return_value = {
+        mock_service.search_deals = AsyncMock(return_value={
+            "total": 2,
             "deals": [
                 {
-                    "id": "00000000-0000-0000-0000-000000000001",
+                    "id": "test-deal-1",
                     "title": "Test Deal 1",
-                    "description": "This is a test deal",
-                    "price": 50.0,
-                    "original_price": 100.0,
-                    "currency": "USD",
+                    "price": 25.99,
+                    "description": "This is test deal 1",
+                    "status": DealStatus.ACTIVE.value,
+                    "seller": "Test Seller 1",
+                    "market": MarketType.AMAZON.value,
                     "url": "https://example.com/deal1",
-                    "image_url": "https://example.com/image1.jpg",
-                    "source": "test",
-                    "status": "active",
-                    "created_at": "2023-01-01T00:00:00Z",
-                    "updated_at": "2023-01-01T00:00:00Z"
+                    "created_at": "2023-01-01T12:00:00Z",
+                    "updated_at": "2023-01-01T12:00:00Z"
+                },
+                {
+                    "id": "test-deal-2",
+                    "title": "Test Deal 2",
+                    "price": 75.50,
+                    "description": "This is test deal 2",
+                    "status": DealStatus.ACTIVE.value,
+                    "seller": "Test Seller 2",
+                    "market": MarketType.EBAY.value,
+                    "url": "https://example.com/deal2",
+                    "created_at": "2023-01-02T12:00:00Z",
+                    "updated_at": "2023-01-02T12:00:00Z"
                 }
-            ],
-            "total": 1,
-            "metadata": {
-                "search_time": 0.1,
-                "source": "database"
-            }
-        }
-        
-        # Set up the mock service
-        mock_service.search_deals = mock_search
+            ]
+        })
         MockDealService.return_value = mock_service
-    
-        # Send the request to the search endpoint
+        
+        # Make request to the search endpoint
         response = await client.post("/api/v1/deals/search", json=search_data)
         
-        # Check the response
+        # Verify response
         assert response.status_code == 200
         data = response.json()
-        assert "deals" in data
-        assert "total" in data
+        assert data["total"] == 2
+        assert len(data["deals"]) == 2
+        assert data["deals"][0]["id"] == "test-deal-1"
+        assert data["deals"][1]["id"] == "test-deal-2"
         
-        # Verify the structure of the returned deals
-        if data["deals"]:
-            deal = data["deals"][0]
-            assert "id" in deal
-            assert "title" in deal
-            assert "price" in deal
+        # Verify service was called correctly
+        mock_service.search_deals.assert_called_once()
+        call_kwargs = mock_service.search_deals.call_args.kwargs
+        assert call_kwargs["query"] == search_data["query"]
+        assert call_kwargs["min_price"] == search_data["min_price"]
+        assert call_kwargs["max_price"] == search_data["max_price"]
+        assert call_kwargs["market_types"] == search_data["market_types"]
 
 # Test the search service directly
 @pytest.mark.asyncio
 async def test_search_service(db_session: AsyncSession):
-    """Test the search service directly."""
-    # Create a search request
-    search_params = DealSearch(
-        query="test deal",
-        category="electronics",
-        min_price=10.0,
-        max_price=100.0,
-        sort_by="price",
-        sort_order="asc",
-        offset=0,
-        limit=20
-    )
+    """Test the DealSearchService directly."""
+    # Create mock search parameters
+    search_params = {
+        "query": "gaming laptop",
+        "category": "computers",
+        "min_price": 500.0,
+        "max_price": 2000.0,
+        "sort_by": "price",
+        "sort_order": "asc",
+        "offset": 0,
+        "limit": 10,
+        "market_types": [MarketType.AMAZON.value, MarketType.NEWEGG.value]
+    }
     
-    # Create the search service
-    search_service = DealSearchService(db_session)
+    # Create mock deals to return
+    mock_deals = [
+        {
+            "id": "deal-1",
+            "title": "Gaming Laptop XYZ",
+            "price": 799.99,
+            "market": MarketType.AMAZON.value
+        },
+        {
+            "id": "deal-2",
+            "title": "Pro Gaming Laptop ABC",
+            "price": 1299.99,
+            "market": MarketType.NEWEGG.value
+        }
+    ]
     
-    # Call the search method
-    deals = await search_service.search_deals(search_params)
-    
-    # Verify the results
-    assert isinstance(deals, list)
-    
-    # If deals were found, check their structure
-    for deal in deals:
-        assert hasattr(deal, "id")
-        assert hasattr(deal, "title")
-        assert hasattr(deal, "price")
-        assert deal.status == DealStatus.ACTIVE.value
+    # Mock the database query and execution
+    with patch('core.services.deal_search.DealSearchService._execute_search_query', 
+               new_callable=AsyncMock) as mock_execute:
+        mock_execute.return_value = (mock_deals, 2)
+        
+        # Create service and call search
+        service = DealSearchService(db_session)
+        results = await service.search(**search_params)
+        
+        # Verify results
+        assert results["total"] == 2
+        assert len(results["deals"]) == 2
+        assert results["deals"][0]["id"] == "deal-1"
+        assert results["deals"][1]["id"] == "deal-2"
+        
+        # Verify query execution was called with correct parameters
+        mock_execute.assert_called_once()
+        # Verify query construction logic worked correctly
+        call_args = mock_execute.call_args
+        assert "query" in call_args[0][0]  # First arg is the query object
+        assert call_args[1]["offset"] == 0
+        assert call_args[1]["limit"] == 10
 
 # Test with mocked database to trace the query construction
 @pytest.mark.asyncio
 async def test_search_query_construction(db_session: AsyncSession):
-    """Test the search query construction with various parameters."""
-    # Mock the database execute method to capture the query
-    with patch.object(db_session, 'execute', return_value=MagicMock()) as mock_execute:
-        # Configure the mock to return an empty result
-        mock_execute.return_value.scalars.return_value.all.return_value = []
-        
-        # Create the search service
-        search_service = DealSearchService(db_session)
-        
-        # Test case 1: Basic text search
-        search_params = DealSearch(query="test deal")
-        await search_service.search_deals(search_params)
-        
-        # Test case 2: Price range filter
-        search_params = DealSearch(min_price=10.0, max_price=100.0)
-        await search_service.search_deals(search_params)
-        
-        # Test case 3: Category filter
-        search_params = DealSearch(category="electronics")
-        await search_service.search_deals(search_params)
-        
-        # Test case 4: Sorting
-        search_params = DealSearch(sort_by="price", sort_order="asc")
-        await search_service.search_deals(search_params)
-        
-        # Test case 5: Pagination
-        search_params = DealSearch(offset=20, limit=10)
-        await search_service.search_deals(search_params)
-        
-        # Verify that execute was called for each test case
-        assert mock_execute.call_count == 5
+    """Test the search query construction logic."""
+    # Create service and access the query construction method directly
+    service = DealSearchService(db_session)
+    
+    # Mock parameters for query construction
+    params = {
+        "query": "bluetooth speaker",
+        "category": "audio",
+        "min_price": 20.0,
+        "max_price": 200.0,
+        "market_types": [MarketType.AMAZON.value, MarketType.EBAY.value],
+        "status": DealStatus.ACTIVE.value
+    }
+    
+    # Patch the execute method to avoid actually running the query
+    with patch('sqlalchemy.ext.asyncio.AsyncSession.execute'):
+        # Test that the search method properly constructs the query
+        with patch.object(service, '_construct_search_query', wraps=service._construct_search_query) as mock_construct:
+            # Use the public search method which will call _construct_search_query internally
+            await service.search(**params)
+            
+            # Verify the internal method was called with the correct parameters
+            mock_construct.assert_called_once_with(**params)
+            
+            # Get the query directly for assertions
+            query, query_params = service._construct_search_query(**params)
+            
+            # Verify query parameters
+            assert "bluetooth speaker" in str(query)
+            assert "audio" in str(query)
+            assert str(20.0) in str(query_params) or "20.0" in str(query_params)
+            assert str(200.0) in str(query_params) or "200.0" in str(query_params)
+            assert MarketType.AMAZON.value in str(query)
+            assert MarketType.EBAY.value in str(query)
+            assert DealStatus.ACTIVE.value in str(query)
 
 # Test error handling in the search endpoint
 @pytest.mark.asyncio
 async def test_search_endpoint_error_handling(client: AsyncClient):
     """Test error handling in the search endpoint."""
-    # Mock the rate limiter to bypass it
-    with patch('core.api.v1.deals.router.check_rate_limit') as mock_rate_limit:
-        # Configure the rate limiter to do nothing
-        mock_rate_limit.return_value = None
+    # Test with invalid search parameters
+    invalid_data = {
+        "query": "",  # Empty query
+        "min_price": 100.0,
+        "max_price": 50.0,  # Invalid price range
+        "limit": -10  # Invalid limit
+    }
+    
+    # Make request with invalid data
+    response = await client.post("/api/v1/deals/search", json=invalid_data)
+    
+    # Verify response indicates validation error
+    assert response.status_code == 422
+    data = response.json()
+    assert "detail" in data
+    
+    # Test with server error
+    with patch('core.api.v1.deals.router.DealService') as MockDealService:
+        # Configure mock to raise an exception
+        mock_service = MagicMock()
+        mock_service.search_deals = AsyncMock(side_effect=Exception("Database error"))
+        MockDealService.return_value = mock_service
         
-        # Test case 1: Invalid search parameters
-        invalid_search = {
-            "min_price": -10.0,  # Invalid negative price
-            "max_price": 5.0     # max_price < min_price
+        # Make request that will trigger server error
+        valid_data = {
+            "query": "test",
+            "min_price": 10.0,
+            "max_price": 100.0
         }
+        response = await client.post("/api/v1/deals/search", json=valid_data)
         
-        response = await client.post("/api/v1/deals/search", json=invalid_search)
-        assert response.status_code in [400, 422]  # Either bad request or validation error
-        
-        # Test case 2: Simulate rate limiting
-        with patch('core.api.v1.deals.router.check_rate_limit') as mock_rate_limit:
-            # Configure the rate limiter to raise an exception
-            from core.exceptions.api_exceptions import RateLimitExceededError
-            mock_rate_limit.side_effect = RateLimitExceededError("Rate limit exceeded")
-            
-            # Make a request that should be rate limited
-            response = await client.post("/api/v1/deals/search", json={"query": "test"})
-            
-            # Check if rate limited (should be 429 Too Many Requests)
-            assert response.status_code == 429
+        # Verify response indicates server error
+        assert response.status_code == 500
+        data = response.json()
+        assert "detail" in data
 
 # Test the complete search flow with tracing
 @pytest.mark.asyncio
 async def test_complete_search_flow(client: AsyncClient, db_session: AsyncSession):
-    """Test the complete search flow with tracing."""
-    # Create a search request
+    """Test a complete search flow including storing search history."""
+    # Mock user ID for the search
+    user_id = "test-user-123"
+    
+    # Create search request
     search_data = {
-        "query": "test deal",
-        "category": "electronics",
-        "min_price": 10.0,
-        "max_price": 100.0,
-        "sort_by": "price",
-        "sort_order": "asc",
+        "query": "wireless earbuds",
+        "category": "audio",
+        "min_price": 50.0,
+        "max_price": 300.0,
+        "market_types": [MarketType.AMAZON.value, MarketType.BESTBUY.value],
+        "sort_by": "relevance",
+        "sort_order": "desc",
         "offset": 0,
-        "limit": 20
+        "limit": 5
     }
     
-    # Use patching to trace the flow
-    with patch('core.api.v1.deals.router.DealService') as MockDealService:
-        # Configure the mock to return a valid response
-        mock_service = MagicMock()
-        mock_search = AsyncMock()
+    # Mock authentication to include user ID
+    auth_header = {"Authorization": f"Bearer test-token-{user_id}"}
+    
+    # Mock JWT verification to return our test user
+    with patch('core.services.auth.JWTService.verify_token', 
+               return_value={"sub": user_id, "user_id": user_id}):
         
-        # Configure the mock to return a valid response
-        mock_search.return_value = {
-            "deals": [],
-            "total": 0,
-            "metadata": {
-                "search_time": 0.1,
-                "source": "database"
+        # Mock the deal service search method
+        with patch('core.services.deal.DealService.search_deals',
+                   new_callable=AsyncMock) as mock_search:
+            mock_search.return_value = {
+                "total": 3,
+                "deals": [
+                    {"id": "earbud-1", "title": "Premium Wireless Earbuds", "price": 199.99},
+                    {"id": "earbud-2", "title": "Budget Wireless Earbuds", "price": 79.99},
+                    {"id": "earbud-3", "title": "Mid-range Wireless Earbuds", "price": 129.99}
+                ]
             }
-        }
-        
-        # Set up the mock service
-        mock_service.search_deals = mock_search
-        MockDealService.return_value = mock_service
-        
-        # Send the request to the search endpoint
-        response = await client.post("/api/v1/deals/search", json=search_data)
-        
-        # Check the response
-        assert response.status_code == 200
-        data = response.json()
-        
-        # Verify the search service was called with the correct parameters
-        mock_search.assert_called_once()
-        
-        # Extract the call arguments
-        args, kwargs = mock_search.call_args
-        search_params = args[0]
-        
-        # Verify the search parameters were correctly passed
-        assert search_params.query == "test deal"
-        assert search_params.category == "electronics"
-        assert search_params.min_price == 10.0
-        assert search_params.max_price == 100.0
-        assert search_params.sort_by == "price"
-        assert search_params.sort_order == "asc"
-        assert search_params.offset == 0
-        assert search_params.limit == 20 
+            
+            # Mock saving search history
+            with patch('core.services.deal_search.DealSearchService.save_search_history',
+                       new_callable=AsyncMock) as mock_save_history:
+                
+                # Make search request with auth header
+                response = await client.post(
+                    "/api/v1/deals/search", 
+                    json=search_data,
+                    headers=auth_header
+                )
+                
+                # Verify response
+                assert response.status_code == 200
+                data = response.json()
+                assert data["total"] == 3
+                assert len(data["deals"]) == 3
+                
+                # Verify search was called with correct parameters
+                mock_search.assert_called_once()
+                call_kwargs = mock_search.call_args.kwargs
+                assert call_kwargs["query"] == search_data["query"]
+                assert call_kwargs["category"] == search_data["category"]
+                assert call_kwargs["min_price"] == search_data["min_price"]
+                assert call_kwargs["max_price"] == search_data["max_price"]
+                assert call_kwargs["market_types"] == search_data["market_types"]
+                
+                # Verify search history was saved
+                mock_save_history.assert_called_once()
+                history_kwargs = mock_save_history.call_args.kwargs
+                assert history_kwargs["user_id"] == user_id
+                assert history_kwargs["query"] == search_data["query"]
+
+# Test with token
+@pytest.mark.asyncio
+async def test_token_search(client: AsyncClient):
+    """Test search functionality with token."""
+    # Mock user ID for the search
+    user_id = "test-user-123"
+    
+    # Test with token
+    token = "test_token"
+    with patch('core.services.auth.verify_token',
+              return_value={"sub": str(user_id), "exp": time.time() + 3600}):
+        response = client.get(f"/api/deals/search?keyword=test&token={token}")
+        assert response.status_code == 200 

@@ -48,6 +48,7 @@ class DealSearch(BaseModel):
     offset: int = Field(default=0, ge=0)
     limit: int = Field(default=20, ge=1, le=100)
     use_realtime_scraping: Optional[bool] = Field(default=False)
+    use_ai_enhanced_search: Optional[bool] = Field(default=True, description="Whether to use AI to enhance search results by analyzing query and filtering results")
 
     @field_validator("max_price")
     @classmethod

@@ -33,16 +33,17 @@ def setup_logging():
     
     # Determine log level based on environment
     if str(settings.APP_ENVIRONMENT).lower() == "production":
-        root_level = logging.WARNING
+        root_level = logging.INFO  # Changed from WARNING to INFO to capture more logs
         log_format = '%(asctime)s - %(levelname)s - %(name)s - %(message)s'
-        # In production, use rotating file handler to manage log size
+        # In production, use both rotating file handler AND stdout handler for Docker/CloudWatch
         handlers = [
             logging.handlers.RotatingFileHandler(
                 "logs/app.log",
                 maxBytes=10485760,  # 10 MB
                 backupCount=5,
                 encoding="utf-8"
-            )
+            ),
+            logging.StreamHandler(sys.stdout)  # Added StreamHandler for Docker logs
         ]
     else:
         # More verbose logging for development/test
@@ -67,8 +68,8 @@ def setup_logging():
         'sqlalchemy.orm': logging.ERROR,
         'urllib3': logging.WARNING,
         'asyncio': logging.WARNING,
-        'fastapi': logging.WARNING if str(settings.APP_ENVIRONMENT).lower() == "production" else logging.INFO,
-        'uvicorn': logging.WARNING if str(settings.APP_ENVIRONMENT).lower() == "production" else logging.INFO,
+        'fastapi': logging.INFO,  # Changed to INFO in production to see API requests
+        'uvicorn': logging.INFO,  # Changed to INFO in production to see startup/requests
         'aiohttp': logging.WARNING,
     }
 

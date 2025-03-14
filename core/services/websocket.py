@@ -7,8 +7,9 @@ It handles connection tracking, message broadcasting, and subscription managemen
 
 import json
 import logging
-import uuid
+from uuid import uuid4
 from typing import Dict, List, Optional, Any, Set
+from datetime import datetime
 
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -31,7 +32,12 @@ class ConnectionManager:
         self.topic_subscribers: Dict[str, Set[str]] = {}  # topic -> set of connection_ids
         self.room_members: Dict[str, Set[str]] = {}  # room_id -> set of connection_ids
         self.connection_data: Dict[str, Dict[str, Any]] = {}  # connection_id -> metadata
-        self.redis_service = get_redis_service()
+        self.redis_service = None  # Will be initialized in the connect method
+    
+    async def _initialize_redis(self):
+        """Initialize Redis service if not already initialized."""
+        if self.redis_service is None:
+            self.redis_service = await get_redis_service()
     
     async def connect(self, websocket: WebSocket, user_id: Optional[str] = None) -> str:
         """
@@ -39,13 +45,19 @@ class ConnectionManager:
         
         Args:
             websocket: The WebSocket connection
-            user_id: Optional user ID for authenticated connections
+            user_id: Optional user ID for authentication
             
         Returns:
             str: The connection ID
         """
+        # Initialize Redis service if needed
+        await self._initialize_redis()
+        
+        # Accept the connection
         await websocket.accept()
-        connection_id = str(uuid.uuid4())
+        
+        # Generate a connection ID
+        connection_id = str(uuid4())
         self.active_connections[connection_id] = websocket
         
         # Store connection metadata
@@ -416,8 +428,4 @@ def get_connection_manager() -> ConnectionManager:
     global _connection_manager
     if _connection_manager is None:
         _connection_manager = ConnectionManager()
-    return _connection_manager
-
-
-# Missing import
-from datetime import datetime 
+    return _connection_manager 

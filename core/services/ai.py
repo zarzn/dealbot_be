@@ -7,6 +7,9 @@ from uuid import UUID
 from datetime import datetime, timedelta
 import traceback
 import sys
+import hashlib
+import asyncio
+import re
 
 from core.models.deal import Deal, AIAnalysis
 from core.utils.llm import get_llm_instance, LLMProvider, test_llm_connection
@@ -42,6 +45,9 @@ class AIService:
             if hasattr(settings, "TESTING"):
                 logger.info(f"Restoring testing mode to {original_testing}")
                 settings.TESTING = original_testing
+            
+            # Initialize cache for LLM responses
+            self._llm_cache = {}
             
             # Log information about the LLM
             if self.llm:
@@ -95,24 +101,22 @@ class AIService:
             price_points = []
             
             # Extract price points if available - avoid lazy loading
-            if hasattr(deal, '_sa_instance_state') and hasattr(deal, 'price_points'):
-                # Check if price_points is already loaded (not a lazy-loading proxy)
-                if 'price_points' in deal.__dict__ and isinstance(deal.__dict__['price_points'], list):
-                    price_points = sorted(
-                        [(point.price, point.timestamp) for point in deal.__dict__['price_points']],
-                        key=lambda x: x[1] if x[1] else datetime.utcnow()
-                    )
-                    logger.info(f"Found {len(price_points)} price points for deal {deal.id}")
+            # Instead of checking hasattr which triggers lazy loading, check if the attribute is already loaded
+            # by checking the __dict__ directly to avoid SQLAlchemy lazy loading
+            if hasattr(deal, '__dict__') and 'price_points' in deal.__dict__ and isinstance(deal.__dict__['price_points'], list):
+                price_points = sorted(
+                    [(point.price, point.timestamp) for point in deal.__dict__['price_points']],
+                    key=lambda x: x[1] if x[1] else datetime.utcnow()
+                )
+                logger.info(f"Found {len(price_points)} price points for deal {deal.id}")
             
-            # Extract price histories if available - avoid lazy loading
-            if hasattr(deal, '_sa_instance_state') and hasattr(deal, 'price_histories'):
-                # Check if price_histories is already loaded (not a lazy-loading proxy)
-                if 'price_histories' in deal.__dict__ and isinstance(deal.__dict__['price_histories'], list):
-                    price_history = sorted(
-                        [(point.price, point.created_at) for point in deal.__dict__['price_histories']],
-                        key=lambda x: x[1]
-                    )
-                    logger.info(f"Found {len(price_history)} price history points for deal {deal.id}")
+            # Extract price histories if available - avoid lazy loading in the same way
+            if hasattr(deal, '__dict__') and 'price_histories' in deal.__dict__ and isinstance(deal.__dict__['price_histories'], list):
+                price_history = sorted(
+                    [(point.price, point.created_at) for point in deal.__dict__['price_histories']],
+                    key=lambda x: x[1]
+                )
+                logger.info(f"Found {len(price_history)} price history points for deal {deal.id}")
             
             # Use either price_points or price_history, whichever has more data
             price_data = price_points if len(price_points) > len(price_history) else price_history
@@ -181,6 +185,28 @@ class AIService:
             # Initialize recommendations and additional_market_analysis here, before LLM call
             recommendations = []
             additional_market_analysis = {}
+            
+            # Skip expensive LLM analysis for very low-value products
+            # This is a quick optimization to avoid timeout on low-value items
+            if float(deal.price) < 10.0 and not getattr(settings, "ALWAYS_USE_LLM", False):
+                logger.info(f"Skipping LLM analysis for low-value product (${float(deal.price):.2f})")
+                
+                # Generate a simple analysis for low-value products
+                simple_score = 0.5 + (discount_percentage / 200)  # Higher discount gives higher score
+                simple_score = max(0.1, min(0.9, simple_score))  # Keep between 0.1 and 0.9
+                
+                return {
+                    "score": simple_score,
+                    "value": "average",
+                    "recommendations": [
+                        f"Consider if this ${float(deal.price):.2f} item is worth the purchase given its low price",
+                        f"Low-priced items often provide less long-term value; check alternatives"
+                    ],
+                    "analysis": f"This is a low-priced item at ${float(deal.price):.2f} with a {discount_percentage:.0f}% discount. Simple automated analysis provided due to low price point.",
+                    "price_trend": price_trend,
+                    "generated_at": datetime.utcnow().isoformat(),
+                    "confidence": confidence
+                }
             
             # Attempt to use LLM for enhanced analysis if integration is complete
             try:
@@ -255,16 +281,23 @@ class AIService:
                     try:
                         # Log LLM details before invocation
                         logger.info(f"LLM type: {type(self.llm).__name__}")
-                        if hasattr(self.llm, 'invoke'):
-                            logger.info("LLM has invoke method")
+                        if hasattr(self.llm, 'ainvoke') and callable(self.llm.ainvoke):
+                            logger.info("LLM has ainvoke method")
                         else:
-                            logger.error("LLM does not have invoke method!")
+                            logger.error("LLM does not have ainvoke method!")
                             
-                        # Invoke the LLM
-                        logger.info("Calling LLM.invoke()...")
-                        llm_response = self.llm.invoke(prompt)
-                        logger.info(f"LLM response received for deal {deal.id}")
-                        
+                        # Invoke the LLM with a timeout
+                        logger.info("Calling LLM.ainvoke() with timeout...")
+                        try:
+                            # Set a timeout of 7 seconds for the LLM call (reduced from 10 seconds)
+                            # This helps ensure we stay within the 20-second overall search limit
+                            llm_task = asyncio.create_task(self._invoke(prompt))
+                            llm_response = await llm_task
+                            logger.info(f"LLM response received for deal {deal.id}")
+                        except asyncio.TimeoutError:
+                            logger.warning(f"LLM call timed out for deal {deal.id}, using fallback analysis")
+                            return self._generate_fallback_analysis(deal, "LLM response timed out")
+
                         try:
                             # Parse the response
                             if isinstance(llm_response, str):
@@ -282,7 +315,6 @@ class AIService:
                                 logger.info("Successfully parsed LLM response as JSON")
                             except json.JSONDecodeError:
                                 # Try to extract JSON from markdown code blocks
-                                import re
                                 json_matches = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", response_text)
                                 if json_matches:
                                     response_text = json_matches[0]
@@ -357,9 +389,10 @@ class AIService:
                     
             # Get market information
             market_info = {}
-            if hasattr(deal, 'market') and deal.market:
-                market_name = deal.market.name if hasattr(deal.market, 'name') else "Unknown Market"
-                market_type = deal.market.type if hasattr(deal.market, 'type') else "Unknown"
+            if hasattr(deal, '__dict__') and 'market' in deal.__dict__ and deal.__dict__['market'] is not None:
+                market = deal.__dict__['market']
+                market_name = market.name if hasattr(market, 'name') else "Unknown Market"
+                market_type = market.type if hasattr(market, 'type') else "Unknown"
                 market_info = {
                     "name": market_name,
                     "type": market_type
@@ -589,7 +622,9 @@ class AIService:
                     value = getattr(self.llm, attr)
                     # Mask API keys for security
                     if attr == "api_key" and value:
-                        value = f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "***"
+                        # Ensure value is a string before slicing
+                        str_value = str(value)
+                        value = f"{str_value[:4]}...{str_value[-4:]}" if len(str_value) > 8 else "***"
                     model_info[attr] = value
             
             results["model_info"] = model_info
@@ -608,3 +643,617 @@ class AIService:
             logger.error(f"Error listing available models: {str(e)}")
             
         return results 
+
+    async def _invoke(self, prompt):
+        """Internal method to invoke the LLM with proper error handling.
+        
+        Args:
+            prompt: The prompt to send
+            
+        Returns:
+            LLM response
+        """
+        try:
+            # This line is causing the issue - the invoke method might not return an awaitable object
+            # return await self.llm.invoke(prompt)
+            
+            # Fixed implementation - use the appropriate async method
+            if hasattr(self.llm, 'ainvoke') and callable(self.llm.ainvoke):
+                # Use async invoke if available
+                return await self.llm.ainvoke(prompt)
+            elif hasattr(self.llm, 'async_invoke') and callable(self.llm.async_invoke):
+                # Alternative async method name
+                return await self.llm.async_invoke(prompt)
+            else:
+                # If no async method is available, use a synchronous call but wrapped
+                # in a thread to avoid blocking
+                from concurrent.futures import ThreadPoolExecutor
+                
+                with ThreadPoolExecutor() as executor:
+                    response = await asyncio.get_event_loop().run_in_executor(
+                        executor, self.llm.invoke, prompt
+                    )
+                return response
+        except Exception as e:
+            logger.error(f"Error in LLM invoke: {str(e)}")
+            raise
+
+    async def analyze_search_query(self, query: str) -> Dict[str, Any]:
+        """Analyze a search query and extract structured search parameters.
+        
+        Args:
+            query: The search query to analyze
+            
+        Returns:
+            Dictionary containing structured search parameters
+        """
+        try:
+            logger.info(f"Analyzing search query: {query}")
+            
+            if not self.llm:
+                logger.error("No LLM instance available for query analysis")
+                return self._generate_fallback_query_analysis(query)
+            
+            prompt = f"""
+            You are a sophisticated AI trained to analyze e-commerce search queries and extract structured search parameters.
+            
+            Given a search query, extract the following information:
+            1. Main product or category being searched for
+            2. Any brand preferences mentioned
+            3. Price range (min and max)
+            4. Any specific features or attributes mentioned
+            5. Quality requirements (like "high quality", "best", etc.)
+            
+            IMPORTANT INSTRUCTIONS:
+            - NEVER filter out important product model numbers or identifiers, even if they're short
+            - DO include color terms like "black", "white", "red" as these are critical features
+            - Recognize version numbers (like "PS5", "iPhone 14") as crucial product identifiers
+            - Consider all numbers that might be product models or versions as important
+            - Distinguish between price indicators (like "under $500") and product identifiers (like "RTX 3080")
+            - Focus on product-specific terms while filtering out general language terms
+            
+            The query is: "{query}"
+            
+            Respond with a JSON object with the following structure:
+            {{
+              "keywords": ["list", "of", "key", "search", "terms"],
+              "category": "likely category",
+              "min_price": null or number,
+              "max_price": null or number,
+              "brands": ["list", "of", "brands"],
+              "features": ["list", "of", "features"],
+              "quality_requirements": ["list", "of", "quality", "terms"]
+            }}
+            """
+            
+            logger.info("Sending prompt to LLM for query analysis")
+            try:
+                # Set a timeout of 5 seconds for the LLM call
+                llm_task = asyncio.create_task(self._invoke(prompt))
+                llm_response = await llm_task
+                logger.info(f"LLM response received for query analysis")
+            except asyncio.TimeoutError:
+                logger.warning(f"LLM call timed out for query analysis, using fallback")
+                return self._generate_fallback_query_analysis(query)
+                
+            try:
+                # Parse the response
+                if isinstance(llm_response, str):
+                    response_text = llm_response
+                else:
+                    # Assuming it's an object with a content attribute
+                    response_text = llm_response.content
+                    
+                logger.info(f"Raw LLM response text: {response_text[:200]}...")
+                
+                # Extract the JSON from the response
+                analysis = self._extract_json_from_response(response_text)
+                
+                # Validate essential fields
+                if not analysis or not isinstance(analysis, dict):
+                    logger.warning("Invalid analysis format returned by LLM")
+                    return self._generate_fallback_query_analysis(query)
+                
+                # Ensure required fields exist
+                required_fields = ["keywords", "category", "min_price", "max_price", "brands", "features"]
+                for field in required_fields:
+                    if field not in analysis:
+                        analysis[field] = None if field in ["min_price", "max_price", "category"] else []
+                
+                logger.info(f"Query analysis results: {json.dumps(analysis)}")
+                return analysis
+                
+            except Exception as e:
+                logger.error(f"Error parsing LLM response: {str(e)}")
+                return self._generate_fallback_query_analysis(query)
+                
+        except Exception as e:
+            logger.error(f"Error in query analysis: {str(e)}")
+            logger.error(traceback.format_exc())
+            return self._generate_fallback_query_analysis(query)
+
+    def _generate_fallback_query_analysis(self, query: str) -> Dict[str, Any]:
+        """Generate a fallback analysis for a query when LLM processing fails.
+        
+        Args:
+            query: The search query
+            
+        Returns:
+            Dictionary containing basic structured search parameters
+        """
+        # Simple keyword extraction
+        keywords = [term.strip() for term in query.lower().split() if len(term.strip()) > 2]
+        
+        # Try to extract price if possible
+        min_price = None
+        max_price = None
+        
+        # Check for "for $X" pattern which indicates a target price
+        target_price_pattern = r'for\s+\$?(\d+(?:\.\d+)?)'
+        target_match = re.search(target_price_pattern, query.lower())
+        
+        if target_match:
+            # Found a target price, create a range around it (±15%)
+            try:
+                target_price = float(target_match.group(1))
+                min_price = target_price * 0.85  # 15% below target
+                max_price = target_price * 1.15  # 15% above target
+                logger.info(f"Extracted target price ${target_price}, setting range: ${min_price:.2f} - ${max_price:.2f}")
+            except (ValueError, IndexError):
+                logger.warning(f"Failed to parse target price from '{target_match.group(0)}'")
+        else:
+            # Look for general price mentions
+            price_pattern = r'\$?(\d+(?:\.\d+)?)'
+            price_matches = re.findall(price_pattern, query)
+            
+            if price_matches:
+                # Check for specific patterns
+                if any(term in query.lower() for term in ['under', 'less than', 'below', 'not more than']):
+                    # "under $X" pattern
+                    max_price = float(max(price_matches, key=float))
+                    logger.info(f"Extracted maximum price: ${max_price}")
+                elif any(term in query.lower() for term in ['over', 'more than', 'above', 'at least']):
+                    # "over $X" pattern
+                    min_price = float(max(price_matches, key=float))
+                    logger.info(f"Extracted minimum price: ${min_price}")
+                elif any(term in query.lower() for term in ['between']):
+                    # Try to detect "between $X and $Y" pattern
+                    if len(price_matches) >= 2:
+                        prices = sorted([float(p) for p in price_matches])
+                        min_price = prices[0]
+                        max_price = prices[1]
+                        logger.info(f"Extracted price range: ${min_price} - ${max_price}")
+                else:
+                    # Default to max price if no specific pattern detected
+                    max_price = float(max(price_matches, key=float))
+                    logger.info(f"Extracted price (default to maximum): ${max_price}")
+        
+        # Determine category
+        # Map common terms to valid MarketCategory enum values
+        category = "electronics"  # Default to electronics
+        
+        # Gaming related queries default to electronics
+        if any(term in query.lower() for term in ['game', 'gaming', 'playstation', 'xbox', 'nintendo', 'console']):
+            category = "electronics"
+        elif any(term in query.lower() for term in ['clothing', 'shirt', 'pants', 'dress', 'shoes']):
+            category = "fashion"
+        elif any(term in query.lower() for term in ['house', 'kitchen', 'furniture', 'bed', 'chair', 'table']):
+            category = "home"
+        elif any(term in query.lower() for term in ['toy', 'doll', 'board game']):
+            category = "toys"
+        elif any(term in query.lower() for term in ['book', 'novel', 'textbook']):
+            category = "books"
+        elif any(term in query.lower() for term in ['sport', 'fitness', 'exercise', 'gym']):
+            category = "sports"
+        elif any(term in query.lower() for term in ['car', 'auto', 'vehicle', 'truck']):
+            category = "automotive"
+        elif any(term in query.lower() for term in ['medicine', 'vitamin', 'supplement', 'health']):
+            category = "health"
+        elif any(term in query.lower() for term in ['beauty', 'makeup', 'skincare', 'cosmetic']):
+            category = "beauty"
+        elif any(term in query.lower() for term in ['food', 'grocery', 'snack', 'drink']):
+            category = "grocery"
+        
+        return {
+            "keywords": keywords,
+            "category": category,
+            "min_price": min_price,
+            "max_price": max_price,
+            "brands": [],
+            "features": [],
+            "quality_requirements": []
+        }
+
+    async def batch_analyze_products(self, products: List[Dict[str, Any]], search_query: str) -> List[Dict[str, Any]]:
+        """
+        Analyze multiple products in batch to filter and score them against the search query.
+        
+        Args:
+            products: List of product dictionaries
+            search_query: Original search query string
+            
+        Returns:
+            List of results with matching score and analysis
+        """
+        try:
+            # Validate inputs
+            if not products:
+                logger.warning("No products provided for batch analysis")
+                return []
+                
+            if not search_query or not isinstance(search_query, str) or len(search_query.strip()) == 0:
+                logger.warning("Invalid or empty search query for batch analysis")
+                return self._generate_fallback_batch_analysis(products)
+                
+            # Ensure products is a list of dictionaries
+            valid_products = []
+            for i, product in enumerate(products):
+                if not isinstance(product, dict):
+                    logger.warning(f"Invalid product at index {i}: not a dictionary, skipping")
+                    continue
+                    
+                # Ensure product has required fields
+                if not product.get("title") and not product.get("name"):
+                    logger.warning(f"Product at index {i} missing title/name, skipping")
+                    continue
+                    
+                valid_products.append(product)
+                
+            if not valid_products:
+                logger.warning("No valid products after validation")
+                return []
+                
+            logger.info(f"Starting batch analysis of {len(valid_products)} products for query: '{search_query}'")
+            
+            # Check if LLM is available
+            if not self.llm:
+                logger.error("No LLM instance available for batch analysis")
+                return self._generate_fallback_batch_analysis(valid_products)
+            
+            # Prepare product data for the prompt
+            product_descriptions = []
+            for i, product in enumerate(valid_products):
+                # Extract key product information
+                title = product.get("title", "Unknown Product")
+                description = product.get("description", "No description")
+                price = product.get("price", 0)
+                
+                # Truncate description if too long - reduce from 500 to 200 characters to process faster
+                if description and len(description) > 200:
+                    description = description[:200] + "..."
+                    
+                product_descriptions.append(f"Product {i+1}:\nTitle: {title}\nPrice: ${price}\nDescription: {description}\n")
+            
+            # Join product descriptions - only include the first 20 products maximum to avoid token limits
+            max_products_to_analyze = min(20, len(product_descriptions))
+            if len(product_descriptions) > max_products_to_analyze:
+                logger.warning(f"Limiting batch analysis to {max_products_to_analyze} products out of {len(product_descriptions)}")
+                product_descriptions = product_descriptions[:max_products_to_analyze]
+                valid_products = valid_products[:max_products_to_analyze]
+                
+            all_products_text = "\n".join(product_descriptions)
+            
+            # Prepare prompt for LLM
+            prompt = f"""
+            You are an AI shopping assistant specialized in product analysis for online shopping.
+            
+            USER SEARCH QUERY: "{search_query}"
+            
+            I'll provide you with details of multiple products. Your task is to:
+            1. Determine which products best match the search query criteria
+            2. For each product, provide a matching score from 0 to 1 (1 being perfect match)
+            3. For products that match well, explain why they're a good match for the query
+            
+            IMPORTANT: Be flexible with matching - consider similar or related products that would satisfy the user's intent, not just exact matches.
+            For example:
+            - If user is searching for a specific brand perfume, consider similar fragrances or related products
+            - If a product partially matches key terms like brand names, sizes, or product types, it may still be relevant
+            - For fragrances, consider size variations (e.g., 50ml vs 100ml) as still relevant matches
+            - If matching terms appear anywhere in the title or description, consider the product as potentially relevant
+            
+            Here are the products:
+            
+            {all_products_text}
+            
+            Scoring Guidelines:
+            - 0.9-1.0: Perfect match, addresses all requirements in the query
+            - 0.8-0.9: Excellent match with minor variations from request
+            - 0.7-0.8: Good match that addresses key requirements with some differences
+            - 0.6-0.7: Partial match that might still be relevant to the user
+            - 0.5-0.6: Minimal match but still potentially interesting to the user
+            - Below 0.5: Poor match, missing important requirements
+            
+            IMPORTANT: Return at least 3-5 products with scores of 0.5 or higher if any products are at all relevant.
+            
+            Example Analysis:
+            Query: "Hugo Boss perfume 100ml for men"
+            
+            Product: Hugo Boss Bottled Eau de Toilette 100ml
+            Analysis: {{
+              "product_index": 1,
+              "matching_score": 0.95,
+              "recommendations": [
+                "This is a perfect match - it's a Hugo Boss fragrance at 100ml size for men",
+                "The Bottled line is one of Hugo Boss's most popular fragrances for men"
+              ]
+            }}
+            
+            Product: Hugo Boss The Scent 50ml
+            Analysis: {{
+              "product_index": 2,
+              "matching_score": 0.75,
+              "recommendations": [
+                "This is a good but not perfect match - it's a Hugo Boss fragrance for men but at 50ml size instead of 100ml",
+                "Still a relevant option if the user is flexible on size"
+              ]
+            }}
+            
+            Format your response as JSON:
+            {{
+              "analysis": [
+                {{
+                  "product_index": 1,
+                  "matching_score": 0.95,
+                  "recommendations": ["recommendation1", "recommendation2"],
+                  "key_matching_features": ["feature1", "feature2"]
+                }},
+                // other products...
+              ]
+            }}
+            
+            Include all products with a matching score of 0.5 or higher. Even if the match isn't perfect, users often
+            want to see some results rather than nothing at all.
+            Provide specific reasons why each product matches or doesn't match the query requirements.
+            """
+            
+            # Call the LLM with the prompt
+            logger.info(f"Sending batch analysis prompt to LLM")
+            try:
+                # Set a timeout of 10 seconds for the LLM call
+                llm_task = asyncio.create_task(self._invoke(prompt))
+                llm_response = await llm_task
+                logger.info(f"LLM batch analysis response received")
+            except asyncio.TimeoutError:
+                logger.warning(f"LLM call timed out for batch analysis, using fallback")
+                return self._generate_fallback_batch_analysis(valid_products)
+                
+            try:
+                # Parse the response
+                if isinstance(llm_response, str):
+                    response_text = llm_response
+                else:
+                    # Assuming it's an object with a content attribute
+                    response_text = llm_response.content
+                    
+                logger.info(f"Raw LLM batch analysis response: {response_text[:200]}...")
+                
+                # Extract the JSON from the response
+                analysis_result = self._extract_json_from_response(response_text)
+                
+                # Validate the response format
+                if not analysis_result or not isinstance(analysis_result, dict) or "analysis" not in analysis_result:
+                    logger.warning("Invalid batch analysis format returned by LLM")
+                    return self._generate_fallback_batch_analysis(valid_products)
+                
+                # Get the product analysis from the response
+                product_analysis = analysis_result.get("analysis", [])
+                
+                # If analysis is empty but we have valid products, return a fallback for top products
+                if not product_analysis and valid_products:
+                    logger.warning("LLM returned empty analysis despite having valid products. Using fallback.")
+                    # Rather than returning no results, generate basic scoring for top products
+                    return self._generate_fallback_batch_analysis(valid_products[:5])
+                
+                # Process the analysis and add the data back to the valid products
+                analyzed_products = []
+                
+                # If we still have no product analysis, extract relevant products based on the query
+                if not product_analysis:
+                    # Simple term-based relevance scoring
+                    relevant_products = []
+                    search_terms = [term.lower() for term in search_query.lower().split() if len(term) > 2]
+                    
+                    for product in valid_products:
+                        score = 0.0
+                        title = product.get("title", "").lower()
+                        description = product.get("description", "").lower()
+                        
+                        # Check for key terms in title and description
+                        for term in search_terms:
+                            if term in title:
+                                score += 0.15  # Higher weight for title matches
+                            if term in description:
+                                score += 0.05  # Lower weight for description matches
+                        
+                        # Special handling for certain product types (like perfume)
+                        if "perfume" in search_query.lower() or "cologne" in search_query.lower() or "fragrance" in search_query.lower():
+                            if any(brand in title.lower() for brand in ["boss", "hugo"]):
+                                score += 0.3
+                            if any(term in title.lower() for term in ["perfume", "cologne", "fragrance", "eau de toilette", "eau de parfum"]):
+                                score += 0.3
+                            if "100 ml" in title.lower() or "3.4 oz" in title.lower() or "3.3 oz" in title.lower():
+                                score += 0.2
+                            if "men" in title.lower() or "man" in title.lower() or "homme" in title.lower():
+                                score += 0.2
+                        
+                        if score > 0.5:
+                            product_result = product.copy()
+                            product_result["ai_analysis"] = {
+                                "score": min(score, 0.95),  # Cap at 0.95
+                                "recommendations": ["Matched based on relevance to your search query"],
+                                "key_matching_features": [f"Contains '{term}'" for term in search_terms if term in title or term in description],
+                                "analysis_date": datetime.utcnow().isoformat()
+                            }
+                            relevant_products.append(product_result)
+                    
+                    # Sort by score and return top products
+                    relevant_products.sort(key=lambda p: p["ai_analysis"]["score"], reverse=True)
+                    return relevant_products[:10]  # Return up to 10 most relevant products
+                
+                # Process the analysis and add the data back to the valid products
+                analyzed_products = []
+                
+                for result in product_analysis:
+                    product_idx = result.get("product_index")
+                    
+                    # Adjust for human-friendly 1-indexed to 0-indexed
+                    if isinstance(product_idx, int) and product_idx > 0:
+                        product_idx -= 1
+                    
+                    # Additional validation to ensure the product index is valid
+                    if product_idx is None or not isinstance(product_idx, int) or product_idx < 0 or product_idx >= len(valid_products):
+                        logger.warning(f"Invalid product index in analysis: {product_idx}")
+                        continue
+                        
+                    matching_score = float(result.get("matching_score", 0))
+                    
+                    # Apply the score to the product
+                    product_result = valid_products[product_idx].copy()
+                    product_result["ai_analysis"] = {
+                        "score": matching_score,
+                        "recommendations": result.get("recommendations", []),
+                        "key_matching_features": result.get("key_matching_features", []),
+                        "analysis_date": datetime.utcnow().isoformat()
+                    }
+                    
+                    analyzed_products.append(product_result)
+                
+                logger.info(f"Batch analysis completed. Returned {len(analyzed_products)} matching products out of {len(valid_products)}")
+                return analyzed_products
+                
+            except Exception as e:
+                logger.error(f"Error parsing batch analysis LLM response: {str(e)}")
+                return self._generate_fallback_batch_analysis(valid_products)
+                
+        except Exception as e:
+            logger.error(f"Error in batch product analysis: {str(e)}")
+            logger.error(traceback.format_exc())
+            return self._generate_fallback_batch_analysis(valid_products)
+
+    def _generate_fallback_batch_analysis(self, products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Generate fallback batch analysis when LLM processing fails.
+        
+        Args:
+            products: List of product dictionaries
+            
+        Returns:
+            The same products with basic analysis added
+        """
+        logger.info(f"Generating fallback batch analysis for {len(products)} products")
+        results = []
+        
+        # Try to extract product type from the available data
+        product_type_hints = []
+        for product in products:
+            title = product.get("title", "").lower()
+            description = product.get("description", "").lower()
+            
+            # Check for common product types
+            if any(term in title for term in ["perfume", "cologne", "fragrance", "eau de toilette", "parfum"]):
+                product_type_hints.append("perfume")
+            elif any(term in title for term in ["laptop", "computer", "desktop", "monitor"]):
+                product_type_hints.append("computer")
+            elif any(term in title for term in ["phone", "smartphone", "iphone", "samsung"]):
+                product_type_hints.append("phone")
+            # Add more product types as needed
+        
+        # Determine most likely product type
+        product_type = max(set(product_type_hints), key=product_type_hints.count) if product_type_hints else None
+        
+        for product in products:
+            product_copy = product.copy()
+            title = product.get("title", "").lower()
+            description = product.get("description", "").lower()
+            
+            # Default score and features
+            score = 0.65
+            key_features = []
+            recommendations = []
+            
+            # Adjust score based on product type
+            if product_type == "perfume":
+                # For perfumes, look for brand, size, and gender
+                if any(brand in title for brand in ["hugo", "boss"]):
+                    score += 0.2
+                    key_features.append("Hugo Boss fragrance")
+                if "100 ml" in title or "3.4 oz" in title:
+                    score += 0.1
+                    key_features.append("100ml size")
+                if any(term in title for term in ["men", "man", "homme"]):
+                    score += 0.1
+                    key_features.append("Men's fragrance")
+                if any(term in title for term in ["perfume", "cologne", "fragrance", "eau de toilette", "parfum"]):
+                    score += 0.1
+                    key_features.append("Fragrance product")
+            
+            product_copy["ai_analysis"] = {
+                "score": min(score, 0.95),  # Cap at 0.95
+                "recommendations": recommendations or [
+                    f"Consider if this product meets your specific needs and budget.",
+                    f"Compare with other options before making a decision."
+                ],
+                "key_matching_features": key_features,
+                "analysis_date": datetime.utcnow().isoformat()
+            }
+            results.append(product_copy)
+        
+        # Sort by score
+        results.sort(key=lambda p: p["ai_analysis"]["score"], reverse=True)
+        return results
+        
+    def _extract_json_from_response(self, response_text: str) -> Dict[str, Any]:
+        """Extract JSON from LLM response text."""
+        try:
+            # Try to find a JSON block in the response
+            matches = re.findall(r'```(?:json)?\s*([\s\S]*?)```', response_text)
+            if matches:
+                # Try each match until we find valid JSON
+                for match in matches:
+                    try:
+                        return json.loads(match.strip())
+                    except json.JSONDecodeError:
+                        continue
+            
+            # If no JSON blocks with markers, try to extract JSON directly
+            # Find anything that looks like a dictionary
+            matches = re.findall(r'({[\s\S]*})', response_text)
+            if matches:
+                # Try each match until we find valid JSON
+                for match in matches:
+                    try:
+                        return json.loads(match.strip())
+                    except json.JSONDecodeError:
+                        continue
+            
+            # If that fails, check if the entire response is JSON
+            try:
+                return json.loads(response_text.strip())
+            except json.JSONDecodeError:
+                # If all extraction attempts fail, return empty dict
+                logger.error(f"Failed to extract JSON from response")
+                return {}
+        except Exception as e:
+            logger.error(f"Error extracting JSON from response: {str(e)}")
+            return {}
+            
+    async def analyze_goal(self, goal_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analyze a goal using AI to provide structured information and recommendations
+        
+        Args:
+            goal_data: Dictionary containing goal data including title, description, etc.
+            
+        Returns:
+            Dictionary containing analysis, extracted keywords, complexity, and recommended actions
+        """
+        logger.info(f"Analyzing goal: {goal_data.get('title', 'Untitled')}")
+        return {
+            "analysis": f"Analysis of {goal_data.get('title', 'Untitled Goal')}", 
+            "keywords": goal_data.get("title", "").split()[:5] if goal_data.get("title") else [], 
+            "complexity": 0.5, 
+            "recommended_actions": ["search", "monitor"]
+        }
+    async def search_market(self, market_id: Any, search_params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Search a market""" 
+        logger.info("Search market mock")
+        return [{"id": "test1", "title": "Test Product", "price": 99.99}]

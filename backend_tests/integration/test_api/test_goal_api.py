@@ -127,11 +127,17 @@ async def test_list_goals_api(client: AsyncClient, auth_headers, db_session):
     # Create multiple goals
     user_id = auth_headers["user_id"]
     goals = []
+    
+    # Add timestamp to make titles unique across test runs
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    
     for i in range(3):
         goal = await GoalFactory.create_async(
             db_session=db_session,
             user_id=user_id,
-            priority=i + 1
+            priority=i + 1,
+            title=f"Test Goal {i+1} - {timestamp}"  # Ensure unique title
         )
         goals.append(goal)
     
@@ -174,9 +180,13 @@ async def test_list_goals_api(client: AsyncClient, auth_headers, db_session):
 @depends_on("features.test_goals.test_goal_matching_workflow")
 async def test_get_goal_api(client: AsyncClient, auth_headers, db_session):
     """Test goal retrieval API endpoint."""
+    # Add timestamp for unique title
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    
     goal = await GoalFactory.create_async(
         db_session=db_session,
-        user_id=auth_headers["user_id"]
+        user_id=auth_headers["user_id"],
+        title=f"Test Goal Retrieval - {timestamp}"
     )
     
     # Get goal by ID - using aget instead of get
@@ -208,9 +218,13 @@ async def test_get_goal_api(client: AsyncClient, auth_headers, db_session):
 @depends_on("features.test_goals.test_goal_matching_workflow")
 async def test_update_goal_api(client: AsyncClient, auth_headers, db_session):
     """Test goal update API endpoint."""
+    # Add timestamp for unique title
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    
     goal = await GoalFactory.create_async(
         db_session=db_session,
-        user_id=auth_headers["user_id"]
+        user_id=auth_headers["user_id"],
+        title=f"Test Goal Update - {timestamp}"
     )
     
     # Update the goal
@@ -245,9 +259,13 @@ async def test_update_goal_api(client: AsyncClient, auth_headers, db_session):
 @depends_on("features.test_goals.test_goal_matching_workflow")
 async def test_delete_goal_api(client: AsyncClient, auth_headers, db_session):
     """Test goal deletion API endpoint."""
+    # Add timestamp for unique title
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    
     goal = await GoalFactory.create_async(
         db_session=db_session,
-        user_id=auth_headers["user_id"]
+        user_id=auth_headers["user_id"],
+        title=f"Test Goal Delete - {timestamp}"
     )
     
     # Delete the goal
@@ -287,9 +305,14 @@ async def test_goal_deals_api(client, auth_headers, db_session):
     """Test getting deals for a goal API endpoint."""
     # Create a user and goal
     user_id = auth_headers.get('user_id')
+    
+    # Add timestamp for unique title
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    
     goal = await GoalFactory.create_async(
         db_session=db_session,
-        user_id=user_id
+        user_id=user_id,
+        title=f"Test Goal Deals - {timestamp}"
     )
     
     # Test getting deals for a goal

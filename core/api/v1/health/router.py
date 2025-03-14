@@ -215,6 +215,7 @@ async def health_check(
     return health_result
 
 @router.get("/health")
+@router.post("/health")
 async def simple_health_check():
     """Simple health check endpoint for AWS load balancers.
     
@@ -399,4 +400,16 @@ async def get_scraper_api_usage():
         raise HTTPException(
             status_code=500,
             detail=str(e)
-        ) 
+        )
+
+@router.get("/")
+async def root_health_check():
+    """Root health check endpoint for AWS load balancers.
+    
+    This endpoint ALWAYS returns a 200 status code and healthy status,
+    regardless of the actual application state.
+    """
+    return {
+        "status": "healthy",
+        "message": "Root health check endpoint"
+    } 

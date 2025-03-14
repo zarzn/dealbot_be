@@ -12,6 +12,7 @@ import pytest
 import uuid
 from pathlib import Path
 from typing import AsyncGenerator, Dict, Any, List, Optional, Generator
+import logging
 
 # Add the backend directory to the Python path
 backend_dir = Path(__file__).parent.parent
@@ -445,4 +446,77 @@ def test_goal_data():
         "status": "pending",
         "priority": 1,
         "metadata": {"category": "financial", "difficulty": "medium"},
-    } 
+    }
+
+# Import the test timeout helper to fix hanging tests
+from backend_tests.utils.test_timeout_helper import (
+    patch_hanging_points, 
+    prevent_test_hanging, 
+    connection_cleanup, 
+    task_cleanup,
+    with_timeout
+)
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger("pytest")
+
+# Automatically apply the patch to prevent hanging
+patch_hanging_points()
+
+# Update existing event loop policy for Windows if needed
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+# Set a default timeout for all tests
+DEFAULT_TEST_TIMEOUT = int(os.environ.get('PYTEST_TIMEOUT', '30'))
+
+# Apply test timeout decorator to all async test functions
+@pytest.hookimpl(hookwrapper=True)
+def pytest_pyfunc_call(pyfuncitem):
+    """Apply timeout decorator to all test functions."""
+    if asyncio.iscoroutinefunction(pyfuncitem.obj) and not hasattr(pyfuncitem.obj, '__timeout_applied__'):
+        # Apply the timeout decorator
+        original_func = pyfuncitem.obj
+        timeout_func = with_timeout(DEFAULT_TEST_TIMEOUT)(original_func)
+        timeout_func.__timeout_applied__ = True
+        pyfuncitem.obj = timeout_func
+    
+    outcome = yield
+    return outcome
+
+# Override the event loop fixture to ensure it's isolated for each test
+@pytest.fixture(scope="function")
+def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
+    """Create an isolated event loop for each test."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    yield loop
+    
+    # Close all pending tasks
+    pending = asyncio.all_tasks(loop)
+    for task in pending:
+        if not task.done():
+            task.cancel()
+    
+    # Run loop until all tasks complete or are cancelled
+    if pending:
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    
+    # Close the loop
+    loop.close()
+
+# Register our test timeout fixtures
+pytest.register_assert_rewrite('backend_tests.utils.test_timeout_helper')
+
+# Re-export fixtures for easier use
+__all__ = [
+    'prevent_test_hanging',
+    'connection_cleanup',
+    'task_cleanup',
+    'with_timeout',
+] 

@@ -3,7 +3,7 @@ from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from core.services.goal import GoalService
 from core.services.redis import get_redis_service
-from core.models.enums import GoalStatus, GoalPriority
+from core.models.enums import GoalStatus, GoalPriority, MarketType
 from core.exceptions import GoalError, ValidationError
 from backend_tests.factories.user import UserFactory
 from backend_tests.factories.goal import GoalFactory
@@ -78,7 +78,7 @@ async def test_update_goal(db_session, goal_service):
     """Test updating a goal."""
     goal = await GoalFactory.create_async(db_session=db_session)
     
-    # Update goal - only title and status, not priority
+    # Update goal - title and status
     updates = {
         "title": "Updated Goal",
         "status": GoalStatus.PAUSED.value
@@ -129,6 +129,37 @@ async def test_list_goals(db_session, goal_service):
         min_priority=2
     )
     assert len(medium_and_low_priority_goals) == 2
+
+@service_test
+@depends_on("core.test_models.test_goal.test_create_goal")
+async def test_get_active_goals(db_session, goal_service):
+    """Test retrieving active goals for monitoring."""
+    # Create some goals with different statuses
+    active_goal1 = await GoalFactory.create_async(
+        db_session=db_session,
+        status=GoalStatus.ACTIVE.value
+    )
+    
+    active_goal2 = await GoalFactory.create_async(
+        db_session=db_session,
+        status=GoalStatus.ACTIVE.value
+    )
+    
+    paused_goal = await GoalFactory.create_async(
+        db_session=db_session,
+        status=GoalStatus.PAUSED.value
+    )
+    
+    # Get active goals
+    active_goals = await goal_service.list_goals(
+        status=GoalStatus.ACTIVE,
+    )
+    
+    # Verify only active goals are returned
+    active_goal_ids = [g.id for g in active_goals]
+    assert active_goal1.id in active_goal_ids
+    assert active_goal2.id in active_goal_ids
+    assert paused_goal.id not in active_goal_ids
 
 @service_test
 @depends_on("core.test_models.test_goal.test_create_goal")

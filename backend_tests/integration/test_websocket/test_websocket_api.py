@@ -77,7 +77,7 @@ async def test_websocket_connection(connection_manager, mock_websocket):
     
     # Verify the connection was established
     assert connection_id in connection_manager.active_connections
-    assert connection_manager.active_connections[connection_id]["user_id"] == "test-user"
+    assert connection_manager.connection_data[connection_id]["user_id"] == "test-user"
     
     # Disconnect the WebSocket
     await connection_manager.disconnect(connection_id)

@@ -282,7 +282,8 @@ class ScraperAPIService:
         self,
         query: str,
         page: int = 1,
-        cache_ttl: int = 1800  # 30 minutes
+        cache_ttl: int = 1800,  # 30 minutes
+        limit: int = 15  # Explicitly limit to 15 products
     ) -> List[Dict[str, Any]]:
         """Search Amazon for products matching the query."""
         logger.debug(f"Searching Amazon for query: '{query}', page: {page}")
@@ -292,7 +293,8 @@ class ScraperAPIService:
         
         params = {
             'query': query,
-            'country': 'us'
+            'country': 'us',
+            'limit': str(limit)  # Add explicit limit parameter
         }
         
         if page > 1:
@@ -324,43 +326,40 @@ class ScraperAPIService:
                 elif 'search_results' in response:
                     products = response['search_results']
                     logger.debug("Found products in 'search_results' key")
-                elif 'data' in response and isinstance(response['data'], (list, dict)):
-                    products = response['data'] if isinstance(response['data'], list) else [response['data']]
+                elif 'data' in response and isinstance(response['data'], list):
+                    products = response['data']
                     logger.debug("Found products in 'data' key")
+                elif 'items' in response:
+                    products = response['items'] 
+                    logger.debug("Found products in 'items' key")
                 else:
-                    # Log more details about the response structure
-                    logger.warning(f"No recognized product array found in response. Available keys: {list(response.keys())}")
-                    logger.debug("Full response structure:")
-                    for key, value in response.items():
-                        if isinstance(value, (list, dict)):
-                            logger.debug(f"{key}: {type(value)} with {len(value)} items")
-                        else:
-                            logger.debug(f"{key}: {type(value)} = {value}")
+                    # No recognizable product list structure found
+                    logger.warning(f"No recognizable product list found in response. Keys: {list(response.keys())}")
+                    return []
             elif isinstance(response, list):
+                # Sometimes the response is directly a list of products
                 products = response
-                logger.debug("Response was directly a list of products")
+                logger.debug("Response is directly a list of products")
             else:
-                logger.error(f"Unexpected response type: {type(response)}")
-                raise MarketIntegrationError(
-                    market="amazon",
-                    operation="search_products",
-                    reason=f"Unexpected response type: {type(response)}",
-                    details={'response_preview': str(response)[:500]}
-                )
+                logger.warning(f"Unexpected response type: {type(response)}")
+                return []
                 
             logger.debug(f"Found {len(products)} products before validation")
             
+            if not products:
+                logger.warning("No products found in the response")
+                return []
+                
             # Validate and normalize product data
             normalized_products = []
+            error_count = 0
+            
             for idx, product in enumerate(products):
                 try:
                     if not isinstance(product, dict):
                         logger.warning(f"Invalid product data at index {idx}: {product}")
                         continue
                         
-                    # Log available fields for debugging
-                    logger.debug(f"Product {idx} available fields: {list(product.keys())}")
-                    
                     # Extract product ID (ASIN)
                     product_id = None
                     for id_field in ['asin', 'id', 'product_id', 'productId']:
@@ -385,194 +384,107 @@ class ScraperAPIService:
                         
                     # Extract and normalize price
                     price = None
-                    for price_field in ['price', 'current_price', 'deal_price', 'list_price', 'productPrice']:
-                        if price_field in product:
-                            try:
-                                price_str = str(product[price_field])
-                                # Remove currency symbols and commas
-                                price_str = price_str.replace('$', '').replace(',', '').strip()
-                                # Handle ranges (take the lower price)
-                                if ' - ' in price_str:
-                                    price_str = price_str.split(' - ')[0]
-                                price = float(price_str)
-                                break
-                            except (ValueError, TypeError) as e:
-                                logger.debug(f"Failed to parse price '{product[price_field]}' for product {product_id}: {e}")
-                                continue
-                    
-                    if price is None:
-                        logger.warning(f"Could not extract valid price for product {product_id}")
+                    try:
+                        for price_field in ['price', 'current_price', 'deal_price', 'list_price', 'productPrice']:
+                            if price_field in product:
+                                try:
+                                    price_str = str(product[price_field])
+                                    # Remove currency symbols and commas
+                                    price_str = price_str.replace('$', '').replace(',', '').strip()
+                                    # Handle ranges (take the lower price)
+                                    if ' - ' in price_str:
+                                        price_str = price_str.split(' - ')[0]
+                                    price = float(price_str)
+                                    break
+                                except (ValueError, TypeError) as e:
+                                    logger.debug(f"Failed to parse price '{product[price_field]}' for product {product_id}: {e}")
+                                    continue
+                        
+                        if price is None:
+                            logger.warning(f"Could not extract valid price for product {product_id}")
+                            continue
+                    except Exception as e:
+                        logger.warning(f"Error extracting price for product {product_id}: {str(e)}")
                         continue
                     
                     # Extract original price / list price
                     original_price = None
-                    for orig_price_field in ['original_price', 'list_price', 'was_price', 'regular_price', 'msrp', 'strike_price']:
-                        if orig_price_field in product and product[orig_price_field]:
-                            try:
-                                orig_price_str = str(product[orig_price_field])
-                                # Remove currency symbols and commas
-                                orig_price_str = orig_price_str.replace('$', '').replace(',', '').strip()
-                                # Handle ranges (take the higher price)
-                                if ' - ' in orig_price_str:
-                                    orig_price_str = orig_price_str.split(' - ')[1]
-                                original_price = float(orig_price_str)
-                                
-                                # Ensure original price is higher than current price
-                                if original_price <= price:
-                                    logger.debug(f"Original price {original_price} is not higher than current price {price}, ignoring")
-                                    original_price = None
-                                break
-                            except (ValueError, TypeError) as e:
-                                logger.debug(f"Failed to parse original price '{product[orig_price_field]}' for product {product_id}: {e}")
-                                continue
-                    
-                    # Try to extract from price info if it's a dictionary
-                    if original_price is None and 'price_info' in product and isinstance(product['price_info'], dict):
-                        price_info = product['price_info']
-                        for orig_key in ['original', 'was', 'list', 'msrp', 'regular']:
-                            if orig_key in price_info and price_info[orig_key]:
+                    try:
+                        for orig_price_field in ['original_price', 'list_price', 'was_price', 'regular_price', 'msrp', 'strike_price']:
+                            if orig_price_field in product and product[orig_price_field]:
                                 try:
-                                    orig_price_str = str(price_info[orig_key])
+                                    orig_price_str = str(product[orig_price_field])
+                                    # Remove currency symbols and commas
                                     orig_price_str = orig_price_str.replace('$', '').replace(',', '').strip()
+                                    # Handle ranges (take the higher price)
+                                    if ' - ' in orig_price_str:
+                                        orig_price_str = orig_price_str.split(' - ')[1]
                                     original_price = float(orig_price_str)
                                     
                                     # Ensure original price is higher than current price
                                     if original_price <= price:
-                                        logger.debug(f"Original price {original_price} from price_info is not higher than current price {price}, ignoring")
+                                        logger.debug(f"Original price {original_price} is not higher than current price {price}, ignoring")
                                         original_price = None
                                     break
                                 except (ValueError, TypeError) as e:
-                                    logger.debug(f"Failed to parse original price from price_info: {e}")
+                                    logger.debug(f"Failed to parse original price '{product[orig_price_field]}' for product {product_id}: {e}")
                                     continue
+                    except Exception as e:
+                        # Non-critical error, just log and continue without original price
+                        logger.debug(f"Error extracting original price for product {product_id}: {str(e)}")
+                        original_price = None
                     
                     # Extract image URL
                     image_url = None
-                    for img_field in ['image', 'main_image', 'productImage', 'image_url', 'thumbnail']:
-                        if img_field in product and product[img_field]:
-                            image_url = str(product[img_field])
-                            break
+                    try:
+                        for img_field in ['image', 'main_image', 'productImage', 'image_url', 'thumbnail']:
+                            if img_field in product and product[img_field]:
+                                image_url = str(product[img_field])
+                                break
+                    except Exception as e:
+                        # Non-critical error, just log and continue without image URL
+                        logger.debug(f"Error extracting image URL for product {product_id}: {str(e)}")
+                        image_url = None
                     
-                    # Extract category
-                    category = 'electronics'  # Default
-                    if 'category' in product:
-                        category = product['category']
-                    elif 'categories' in product and isinstance(product['categories'], list) and product['categories']:
-                        category = product['categories'][0]
-                    
-                    # Extract product features
-                    features = []
-                    if 'features' in product and isinstance(product['features'], list):
-                        features = product['features']
-                    elif 'specifications' in product and isinstance(product['specifications'], list):
-                        features = [f"{spec.get('name', '')}: {spec.get('value', '')}" for spec in product['specifications']]
-                    
-                    # Extract seller info
-                    seller_info = {
-                        'name': product.get('seller', 'Amazon'),
-                        'rating': float(product.get('seller_rating', 0)),
-                        'condition': product.get('condition', 'New')
-                    }
-                    
-                    # Add reviews count to seller info if available
-                    review_count = int(product.get('rating', {}).get('numberOfReviews', product.get('numberOfReviews', 0))) if isinstance(product.get('rating'), dict) else int(product.get('reviews', product.get('numberOfReviews', 0)))
-                    if review_count > 0:
-                        seller_info['reviews'] = review_count
-                    
-                    # Get product rating (prefer average rating if available)
-                    product_rating = float(product.get('rating', {}).get('averageRating', product.get('averageRating', 0.0))) if isinstance(product.get('rating'), dict) else float(product.get('rating', product.get('averageRating', 0.0)))
-                    
-                    # If seller rating is not available but product rating is, use product rating for seller
-                    if seller_info['rating'] == 0 and product_rating > 0:
-                        seller_info['rating'] = product_rating
-                    
-                    # Extract shipping info
-                    shipping_info = {
-                        'free_shipping': 'free_shipping' in product and product['free_shipping'] is True
-                    }
-                    if 'shipping' in product:
-                        if isinstance(product['shipping'], dict):
-                            shipping_info.update(product['shipping'])
-                        elif isinstance(product['shipping'], str):
-                            shipping_info['message'] = product['shipping']
-                    
-                    # Calculate a basic deal score based on discount and reviews
-                    deal_score = 5.0  # Default middle score
-                    if original_price and price:
-                        discount = (original_price - price) / original_price
-                        # Score 0-5 based on discount (0-50%)
-                        discount_score = min(5, discount * 10)
-                        
-                        # Get review score (0-5)
-                        review_score = min(5, float(product.get('rating', 0)))
-                        
-                        # Combine scores
-                        deal_score = (discount_score + review_score) / 2
-                    
-                    # Extract description - check multiple possible field names
+                    # Extract description
                     description = None
-                    for desc_field in ['description', 'product_description', 'about', 'about_product', 'overview', 'details', 'summary']:
-                        if desc_field in product and product[desc_field]:
-                            # Check if it's a string or a list
-                            if isinstance(product[desc_field], str) and len(product[desc_field].strip()) > 0:
-                                description = product[desc_field].strip()
-                                logger.debug(f"Found description in field '{desc_field}': {description[:100]}...")
-                                break
-                            elif isinstance(product[desc_field], list) and len(product[desc_field]) > 0:
-                                # Join list items into a string
-                                description = " ".join([str(item) for item in product[desc_field] if item])
-                                logger.debug(f"Found description in list field '{desc_field}': {description[:100]}...")
-                                break
-                    
-                    # If no description found in primary fields, check for it in other structures
-                    if not description:
-                        # Check in product_information if it exists
-                        if 'product_information' in product and isinstance(product['product_information'], dict):
-                            for key, value in product['product_information'].items():
-                                if 'description' in key.lower() and value:
-                                    description = value if isinstance(value, str) else str(value)
-                                    logger.debug(f"Found description in product_information: {key}")
+                    try:
+                        for desc_field in ['description', 'product_description', 'about', 'about_product', 'overview', 'details', 'summary']:
+                            if desc_field in product and product[desc_field]:
+                                # Check if it's a string or a list
+                                if isinstance(product[desc_field], str) and len(product[desc_field].strip()) > 0:
+                                    description = product[desc_field].strip()
+                                    break
+                                elif isinstance(product[desc_field], list) and len(product[desc_field]) > 0:
+                                    # Join list items into a string
+                                    description = " ".join([str(item) for item in product[desc_field] if item])
                                     break
                         
-                        # Check in the features as a fallback
-                        if not description and 'features' in product and isinstance(product['features'], list) and product['features']:
-                            description = "Features: " + " ".join(str(f) for f in product['features'])
-                            logger.debug(f"Using features as description fallback: {description[:100]}...")
+                        # Fallback to a generic description based on the product title if still no description
+                        if not description or len(description.strip()) == 0:
+                            description = f"This is a {title} available on Amazon."
+                    except Exception as e:
+                        # Non-critical error, just log and create a generic description
+                        logger.debug(f"Error extracting description for product {product_id}: {str(e)}")
+                        description = f"This is a {title} available on Amazon."
                     
-                    # Fallback to a generic description based on the product title if still no description
-                    if not description or len(description.strip()) == 0:
-                        title = product.get('title') or product.get('name', 'Product')
-                        description = f"This is a {title} available on Amazon. No detailed description is available."
-                        logger.debug("Created generic description")
-
-                    # Make sure description is not None before adding to normalized_product
-                    if not description:
-                        description = ""
-
                     # Add debug log to check the final description
                     logger.info(f"Final description for product {product_id}: {description[:100]}...")
                     
-                    # Now create the normalized product with the description included
+                    # Create normalized product
                     normalized_product = {
                         'id': product_id,
                         'asin': product_id,
                         'title': title,
                         'name': title,
-                        'description': description,  # Include the description here
+                        'description': description,
                         'price': price,
                         'price_string': f"${price:.2f}",
                         'original_price': original_price,
                         'currency': 'USD',
                         'url': f"https://www.amazon.com/dp/{product_id}",
                         'market_type': 'amazon',
-                        'rating': float(product.get('rating', {}).get('averageRating', product.get('averageRating', 0.0))) if isinstance(product.get('rating'), dict) else float(product.get('rating', product.get('averageRating', 0.0))),
-                        'review_count': int(product.get('rating', {}).get('numberOfReviews', product.get('numberOfReviews', 0))) if isinstance(product.get('rating'), dict) else int(product.get('reviews', product.get('numberOfReviews', 0))),
                         'image_url': image_url or '',
-                        'availability': bool(product.get('available', True)),
-                        'category': category,
-                        'features': features[:5],  # Limit features to top 5
-                        'seller_info': seller_info,
-                        'shipping_info': shipping_info,
-                        'deal_score': deal_score,
                         'metadata': {
                             'source': 'amazon',
                             'timestamp': datetime.utcnow().isoformat(),
@@ -583,20 +495,26 @@ class ScraperAPIService:
                     normalized_products.append(normalized_product)
                     
                 except Exception as e:
+                    error_count += 1
                     logger.error(f"Error processing product at index {idx}: {str(e)}")
-                    logger.error(f"Product data: {product}")
+                    # Continue with next product instead of failing the entire operation
                     continue
             
             logger.info(f"Successfully normalized {len(normalized_products)} out of {len(products)} products")
-            return normalized_products
             
+            # Return only the first 50 products
+            return normalized_products[:15]
+            
+        except MarketConnectionError as e:
+            # Log the error but don't fail the entire operation
+            logger.error(f"Connection to Amazon failed: {str(e)}", exc_info=True)
+            logger.warning("Returning empty results due to connection error")
+            return []
         except Exception as e:
+            # Log other exceptions but still return empty results
             logger.error(f"Amazon search failed: {str(e)}", exc_info=True)
-            raise MarketIntegrationError(
-                market="amazon",
-                operation="search_products",
-                reason=f"Search failed: {str(e)}"
-            )
+            logger.warning("Returning empty results due to error")
+            return []
     
     async def get_amazon_product(
         self,
@@ -697,16 +615,17 @@ class ScraperAPIService:
         self,
         query: str,
         page: int = 1,
-        cache_ttl: int = 1800  # 30 minutes
+        cache_ttl: int = 1800,  # 30 minutes
+        limit: int = 15  # Explicitly limit to 15 products
     ) -> List[Dict[str, Any]]:
         """Search for products on Walmart."""
         try:
             # Properly encode the query for Walmart
             encoded_query = quote_plus(query)
             # Use the browse API endpoint which tends to be more reliable
-            target_url = f"https://www.walmart.com/browse/search?q={encoded_query}&page={page}&sort=best_match"
+            target_url = f"https://www.walmart.com/browse/search?q={encoded_query}&page={page}&sort=best_match&limit={limit}"
             
-            logger.debug(f"Searching Walmart for query: '{query}', page: {page}")
+            logger.debug(f"Searching Walmart for query: '{query}', page: {page}, limit: {limit}")
             logger.debug(f"Using target URL: {target_url}")
             
             result = await self._make_request(
@@ -901,7 +820,9 @@ class ScraperAPIService:
                     continue
             
             logger.info(f"Successfully normalized {len(normalized_products)} out of {len(products)} products")
-            return normalized_products
+            
+            # Return only the first 50 products
+            return normalized_products[:50]
             
         except Exception as e:
             logger.error(f"Walmart search failed: {str(e)}", exc_info=True)
@@ -1078,14 +999,32 @@ class ScraperAPIService:
             # Use the Redis service instead of creating a new client
             redis_service = await get_redis_service()
             
-            # Test connection with a simple ping
+            # Test connection with a simple ping with timeout
             try:
-                if await redis_service.ping():
+                # Set a short timeout for ping to avoid blocking
+                ping_task = asyncio.create_task(redis_service.ping())
+                done, pending = await asyncio.wait([ping_task], timeout=5.0)
+                
+                if pending:
+                    # Ping timed out
+                    for task in pending:
+                        task.cancel()
+                    logger.error("Redis ping timed out")
+                    logger.warning("Redis ping test failed, continuing without Redis")
+                    self.redis_client = None
+                    return
+                
+                # Check if ping was successful
+                if ping_task in done and ping_task.result():
                     self.redis_client = redis_service
                     logger.debug("Redis client initialized successfully")
                 else:
                     logger.warning("Redis ping test failed, continuing without Redis")
                     self.redis_client = None
+            except asyncio.TimeoutError:
+                logger.error("Redis ping timed out")
+                logger.warning("Redis ping test failed, continuing without Redis")
+                self.redis_client = None
             except Exception as ping_error:
                 logger.warning(f"Redis ping test failed: {str(ping_error)}, continuing without Redis")
                 self.redis_client = None

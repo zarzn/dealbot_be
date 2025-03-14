@@ -12,6 +12,7 @@ class MarketType(str, Enum):
     EBAY = "ebay"
     TARGET = "target"
     BESTBUY = "bestbuy"
+    NEWEGG = "newegg"
     CRYPTO = "crypto"
     TEST = "test"
 
@@ -57,6 +58,7 @@ class DealStatus(str, Enum):
     """Deal status enum."""
     PENDING = "pending"
     ACTIVE = "active"
+    COMPLETED = "completed"
     EXPIRED = "expired"
     SOLD_OUT = "sold_out"
     INVALID = "invalid"

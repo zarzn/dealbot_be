@@ -36,13 +36,24 @@ class MarketIntegrationFactory:
         self,
         market: str,
         query: str,
-        page: int = 1
+        page: int = 1,
+        limit: int = 15
     ) -> List[Dict[str, Any]]:
-        """Search for products in the specified market."""
+        """Search for products in the specified market.
+        
+        Args:
+            market: Market identifier (amazon, walmart)
+            query: Search query string
+            page: Result page number
+            limit: Maximum number of products to return (default: 15)
+            
+        Returns:
+            List of product dictionaries
+        """
         if market.lower() == "amazon":
-            return await self.scraper_api.search_amazon(query, page)
+            return await self.scraper_api.search_amazon(query, page, limit=limit)
         elif market.lower() == "walmart":
-            return await self.scraper_api.search_walmart_products(query, page)
+            return await self.scraper_api.search_walmart_products(query, page, limit=limit)
         else:
             raise MarketIntegrationError(
                 market=market,
