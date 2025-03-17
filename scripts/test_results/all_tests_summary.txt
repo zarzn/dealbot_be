@@ -1,6 +1,6 @@
 # Complete Test Suite Results Summary
 
-Generated: 03/14/2025 04:11:57
+Generated: 03/16/2025 13:01:42
 
 ❌ Core tests: FAILED or had issues
 ⏩ Service tests: SKIPPED (dependencies not met: Core)
@@ -8,11 +8,11 @@ Generated: 03/14/2025 04:11:57
 ⏩ Integration tests: SKIPPED (dependencies not met: Core, Service, Feature)
 
 ## Generated Reports:
-- core_report.html
-  Last updated: 03/14/2025 04:12:08
 - feature_report.html
   Last updated: 03/14/2025 02:32:51
+- integration_report.html
+  Last updated: 03/16/2025 12:46:39
 - service_report.html
   Last updated: 03/14/2025 03:13:04
 - test_report.html
-  Last updated: 03/14/2025 04:12:10
+  Last updated: 03/16/2025 13:01:52

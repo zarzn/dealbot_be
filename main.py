@@ -95,18 +95,19 @@ from core.models import (
 from core.middleware import setup_middleware
 
 # Import routers
-from core.api.v1.auth.router import router as auth_router
-from core.api.v1.users.router import router as users_router
-from core.api.v1.goals.router import router as goals_router
-from core.api.v1.deals.router import router as deals_router
-from core.api.v1.markets.router import router as markets_router
-from core.api.v1.chat.router import router as chat_router
-from core.api.v1.token.router import router as token_router
-from core.api.v1.notifications.router import router as notifications_router
-from core.api.v1.health.router import router as health_router
-from core.api.v1.price_tracking.router import router as price_tracking_router
-from core.api.v1.price_prediction.router import router as price_prediction_router
-from core.api.v1.ai.router import router as ai_router
+from core.api.v1.auth import router as auth_router
+from core.api.v1.users import router as users_router
+from core.api.v1.goals import router as goals_router
+from core.api.v1.deals import router as deals_router
+from core.api.v1.markets import router as markets_router
+from core.api.v1.chat import router as chat_router
+from core.api.v1.token import router as token_router
+from core.api.v1.notifications import router as notifications_router
+from core.api.v1.health import router as health_router
+from core.api.v1.price_tracking import router as price_tracking_router
+from core.api.v1.price_prediction import router as price_prediction_router
+from core.api.v1.ai import router as ai_router
+from core.api.v1.analytics import router as analytics_router
 
 # Import websocket handlers
 from core.api.v1.notifications.websocket import handle_websocket
@@ -119,6 +120,10 @@ async def lifespan(app: FastAPI):
     This function handles setup before the application starts
     and cleanup after it stops.
     """
+    # Background tasks for monitoring
+    connection_monitor_task = None
+    connection_leak_detector_task = None
+    
     # Setup
     try:
         # Setup model relationships
@@ -143,6 +148,26 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to initialize Redis: {str(e)} - continuing without Redis")
         
+        # Start database connection monitoring
+        try:
+            logger.info("Starting database connection monitoring...")
+            from core.utils.connection_monitor import monitor_connections, detect_connection_leaks, cleanup_connections
+            
+            # Clean up any existing connections
+            await cleanup_connections()
+            
+            # Start connection monitoring background task
+            connection_monitor_task = asyncio.create_task(monitor_connections(interval=30))
+            
+            # Start connection leak detection background task
+            connection_leak_detector_task = asyncio.create_task(
+                detect_connection_leaks(timeout=180, threshold=5, interval=60)
+            )
+            
+            logger.info("Database connection monitoring started")
+        except Exception as e:
+            logger.error(f"Failed to start database connection monitoring: {str(e)}")
+        
         yield
     
     except Exception as e:
@@ -153,6 +178,32 @@ async def lifespan(app: FastAPI):
     finally:
         # Shutdown
         logger.info("Shutting down application...")
+        
+        # Cancel background tasks
+        if connection_monitor_task:
+            logger.info("Stopping connection monitoring...")
+            connection_monitor_task.cancel()
+            try:
+                await connection_monitor_task
+            except asyncio.CancelledError:
+                pass
+            
+        if connection_leak_detector_task:
+            logger.info("Stopping connection leak detection...")
+            connection_leak_detector_task.cancel()
+            try:
+                await connection_leak_detector_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Clean up database connections
+        try:
+            logger.info("Cleaning up database connections...")
+            from core.utils.connection_monitor import cleanup_connections
+            await cleanup_connections()
+            logger.info("Database connections cleaned up")
+        except Exception as e:
+            logger.error(f"Error cleaning up database connections: {str(e)}")
         
         # Close Redis connections
         try:
@@ -268,6 +319,7 @@ def create_app() -> FastAPI:
     app.include_router(price_prediction_router, prefix=f"{settings.API_V1_PREFIX}/price-prediction", tags=["Price Prediction"])
     app.include_router(health_router, prefix=f"{settings.API_V1_PREFIX}/health", tags=["System"])
     app.include_router(ai_router, prefix=f"{settings.API_V1_PREFIX}/ai", tags=["AI"])
+    app.include_router(analytics_router, prefix=f"{settings.API_V1_PREFIX}/analytics", tags=["Analytics"])
     
     # Include WebSocket router
     app.include_router(websocket_router, tags=["WebSocket"])

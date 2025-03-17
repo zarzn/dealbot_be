@@ -48,6 +48,7 @@ class CacheError(BaseError):
 from .base_exceptions import (
     BaseError,
     ValidationError,
+    InvalidParameterError,
     NotFoundError,
     NotFoundException,  # Alias for backward compatibility
     AuthenticationError,
@@ -116,6 +117,7 @@ from .chat_exceptions import (
 from .deal_exceptions import (
     DealError,
     DealNotFoundError,
+    DealDuplicateError,
     InvalidDealDataError,
     DealExpirationError,
     DealPriceError,
@@ -346,6 +348,7 @@ __all__ = [
     # Base exceptions
     'BaseError',
     'ValidationError',
+    'InvalidParameterError',
     'NotFoundError',
     'NotFoundException',
     'AuthenticationError',
@@ -406,6 +409,7 @@ __all__ = [
     # Deal exceptions
     'DealError',
     'DealNotFoundError',
+    'DealDuplicateError',
     'InvalidDealDataError',
     'DealExpirationError',
     'DealPriceError',

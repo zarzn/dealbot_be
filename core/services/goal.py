@@ -4,7 +4,7 @@ import logging
 import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import update, delete, and_
+from sqlalchemy import update, delete, and_, func
 from pydantic import BaseModel, field_validator
 from fastapi import BackgroundTasks
 from datetime import datetime, timezone, timedelta
@@ -12,6 +12,7 @@ import json
 from sqlalchemy.orm import joinedload
 from redis.asyncio import Redis
 from enum import Enum
+from decimal import Decimal
 
 from core.models.goal import (
     GoalCreate, 
@@ -21,6 +22,7 @@ from core.models.goal import (
     Goal as GoalModel
 )
 from core.models.goal_types import GoalStatus, GoalPriority
+from core.models.enums import DealStatus
 from core.exceptions import (
     GoalError,
     GoalNotFoundError,
@@ -307,7 +309,6 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         """
         try:
             # Build query
-            from sqlalchemy import func
             query = select(func.count()).select_from(GoalModel).filter(GoalModel.user_id == user_id)
             
             # Apply filters
@@ -515,6 +516,11 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             goal: The goal to cache
         """
         try:
+            # Skip caching if Redis is not available
+            if self._redis is None:
+                logger.debug(f"Redis client is None, skipping goal caching for ID {goal.id}")
+                return
+                
             cache_key = GoalCacheKey(user_id=goal.user_id, goal_id=goal.id)
             
             # Create a clean dictionary with only serializable data
@@ -601,121 +607,121 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             )
         except Exception as e:
             logger.warning(f"Failed to cache goal {goal.id}: {str(e)}", exc_info=True)
-            raise APIServiceUnavailableError("Failed to cache goal") from e
-            
-    async def _cache_goals(self, user_id: UUID, goals: List[GoalModel]) -> None:
-        """Cache all goals for a user.
+            # Don't raise the exception - caching errors shouldn't affect the main functionality
+            # Just log and continue
 
+    async def _cache_goals(self, user_id: UUID, goals: List[GoalModel]) -> None:
+        """Cache user goals in Redis.
+        
         Args:
             user_id: The user ID
-            goals: List of goals to cache
+            goals: The goals to cache
         """
         try:
-            cache_key = f"goal_cache:{user_id}:all"
+            # Skip caching if Redis is not available
+            if not self._redis:
+                logger.debug("Redis not available, skipping goal caching")
+                return
             
-            # Create a list of clean dictionaries with only serializable data
+            # Skip caching if no goals
+            if not goals:
+                logger.debug(f"No goals to cache for user {user_id}")
+                return
+            
+            # Create a clean list of goals for caching
             goal_dicts = []
-            for goal in goals:
-                goal_dict = {
-                    'id': goal.id,
-                    'user_id': goal.user_id,
-                    'title': goal.title,
-                    'description': goal.description,
-                    'item_category': goal.item_category,
-                    'constraints': goal.constraints,
-                    'deadline': goal.deadline,
-                    'status': goal.status,
-                    'created_at': goal.created_at,
-                    'updated_at': goal.updated_at or goal.created_at,  # Ensure updated_at is not None
-                    'last_checked_at': goal.last_checked_at,
-                    'max_matches': goal.max_matches,
-                    'max_tokens': goal.max_tokens,
-                    'auto_buy_threshold': goal.auto_buy_threshold
-                }
-                
-                # Convert priority to integer if it's an enum
-                if hasattr(goal, 'priority'):
-                    if isinstance(goal.priority, Enum):
-                        # If it's an enum, try to get the integer value
-                        try:
-                            # For integer-based enum (GoalPriority from goal_types)
-                            goal_dict['priority'] = int(goal.priority.value)
-                        except (ValueError, TypeError):
-                            # For string-based enum (GoalPriority from enums)
-                            priority_map = {
-                                'low': 1,
-                                'medium': 2,
-                                'high': 3,
-                                'urgent': 4,
-                                'critical': 5
-                            }
-                            goal_dict['priority'] = priority_map.get(goal.priority.value.lower(), 2)  # Default to MEDIUM (2)
-                    elif isinstance(goal.priority, int):
-                        goal_dict['priority'] = goal.priority
-                    elif isinstance(goal.priority, str):
-                        # Handle string values
-                        priority_map = {
-                            'low': 1,
-                            'medium': 2,
-                            'high': 3,
-                            'urgent': 4,
-                            'critical': 5
-                        }
-                        goal_dict['priority'] = priority_map.get(goal.priority.lower(), 2)  # Default to MEDIUM (2)
-                    else:
-                        goal_dict['priority'] = 2  # Default to MEDIUM
-                else:
-                    goal_dict['priority'] = 2  # Default to MEDIUM
-                
-                # Ensure metadata is a clean dictionary without SQLAlchemy objects
-                if hasattr(goal, 'metadata') and goal.metadata is not None:
-                    # Create a clean metadata dictionary without any SQLAlchemy objects
-                    goal_dict['metadata'] = {}
-                    
-                    # Only include primitive types that can be serialized
-                    if isinstance(goal.metadata, dict):
-                        for key, value in goal.metadata.items():
-                            # Skip SQLAlchemy objects and complex types
-                            if not isinstance(value, (dict, list, str, int, float, bool, type(None))):
-                                continue
-                            
-                            # For nested dictionaries, only include if they don't contain complex objects
-                            if isinstance(value, dict):
-                                clean_dict = {}
-                                for k, v in value.items():
-                                    if isinstance(v, (str, int, float, bool, type(None))):
-                                        clean_dict[k] = v
-                                goal_dict['metadata'][key] = clean_dict
-                            else:
-                                goal_dict['metadata'][key] = value
-                else:
-                    goal_dict['metadata'] = {}
-                
-                goal_dicts.append(goal_dict)
             
+            for goal in goals:
+                try:
+                    # Convert goal to dict format
+                    goal_dict = {
+                        "id": str(goal.id),  # Convert UUID to string for serialization
+                        "user_id": str(goal.user_id),  # Convert UUID to string
+                        "title": goal.title,
+                        "description": goal.description,
+                        "status": goal.status,
+                        "priority": goal.priority,
+                        "created_at": goal.created_at.isoformat() if goal.created_at else None,
+                        "updated_at": goal.updated_at.isoformat() if goal.updated_at else None,
+                        "due_date": goal.deadline.isoformat() if goal.deadline else None,
+                        "completed_at": goal.completed_at.isoformat() if goal.completed_at else None,
+                        "item_category": goal.item_category,
+                        "max_tokens": float(goal.max_tokens) if goal.max_tokens else None,
+                        "metadata": {}  # Default empty metadata
+                    }
+                    
+                    # Handle metadata separately to avoid serialization issues
+                    if goal.metadata:
+                        try:
+                            # Make a copy of metadata to ensure it's serializable
+                            metadata = dict(goal.metadata)
+                            # Handle nested objects and UUIDs in metadata
+                            goal_dict["metadata"] = self._prepare_metadata_for_cache(metadata)
+                        except Exception as e:
+                            logger.warning(f"Failed to process metadata for goal {goal.id}: {str(e)}")
+                            goal_dict["metadata"] = {}
+                    
+                    # Add the goal to our list
+                    goal_dicts.append(goal_dict)
+                except Exception as goal_error:
+                    logger.warning(f"Failed to process goal {getattr(goal, 'id', 'unknown')} for caching: {str(goal_error)}")
+                    continue
+            
+            # Only try to cache if we have valid goals
+            if not goal_dicts:
+                logger.warning(f"No valid goals to cache for user {user_id}")
+                return
+                
             # Cache the goals
-            goal_responses = [GoalResponse.model_validate(goal_dict) for goal_dict in goal_dicts]
-            await self._redis.set(
-                cache_key,
-                json.dumps([response.model_dump() for response in goal_responses]),
-                ex=settings.GOAL_CACHE_TTL
-            )
+            try:
+                # Create cache key
+                cache_key = GoalCacheKey(user_id=user_id, goal_id="all")
+                key = f"goals:{cache_key.user_id}:{cache_key.goal_id}"
+                
+                # Convert to responses for proper formatting
+                goal_responses = []
+                for gd in goal_dicts:
+                    try:
+                        goal_responses.append(GoalResponse.model_validate(gd))
+                    except Exception as validate_error:
+                        logger.warning(f"Failed to validate goal dict for response: {str(validate_error)}")
+                
+                # Serialize to JSON
+                try:
+                    serialized_data = json.dumps([response.model_dump() for response in goal_responses])
+                    
+                    # Cache in Redis
+                    await self._redis.set(
+                        key,
+                        serialized_data,
+                        ex=getattr(settings, "GOAL_CACHE_TTL", 3600)  # Default 1 hour
+                    )
+                    logger.debug(f"Successfully cached {len(goal_responses)} goals for user {user_id}")
+                except Exception as json_error:
+                    logger.warning(f"JSON serialization error when caching goals: {str(json_error)}")
+            except Exception as serialize_error:
+                logger.warning(f"Failed to serialize or cache goals for user {user_id}: {str(serialize_error)}")
+                # Do not propagate - this is a non-critical operation
         except Exception as e:
             logger.warning(f"Failed to cache goals for user {user_id}: {str(e)}", exc_info=True)
-            raise APIServiceUnavailableError("Failed to cache goals") from e
-            
+            # Don't raise an exception even in case of a severe error - caching should be non-critical
+            # and errors shouldn't affect the main functionality
+
     async def _get_cached_goal(self, user_id: UUID, goal_id: UUID) -> Optional[GoalResponse]:
         """Get a cached goal by ID"""
         try:
-            if self._redis:
-                cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
-                cached_data = await self._redis.get(cache_key.json())
-                if cached_data:
-                    # Handle both dict and string responses from Redis
-                    if isinstance(cached_data, dict):
-                        return GoalResponse.model_validate(cached_data)
-                    else:
-                        return GoalResponse.parse_raw(cached_data)
+            if not self._redis:
+                logger.debug(f"Redis client is None, skipping goal cache lookup for ID {goal_id}")
+                return None
+                
+            cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
+            cached_data = await self._redis.get(cache_key.json())
+            if cached_data:
+                # Handle both dict and string responses from Redis
+                if isinstance(cached_data, dict):
+                    return GoalResponse.model_validate(cached_data)
+                else:
+                    return GoalResponse.parse_raw(cached_data)
             return None
         except Exception as e:
             logger.warning(
@@ -723,24 +729,27 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
                 exc_info=True,
                 extra={"goal_id": goal_id}
             )
-            raise APIServiceUnavailableError("Failed to get cached goal") from e
+            return None  # Return None instead of raising to provide a graceful fallback
             
     async def _get_cached_goals(self, user_id: UUID) -> Optional[List[GoalResponse]]:
         """Get cached goals for a user"""
         try:
-            if self._redis:
-                # Use a string directly for the all goals cache key to avoid UUID validation
-                all_goals_key = f"goal_cache:{user_id}:all"
-                cached_data = await self._redis.get(all_goals_key)
-                if cached_data:
-                    result = []
-                    for item in cached_data:
-                        # Handle both dict and string responses from Redis
-                        if isinstance(item, dict):
-                            result.append(GoalResponse.model_validate(item))
-                        else:
-                            result.append(GoalResponse.parse_raw(item))
-                    return result
+            if not self._redis:
+                logger.debug(f"Redis client is None, skipping goals cache lookup for user {user_id}")
+                return None
+                
+            # Use a string directly for the all goals cache key to avoid UUID validation
+            all_goals_key = f"goal_cache:{user_id}:all"
+            cached_data = await self._redis.get(all_goals_key)
+            if cached_data:
+                result = []
+                for item in cached_data:
+                    # Handle both dict and string responses from Redis
+                    if isinstance(item, dict):
+                        result.append(GoalResponse.model_validate(item))
+                    else:
+                        result.append(GoalResponse.parse_raw(item))
+                return result
             return None
         except Exception as e:
             logger.warning(
@@ -748,27 +757,31 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
                 exc_info=True,
                 extra={"user_id": user_id}
             )
-            raise APIServiceUnavailableError("Failed to get cached goals") from e
+            return None  # Return None instead of raising to provide a graceful fallback
             
     async def _invalidate_goal_cache(self, user_id: UUID, goal_id: UUID) -> None:
         """Invalidate cache for a goal"""
         try:
-            if self._redis:
-                # Invalidate individual goal cache
-                individual_cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
-                await self._redis.delete(individual_cache_key.json())
+            if not self._redis:
+                logger.debug(f"Redis client is None, skipping cache invalidation for goal {goal_id}")
+                return
                 
-                # Invalidate user's goals list cache
-                # Use a string directly for the all goals cache key to avoid UUID validation
-                all_goals_key = f"goal_cache:{user_id}:all"
-                await self._redis.delete(all_goals_key)
+            # Invalidate individual goal cache
+            individual_cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
+            await self._redis.delete(individual_cache_key.json())
+            
+            # Invalidate user's goals list cache
+            # Use a string directly for the all goals cache key to avoid UUID validation
+            all_goals_key = f"goal_cache:{user_id}:all"
+            await self._redis.delete(all_goals_key)
         except Exception as e:
             logger.warning(
                 f"Failed to invalidate cache for goal {goal_id}: {str(e)}",
                 exc_info=True,
                 extra={"goal_id": goal_id}
             )
-            raise APIServiceUnavailableError("Failed to invalidate cache") from e
+            # Just log the error but don't throw, as cache invalidation is not critical for functionality
+            logger.debug(f"Continuing despite cache invalidation failure for goal {goal_id}")
 
     async def get_goal_analytics(self, goal_id: UUID, user_id: UUID) -> GoalAnalytics:
         """Get analytics for a goal."""
@@ -1699,3 +1712,34 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         except Exception as e:
             logger.error(f"Error matching deal {deal_id} with goals: {str(e)}")
             raise GoalError(f"Failed to match deal with goals: {str(e)}")
+
+    def _prepare_metadata_for_cache(self, metadata: Dict) -> Dict:
+        """Prepare metadata for caching by ensuring all values are serializable.
+        
+        Args:
+            metadata: The metadata to prepare
+            
+        Returns:
+            Dict: Serializable metadata
+        """
+        if not metadata:
+            return {}
+        
+        result = {}
+        for key, value in metadata.items():
+            if isinstance(value, UUID):
+                result[key] = str(value)
+            elif isinstance(value, (datetime, date)):
+                result[key] = value.isoformat()
+            elif isinstance(value, dict):
+                result[key] = self._prepare_metadata_for_cache(value)
+            elif isinstance(value, (list, tuple)):
+                result[key] = [
+                    self._prepare_metadata_for_cache(item) if isinstance(item, dict)
+                    else str(item) if isinstance(item, (UUID, datetime, date))
+                    else item
+                    for item in value
+                ]
+            else:
+                result[key] = value
+        return result

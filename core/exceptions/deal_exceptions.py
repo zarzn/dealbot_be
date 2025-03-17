@@ -13,7 +13,8 @@ __all__ = [
     'DealProcessingError',
     'DealScoreError',
     'DealAnalysisError',
-    'DealMatchError'
+    'DealMatchError',
+    'DealDuplicateError'
 ]
 
 class DealError(BaseError):
@@ -167,4 +168,22 @@ class DealMatchError(DealError):
     def _get_details(self) -> Dict[str, Any]:
         details = super()._get_details()
         details['goal_id'] = self.goal_id
+        return details
+
+class DealDuplicateError(DealError):
+    """Raised when attempting to create a duplicate deal."""
+    
+    def __init__(
+        self,
+        message: str,
+        deal_id: Optional[str] = None,
+        duplicate_id: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(message, deal_id, details)
+        self.duplicate_id = duplicate_id
+        
+    def _get_details(self) -> Dict[str, Any]:
+        details = super()._get_details()
+        details['duplicate_id'] = self.duplicate_id
         return details 

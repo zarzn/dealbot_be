@@ -1,1 +1,5 @@
-"""Authentication API module.""" 
+"""Authentication API module."""
+
+from .router import router
+
+__all__ = ["router"] 

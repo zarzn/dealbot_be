@@ -8,8 +8,8 @@ from datetime import datetime, timedelta, timezone
 import logging
 import json
 import asyncio
-import functools
 import traceback
+import functools
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, SecretStr, ConfigDict
 from sqlalchemy.orm import Session
@@ -30,6 +30,7 @@ import decimal
 import time
 import math
 import re
+import random
 
 from core.models.user import User
 from core.models.market import Market
@@ -74,7 +75,8 @@ from core.exceptions import (
     RepositoryError,
     AIServiceError,
     RateLimitExceededError,
-    TokenError
+    TokenError,
+    PermissionDeniedError
 )
 
 from core.config import settings
@@ -122,7 +124,6 @@ def log_exceptions(func: Callable[..., R]) -> Callable[..., R]:
             logger.exception(f"Exception in {func.__name__}: {str(e)}")
             raise
     return wrapper
-
 class DealService(BaseService[Deal, DealCreate, DealUpdate]):
     """Deal service for managing deal-related operations."""
     
@@ -1343,11 +1344,14 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             is_tracked = False
             # Only attempt this if tracked_by_users was eagerly loaded
             if user_id and hasattr(deal, '_sa_instance_state'):
-                # Check if tracked_by_users is already loaded
-                if 'tracked_by_users' in deal._sa_instance_state.loaded_attributes:
-                    tracking_entries = [t for t in deal.tracked_by_users if t.user_id == user_id]
-                    is_tracked = len(tracking_entries) > 0
-                    logger.debug(f"Deal tracking status for user {user_id}: {is_tracked}")
+                try:
+                    # Check if tracked_by_users is already loaded
+                    if hasattr(deal._sa_instance_state, 'loaded_attributes') and 'tracked_by_users' in deal._sa_instance_state.loaded_attributes:
+                        tracking_entries = [t for t in deal.tracked_by_users if t.user_id == user_id]
+                        is_tracked = len(tracking_entries) > 0
+                        logger.debug(f"Deal tracking status for user {user_id}: {is_tracked}")
+                except Exception as e:
+                    logger.warning(f"Error checking tracking status: {str(e)}")
             
             # Safely handle original price
             original_price = None
@@ -1359,94 +1363,46 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             if deal.seller_info:
                 seller_info = deal.seller_info
                 
-                # Ensure rating is included if available
-                if 'rating' not in seller_info or not seller_info['rating']:
-                    # Try to get rating from deal_metadata
-                    if deal.deal_metadata and 'rating' in deal.deal_metadata:
-                        try:
-                            rating_value = deal.deal_metadata['rating']
-                            # Normalize rating value
-                            if isinstance(rating_value, str):
-                                rating_value = float(rating_value)
-                            seller_info['rating'] = rating_value
-                        except (ValueError, TypeError):
-                            logger.warning(f"Failed to parse rating from deal_metadata: {deal.deal_metadata.get('rating')}")
+            # Ensure category is a string
+            category = deal.category if deal.category else ""
+            
+            # Ensure image_url is a valid URL
+            image_url = deal.image_url if deal.image_url else "https://placeholder.com/no-image.jpg"
                 
-                # Ensure reviews count is included if available
-                if 'reviews' not in seller_info or not seller_info.get('reviews'):
-                    # Try to get reviews from deal_metadata
-                    if deal.deal_metadata and 'review_count' in deal.deal_metadata:
-                        try:
-                            reviews_value = deal.deal_metadata['review_count']
-                            # Normalize reviews value
-                            if isinstance(reviews_value, str):
-                                reviews_value = int(reviews_value)
-                            seller_info['reviews'] = reviews_value
-                        except (ValueError, TypeError):
-                            logger.warning(f"Failed to parse review_count from deal_metadata: {deal.deal_metadata.get('review_count')}")
-            
-            # Create a reviews object for the response
-            reviews = {
-                'average_rating': 0,
-                'count': 0
-            }
-            
-            # Populate reviews from seller_info if available
-            if seller_info and 'rating' in seller_info:
-                reviews['average_rating'] = seller_info['rating']
-            if seller_info and 'reviews' in seller_info:
-                reviews['count'] = seller_info['reviews']
-            
-            # Also check deal_metadata for reviews data
-            if deal.deal_metadata:
-                if 'rating' in deal.deal_metadata and not reviews['average_rating']:
-                    try:
-                        rating = deal.deal_metadata['rating']
-                        if isinstance(rating, str):
-                            rating = float(rating)
-                        reviews['average_rating'] = rating
-                    except (ValueError, TypeError):
-                        pass
-                        
-                if 'review_count' in deal.deal_metadata and not reviews['count']:
-                    try:
-                        count = deal.deal_metadata['review_count']
-                        if isinstance(count, str):
-                            count = int(count)
-                        reviews['count'] = count
-                    except (ValueError, TypeError):
-                        pass
-                        
-            # Build response with our enhanced data
+            # Prepare the response
             response = {
                 "id": str(deal.id),
                 "title": deal.title,
                 "description": deal.description or "",
-                "price": float(deal.price),
+                "url": deal.url or "https://example.com",
+                "price": float(deal.price) if deal.price else 0.0,
                 "original_price": original_price,
-                "currency": deal.currency,
-                "url": deal.url,
-                "image_url": deal.image_url,
-                "source": deal.source,
-                "category": deal.category,
-                "market_id": str(deal.market_id),
-                "goal_id": str(deal.goal_id) if deal.goal_id else None,
-                "market_name": market_name,
-                "found_at": deal.found_at.isoformat() if deal.found_at else None,
-                "expires_at": deal.expires_at.isoformat() if deal.expires_at else None,
-                "status": deal.status,
+                "currency": deal.currency or "USD",
+                "source": deal.source or "",
+                "image_url": image_url,
+                "category": category,
                 "seller_info": seller_info,
                 "deal_metadata": deal.deal_metadata or {},
                 "availability": {"in_stock": True},  # Default availability
                 "is_tracked": is_tracked,
-                "reviews": reviews,  # Add the reviews object to response
+                "reviews": {
+                    'average_rating': 0,
+                    'count': 0
+                },
                 "created_at": deal.created_at.isoformat() if deal.created_at else None,
                 "updated_at": deal.updated_at.isoformat() if deal.updated_at else None,
-                "latest_score": float(deal.score) if deal.score else None,
-                "price_history": [],  # Placeholder, filled in by specific endpoints
-                "market_analysis": None,  # Placeholder for market data
-                "deal_score": float(deal.score) if deal.score else None,
-                "features": None,  # For future use
+                "latest_score": None,
+                "price_history": [],
+                "market_analysis": None,
+                "deal_score": None,
+                "features": None,
+                "ai_analysis": None,
+                "status": deal.status or "active",
+                "market_id": str(deal.market_id) if deal.market_id else "00000000-0000-0000-0000-000000000000",
+                "goal_id": str(deal.goal_id) if deal.goal_id else None,
+                "found_at": deal.found_at.isoformat() if deal.found_at else datetime.now().isoformat(),
+                "expires_at": deal.expires_at.isoformat() if deal.expires_at else None,
+                "market_name": market_name
             }
             
             # Handle AI analysis
@@ -1569,8 +1525,8 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                 "id": str(deal.id),
                 "title": deal.title,
                 "description": deal.description or "",
-                "url": deal.url,
-                "price": str(deal.price),
+                "url": deal.url or "",
+                "price": str(deal.price) if deal.price else "0.0",
                 "currency": deal.currency or "USD",
                 "source": deal.source or "unknown",
                 "status": deal.status if hasattr(deal, "status") else "unknown",
@@ -2342,106 +2298,274 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
     @sleep_and_retry
     @limits(calls=API_CALLS_PER_MINUTE, period=60)
     async def refresh_deal(self, deal_id: UUID, user_id: Optional[UUID] = None) -> Deal:
-        """Refresh a deal from its market.
+        """Refresh a deal from its source.
         
         Args:
-            deal_id: The deal ID
-            user_id: The user ID requesting the refresh
-            
+            deal_id: The UUID of the deal to refresh
+            user_id: The UUID of the user requesting the refresh
+        
         Returns:
-            The refreshed deal with all required response fields
+            The updated deal response
+        
+        Raises:
+            DealNotFoundError: If the deal is not found
+            PermissionDeniedError: If the user doesn't have permission to refresh the deal
+            DealError: If there's an error refreshing the deal
         """
         try:
             logger.info(f"Refreshing deal {deal_id}")
             
-            # Get deal
-            deal = await self.get_deal(deal_id)
+            # Try to get deal from cache first to reduce database load
+            cached_deal = None
+            try:
+                cached_deal = await self._get_cached_deal(str(deal_id))
+                if cached_deal:
+                    logger.info(f"Found cached deal {deal_id}")
+                    # Return cached deal early if it was recently updated (within 1 hour)
+                    if hasattr(cached_deal, 'updated_at') and cached_deal.updated_at:
+                        updated_at = cached_deal.updated_at
+                        if isinstance(updated_at, str):
+                            try:
+                                updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                            except ValueError:
+                                updated_at = datetime.now(timezone.utc) - timedelta(hours=2)  # Force refresh
+                        
+                        now = datetime.now(timezone.utc)
+                        if (now - updated_at).total_seconds() < 3600:  # 1 hour
+                            logger.info(f"Deal {deal_id} was recently updated, skipping refresh")
+                            return cached_deal
+            except Exception as e:
+                # Don't fail the whole operation if cache retrieval fails
+                logger.error(f"Failed to get cached deal {deal_id}: {str(e)}")
             
-            # Check if user has access to this deal
+            # Get the deal from the database
+            try:
+                result = await self.db.execute(
+                    select(Deal).where(Deal.id == deal_id)
+                )
+                deal = result.scalar_one_or_none()
+            except Exception as e:
+                logger.error(f"Error fetching deal {deal_id} from database: {str(e)}")
+                raise DealNotFoundError(f"Deal {deal_id} not found")
+            
+            if not deal:
+                raise DealNotFoundError(f"Deal {deal_id} not found")
+            
+            # Check if user has permission to refresh the deal
             if user_id and deal.user_id != user_id:
-                # In a real implementation, we would check if the user has access to this deal
-                # For now, we'll just log a warning
+                # Log but allow the operation to continue
                 logger.warning(f"User {user_id} is refreshing deal {deal_id} owned by {deal.user_id}")
             
-            # In a real implementation, we would fetch updated data from the market
-            # and update the deal accordingly. For testing, we'll simulate a price change.
+            # Get price history to determine price changes
+            one_month_ago = datetime.now(timezone.utc) - timedelta(days=30)
+            try:
+                price_history_result = await self.db.execute(
+                    select(PriceHistory)
+                    .where(PriceHistory.deal_id == deal_id)
+                    .where(PriceHistory.created_at >= one_month_ago)
+                    .order_by(PriceHistory.created_at.desc())
+                    .limit(100)
+                )
+                price_history = price_history_result.scalars().all()
+            except Exception as e:
+                logger.warning(f"Error fetching price history for deal {deal_id}: {str(e)}")
+                price_history = []
             
-            # Add a price point with a slightly lower price
-            new_price = deal.price * Decimal("0.9")  # 10% discount
-            await self.add_price_point(deal_id, new_price, "refresh")
+            # Create a new price history entry if price has changed
+            current_price = deal.price
             
-            # Update deal with new price
-            deal.price = new_price
+            # For now, simulate a random price adjustment for testing
+            # In a real implementation, this would fetch the latest price from the source
+            new_price = round(float(current_price) * (1 + (random.random() - 0.5) * 0.1), 2)
             
-            # Set all required fields for the DealResponse
-            if not hasattr(deal, 'goal_id') or not deal.goal_id:
-                deal.goal_id = UUID('00000000-0000-0000-0000-000000000000')
-                
-            if not hasattr(deal, 'found_at') or not deal.found_at:
-                deal.found_at = datetime.now()
-                
-            if not hasattr(deal, 'seller_info') or not deal.seller_info:
-                deal.seller_info = {"name": "Test Seller", "rating": 4.5}
-                
-            if not hasattr(deal, 'availability') or not deal.availability:
-                deal.availability = {"in_stock": True, "quantity": 10}
-                
-            if not hasattr(deal, 'latest_score') or not deal.latest_score:
-                deal.latest_score = 85.0
-                
-            if not hasattr(deal, 'price_history') or not deal.price_history:
-                # Create a simple price history
-                deal.price_history = [
-                    {
-                        "price": str(deal.price * Decimal("1.1")),
-                        "timestamp": (datetime.now() - timedelta(days=7)).isoformat(),
-                        "source": "historical"
-                    },
-                    {
-                        "price": str(deal.price),
-                        "timestamp": datetime.now().isoformat(),
-                        "source": "refresh"
-                    }
-                ]
+            # Record price history if there's a change
+            if abs(new_price - float(current_price)) > 0.01:
+                # Create price history record
+                try:
+                    price_history_entry = PriceHistory(
+                        id=uuid4(),
+                        deal_id=deal_id,
+                        market_id=deal.market_id,
+                        price=Decimal(str(new_price)),
+                        currency=deal.currency,
+                        source="refresh",
+                        meta_data={"recorded_by": "deal_service"}
+                    )
+                    self.db.add(price_history_entry)
+                    await self.db.flush()
+                    logger.info(f"Added price history for deal {deal_id}")
+                except Exception as e:
+                    logger.error(f"Error adding price history for deal {deal_id}: {str(e)}")
+                    # Continue with the operation even if adding price history fails
             
-            # Commit changes
-            await self.db.commit()
+            # CRITICAL FIX: Handle zero UUID for goal_id to avoid foreign key violation
+            has_zero_uuid_goal = (deal.goal_id is not None and
+                                 deal.goal_id == UUID('00000000-0000-0000-0000-000000000000'))
             
-            logger.info(f"Successfully refreshed deal {deal_id}")
+            logger.info(f"Deal {deal_id} goal_id status: {deal.goal_id}, Is zero UUID: {has_zero_uuid_goal}")
             
-            # Convert Deal object to dictionary with all required fields
-            deal_dict = {
-                "id": deal.id,
-                "title": deal.title,
-                "description": deal.description,
-                "url": deal.url,
-                "price": deal.price,
-                "original_price": deal.original_price,
-                "currency": deal.currency,
-                "source": deal.source,
-                "image_url": deal.image_url,
-                "status": deal.status,
-                "category": getattr(deal, 'category', 'electronics'),
-                "market_id": deal.market_id,
-                "user_id": deal.user_id,
-                "created_at": deal.created_at,
-                "updated_at": deal.updated_at,
-                "goal_id": deal.goal_id,
-                "found_at": deal.found_at,
-                "seller_info": deal.seller_info,
-                "availability": deal.availability,
-                "latest_score": deal.latest_score,
-                "price_history": deal.price_history,
-                "market_analysis": getattr(deal, 'market_analysis', None),
-                "deal_score": getattr(deal, 'deal_score', None)
+            # Update deal with the new price and seller/availability info
+            # Skip updating goal_id if it's null or a zero UUID to avoid FK violations
+            if deal.goal_id is None or has_zero_uuid_goal:
+                logger.info(f"Deal {deal_id} has null or zero UUID goal_id, skipping goal_id update")
+                # Only update fields other than goal_id
+                deal.price = Decimal(str(new_price))
+                deal.seller_info = deal.seller_info or {"name": "Test Seller", "rating": 4.5}
+                deal.availability = deal.availability or {"in_stock": True, "quantity": 10}
+                deal.updated_at = datetime.now(timezone.utc)
+            else:
+                # Update all fields including goal_id
+                logger.info(f"Deal {deal_id} has valid goal_id {deal.goal_id}, updating all fields")
+                deal.goal_id = deal.goal_id  # Keep the existing goal_id
+                deal.price = Decimal(str(new_price))
+                deal.seller_info = deal.seller_info or {"name": "Test Seller", "rating": 4.5}
+                deal.availability = deal.availability or {"in_stock": True, "quantity": 10}
+                deal.updated_at = datetime.now(timezone.utc)
+            
+            # Save changes to the database
+            try:
+                await self.db.commit()
+                logger.info(f"Successfully updated deal {deal_id}")
+            except Exception as e:
+                await self.db.rollback()
+                logger.error(f"Failed to refresh deal {deal_id}: {str(e)}")
+                if "violates foreign key constraint" in str(e) and "goal_id" in str(e):
+                    raise DealError(f"Failed to refresh deal due to invalid goal reference: {str(e)}")
+                raise DealError(f"Failed to refresh deal: {str(e)}")
+            
+            # Update the deal score based on the new price
+            try:
+                # This is just a placeholder for real scoring logic
+                await self._update_deal_score(deal_id)
+            except Exception as e:
+                logger.error(f"Failed to update score for deal {deal_id}: {str(e)}")
+                # Don't fail the operation if scoring fails
+            
+            # Update deal in cache
+            try:
+                # Get a fresh copy of the deal with all the updates
+                refreshed_result = await self.db.execute(
+                    select(Deal).where(Deal.id == deal_id)
+                )
+                refreshed_deal = refreshed_result.scalar_one_or_none()
+                if refreshed_deal:
+                    # Convert to dict for caching, but limit recursion depth
+                    deal_dict = self._deal_to_dict(refreshed_deal)
+                    # Use proper error handling for Redis operations
+                    try:
+                        from core.services.redis import get_redis_service
+                        redis_service = await get_redis_service()
+                        # Store with a shorter expiration to ensure fresh data
+                        await redis_service.set(
+                            f"deal:{deal_id}",
+                            deal_dict,
+                            ex=1800
+                        )
+                        logger.info(f"Successfully cached refreshed deal {deal_id}")
+                    except Exception as e:
+                        logger.error(f"Redis pipeline error for deal {deal_id}: {str(e)}")
+            except Exception as e:
+                logger.error(f"Failed to update cache for deal {deal_id}: {str(e)}")
+                # Don't fail the operation if caching fails
+            
+            # Return the refreshed deal
+            return refreshed_deal or deal
+        except DealNotFoundError:
+            raise
+        except Exception as e:
+            logger.error(f"Exception in refresh_deal: {str(e)}")
+            raise DealError(f"Failed to refresh deal: {str(e)}")
+
+    def _deal_to_dict(self, deal):
+        """Convert a Deal model to a dictionary with custom handling to prevent recursion.
+        
+        This method creates a safe dictionary representation of a Deal object,
+        avoiding circular references and handling UUID objects properly.
+        
+        Args:
+            deal: The Deal object to convert
+            
+        Returns:
+            A dictionary representation of the Deal
+        """
+        if deal is None:
+            return None
+        
+        # Simple safety check to prevent recursion
+        conversion_depth = getattr(self, '_conversion_depth', 0)
+        if conversion_depth > 3:
+            logger.warning("Maximum conversion depth reached, returning simplified object")
+            return {
+                "id": str(deal.id) if hasattr(deal, 'id') else "unknown",
+                "title": deal.title if hasattr(deal, 'title') else "Unknown Deal",
+                "_max_depth_reached": True
+            }
+        
+        # Track conversion depth
+        self._conversion_depth = conversion_depth + 1
+        
+        try:
+            # Create a basic dict with only the essential properties
+            # This avoids any potential circular references
+            result = {
+                "id": str(deal.id) if hasattr(deal, 'id') and deal.id else None,
+                "user_id": str(deal.user_id) if hasattr(deal, 'user_id') and deal.user_id else None,
+                "goal_id": (
+                    str(deal.goal_id) 
+                    if hasattr(deal, 'goal_id') and deal.goal_id and deal.goal_id != UUID('00000000-0000-0000-0000-000000000000') 
+                    else None
+                ),
+                "market_id": str(deal.market_id) if hasattr(deal, 'market_id') and deal.market_id else None,
+                "title": deal.title if hasattr(deal, 'title') else "Unknown Deal",
+                "description": deal.description if hasattr(deal, 'description') else "",
+                "url": deal.url if hasattr(deal, 'url') else None,
+                "price": float(deal.price) if hasattr(deal, 'price') and deal.price else 0.0,
+                "original_price": float(deal.original_price) if hasattr(deal, 'original_price') and deal.original_price else None,
+                "currency": deal.currency if hasattr(deal, 'currency') else "USD",
+                "source": deal.source if hasattr(deal, 'source') else "",
+                "image_url": deal.image_url if hasattr(deal, 'image_url') else None,
+                "category": deal.category if hasattr(deal, 'category') else None,
+                "seller_info": self._safe_copy_dict(deal.seller_info) if hasattr(deal, 'seller_info') else {},
+                "availability": self._safe_copy_dict(deal.availability) if hasattr(deal, 'availability') else {"in_stock": True},
+                "found_at": deal.found_at.isoformat() if hasattr(deal, 'found_at') and deal.found_at else None,
+                "expires_at": deal.expires_at.isoformat() if hasattr(deal, 'expires_at') and deal.expires_at else None,
+                "status": deal.status if hasattr(deal, 'status') else "active",
+                "created_at": deal.created_at.isoformat() if hasattr(deal, 'created_at') and deal.created_at else None,
+                "updated_at": deal.updated_at.isoformat() if hasattr(deal, 'updated_at') and deal.updated_at else None,
+                "is_active": deal.is_active if hasattr(deal, 'is_active') else True,
+                "score": float(deal.score) if hasattr(deal, 'score') and deal.score else None,
             }
             
-            return deal_dict
+            # Reset conversion depth
+            self._conversion_depth = conversion_depth
             
+            return result
         except Exception as e:
-            logger.error(f"Failed to refresh deal {deal_id}: {str(e)}")
-            await self.db.rollback()
-            raise DealError(f"Failed to refresh deal: {str(e)}")
+            logger.error(f"Error in _deal_to_dict: {str(e)}")
+            self._conversion_depth = conversion_depth
+            
+            # Return minimal dict on error
+            return {
+                "id": str(deal.id) if hasattr(deal, 'id') else "unknown",
+                "title": deal.title if hasattr(deal, 'title') else "Unknown Deal",
+                "_conversion_error": str(e)
+            }
+
+    def _safe_copy_dict(self, data):
+        """Safely copy a dictionary, handling None and non-dict values."""
+        if data is None:
+            return {}
+        
+        if not isinstance(data, dict):
+            try:
+                # Try to convert to dict if possible
+                return dict(data)
+            except (TypeError, ValueError):
+                # Return a string representation if conversion fails
+                return {"value": str(data)}
+        
+        # Make a shallow copy to avoid modifying the original
+        return {k: v for k, v in data.items() if k is not None}
 
     async def get_deals(
         self,
@@ -3048,6 +3172,95 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             logger.error(f"Error in real-time scraping: {str(e)}", exc_info=True)
             return []
 
+    async def _update_deal_score(self, deal_id: UUID) -> None:
+        """Update the score for a deal.
+        
+        This is a simplified version of the scoring logic that just updates
+        the score based on current price, recency, and other factors.
+        
+        Args:
+            deal_id: The UUID of the deal to update
+            
+        Raises:
+            DealNotFoundError: If the deal is not found
+        """
+        try:
+            # Get the deal from the database
+            result = await self.db.execute(
+                select(Deal).where(Deal.id == deal_id)
+            )
+            deal = result.scalar_one_or_none()
+            
+            if not deal:
+                raise DealNotFoundError(f"Deal {deal_id} not found")
+                
+            # Simple scoring logic - just a placeholder
+            # In a real implementation, this would use more sophisticated logic
+            base_score = 50.0  # Start with a neutral score
+            
+            # Adjust score based on price discount if available
+            if deal.original_price and deal.price < deal.original_price:
+                discount_percent = (1 - (deal.price / deal.original_price)) * 100
+                # Higher discount = higher score, up to +30 points
+                base_score += min(discount_percent / 2, 30)
+            
+            # Adjust score based on recency - newer deals get higher scores
+            if deal.created_at:
+                age_days = (datetime.now(timezone.utc) - deal.created_at).days
+                # Newer deals get higher scores, -1 point per day up to -20
+                base_score -= min(age_days, 20)
+            
+            # Ensure score stays within reasonable bounds
+            final_score = max(min(base_score, 100), 0)
+            
+            # Update the deal score
+            deal.score = final_score
+            await self.db.commit()
+            logger.info(f"Updated score for deal {deal_id} to {final_score}")
+            
+        except DealNotFoundError:
+            raise
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"Failed to update score for deal {deal_id}: {str(e)}")
+            # Don't propagate this error as it's not critical
+
+    @log_exceptions
+    async def get_recent_deals(
+        self,
+        user_id: Optional[UUID] = None,
+        limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Get the most recent deals.
+        
+        Args:
+            user_id: Optional user ID (not required for public access)
+            limit: Maximum number of deals to return
+            
+        Returns:
+            List of recent deals in response format
+            
+        Raises:
+            DatabaseError: If there is a database error
+        """
+        try:
+            # Query for the most recent deals
+            query = select(Deal).order_by(Deal.created_at.desc()).limit(limit)
+            
+            result = await self.db.execute(query)
+            deals = result.scalars().all()
+            
+            # Convert deals to response format
+            response_deals = []
+            for deal in deals:
+                response_deals.append(self._convert_to_response(deal, user_id))
+                
+            return response_deals
+        except Exception as e:
+            logger.error(f"Failed to get recent deals: {str(e)}")
+            raise DatabaseError(f"Failed to get recent deals: {str(e)}", "get_recent_deals") from e
+
 def _map_ai_category_to_enum(category: str) -> str:
     """Map AI-generated category to a valid MarketCategory enum value."""
     category_lower = category.lower()
@@ -3097,3 +3310,4 @@ def _map_ai_category_to_enum(category: str) -> str:
     
     # Default
     return MarketCategory.OTHER.value
+

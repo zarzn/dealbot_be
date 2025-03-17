@@ -58,11 +58,11 @@ elif is_test:
     echo = False  # Disable SQL logging in tests to improve performance
     echo_pool = False  # Disable pool logging in tests
 else:
-    # Development environment - use settings as defined but increased for high load
-    pool_size = 20  # Significantly increased pool size for development (from 5)
-    max_overflow = 30  # Significantly increased max overflow for development (from 10)
-    pool_timeout = settings.DB_POOL_TIMEOUT
-    pool_recycle = 900  # Reduced recycle time to free connections faster (from 1800)
+    # Development environment - optimized to prevent connection exhaustion
+    pool_size = 10  # Reduced from 20 to prevent connection exhaustion
+    max_overflow = 15  # Reduced from 30 to prevent connection exhaustion
+    pool_timeout = 60  # Increased from 30 to give more time for connection acquisition
+    pool_recycle = 300  # Reduced from 900 to recycle connections more frequently
     pool_pre_ping = True
     echo = settings.DEBUG  # Use debug setting for SQL logging
     echo_pool = False  # Disable pool logging to reduce noise
@@ -278,16 +278,43 @@ class AsyncDatabaseSession:
         await self.session.close()
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Get database session."""
-    async with AsyncSessionLocal() as session:
+    """Get database session with enhanced connection management.
+    
+    This dependency provides a database session that ensures connections are 
+    properly closed even in failure scenarios to prevent connection leaks.
+    """
+    session = AsyncSessionLocal()
+    try:
+        # Start a fresh session with each request
+        yield session
+        
+        # Explicitly commit changes if no exception occurred
         try:
-            yield session
             await session.commit()
-        except Exception:
+        except Exception as commit_error:
+            logger.error(f"Error committing session: {str(commit_error)}")
             await session.rollback()
             raise
-        finally:
+    except SQLAlchemyError as db_error:
+        # Catch database-specific errors
+        logger.error(f"Database error in session: {str(db_error)}")
+        await session.rollback()
+        metrics.connection_failures.inc()
+        raise
+    except Exception as e:
+        # Catch all other errors
+        logger.error(f"Unexpected error in database session: {str(e)}")
+        await session.rollback()
+        raise
+    finally:
+        # Always make sure the session is closed
+        try:
             await session.close()
+            logger.debug("Database session closed successfully")
+        except Exception as close_error:
+            logger.error(f"Error closing database session: {str(close_error)}")
+            # Even in case of error while closing, consider the session disposed
+            # to prevent connection leaks
 
 async def get_async_db_session() -> AsyncSession:
     """Get async database session.

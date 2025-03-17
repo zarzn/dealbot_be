@@ -19,6 +19,8 @@ import logging
 
 from core.models.base import Base
 from core.models.enums import TokenType, TokenStatus, TokenScope
+# Remove circular import:
+# from core.models.user import User
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -75,8 +77,8 @@ class AuthToken(Base):
         onupdate=text('CURRENT_TIMESTAMP')
     )
 
-    # Relationships
-    user = relationship("User", back_populates="auth_tokens")
+    # Use a string for the User relationship to avoid circular imports
+    user = relationship("User", back_populates="auth_tokens", foreign_keys=[user_id])
 
     def __repr__(self) -> str:
         """String representation of the auth token."""

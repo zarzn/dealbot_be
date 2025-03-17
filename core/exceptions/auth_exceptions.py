@@ -62,13 +62,18 @@ class SessionExpiredError(AuthError):
         self,
         session_id: str,
         expiry_time: str,
-        message: str = "Session expired"
+        message: str = "Session expired",
+        token_type: str = "unknown",
+        issued_at: str = "unknown"
     ):
         super().__init__(
             message=message,
             details={
                 "session_id": session_id,
-                "expiry_time": expiry_time
+                "expiry_time": expiry_time,
+                "token_type": token_type,
+                "issued_at": issued_at,
+                "code": "token_expired"
             }
         )
 

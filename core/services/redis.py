@@ -2,10 +2,15 @@
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Optional, Dict, Any, Union, List, Tuple, Set, TypeVar, Callable, cast
 from uuid import UUID
 from redis.asyncio import Redis, ConnectionPool
+from decimal import Decimal
+import urllib.parse
+import asyncio
+from contextvars import ContextVar
+import inspect
 
 from core.config import settings
 from core.exceptions import RedisError
@@ -20,24 +25,184 @@ _initialized: bool = False
 # Import the built-in set type with a different name to avoid conflicts
 from builtins import set as builtin_set
 
+# Keep track of objects being encoded to prevent recursion
+_encoding_context = ContextVar("encoding_context", default=set())
+_max_encoding_depth = ContextVar("max_encoding_depth", default=0)
+
 class UUIDEncoder(json.JSONEncoder):
-    """Custom JSON encoder that can handle UUID objects and other special types."""
+    """Custom JSON encoder that handles UUIDs, datetimes, and other complex types.
+    
+    This encoder will convert:
+    - UUID objects to strings
+    - Decimal objects to floats
+    - Datetime objects to ISO format strings
+    - Set objects to lists
+    - SQLAlchemy models to simplified dictionaries
+    
+    Additionally, it tracks serialization depth to prevent infinite recursion.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Initialize context vars if they're not already set
+        try:
+            _encoding_context.get()
+        except LookupError:
+            _encoding_context.set(set())
+        
+        try:
+            _max_encoding_depth.get()
+        except LookupError:
+            _max_encoding_depth.set(0)
+    
     def default(self, obj):
-        """Encode special types to JSON serializable types."""
-        if isinstance(obj, UUID):
-            return str(obj)
-        elif isinstance(obj, datetime):
-            return obj.isoformat()
-        elif hasattr(obj, '__dict__'):
-            # Convert objects to dictionaries, but avoid recursive objects
-            # Skip any attributes that could lead to recursion
-            result = {}
-            for key, value in obj.__dict__.items():
-                # Skip attributes that point to the same type of object to avoid recursion
-                if not isinstance(value, type(obj)) and key not in ('_instance', '_pool', '_client'):
-                    result[key] = value
-            return result
-        return super().default(obj)
+        # Check recursion depth
+        depth = _max_encoding_depth.get()
+        _max_encoding_depth.set(depth + 1)
+        
+        # Prevent excessive recursion - reduced max depth from 10 to 4 (more aggressive)
+        if depth > 4:
+            _max_encoding_depth.set(depth)  # Reset depth
+            return f"<Object at depth {depth} - recursion limit>"
+            
+        # Track objects by id to prevent circular references
+        obj_id = id(obj)
+        encoding_context = _encoding_context.get()
+        
+        # If we've seen this object before, don't serialize it again
+        if obj_id in encoding_context:
+            _max_encoding_depth.set(depth)  # Reset depth
+            return f"<Circular reference to {type(obj).__name__}>"
+            
+        # Add current object to context
+        new_context = encoding_context.copy()
+        new_context.add(obj_id)
+        token = _encoding_context.set(new_context)
+        
+        try:
+            # Handle specific types directly
+            if isinstance(obj, UUID):
+                result = str(obj)
+            elif isinstance(obj, Decimal):
+                result = float(obj)
+            elif isinstance(obj, (datetime, date)):
+                result = obj.isoformat()
+            elif isinstance(obj, (set, frozenset)):
+                result = list(obj)
+            # Handle common types that might cause recursion issues
+            elif isinstance(obj, dict):
+                # For very deep objects, use a simplified representation
+                if depth > 2:
+                    # Just return a summary for deep dictionaries
+                    result = f"<Dict with {len(obj)} items>"
+                else:
+                    # Process each key-value pair separately with limited entries
+                    result = {}
+                    for i, (k, v) in enumerate(obj.items()):
+                        # Limit entries to prevent huge dictionaries
+                        if i >= 25:  # More aggressive limit (was 50)
+                            result['...'] = f"<{len(obj) - 25} more items>"
+                            break
+                        
+                        # Skip callable items, private attributes, and complex nested structures
+                        if not callable(v) and not (isinstance(k, str) and k.startswith('_')):
+                            try:
+                                # Convert key to string if it's not already
+                                k_str = str(k) if not isinstance(k, (str, int, float, bool, type(None))) else k
+                                # For deeper levels, use simpler representations of complex values
+                                if depth > 1 and hasattr(v, '__dict__'):
+                                    result[k_str] = f"<{type(v).__name__} object>"
+                                else:
+                                    result[k_str] = v
+                            except Exception:
+                                # If we can't convert the key or value, skip this item
+                                continue
+            elif inspect.isasyncgen(obj):
+                # Handle async generators
+                result = "<async generator object>"
+            elif hasattr(obj, '__dict__') and not isinstance(obj, type):
+                # For model objects at deep levels, use a simple representation
+                if depth > 2:
+                    result = f"<{type(obj).__name__} object>"
+                else:
+                    # Convert to dict, skipping private and callable attributes
+                    try:
+                        result = {}
+                        items = list(obj.__dict__.items())[:25]  # More aggressive limit (was 50)
+                        for k, v in items:
+                            if not k.startswith('_') and not callable(v):
+                                try:
+                                    # For deeper levels, use simpler representations
+                                    if depth > 1 and hasattr(v, '__dict__'):
+                                        result[k] = f"<{type(v).__name__} object>"
+                                    else:
+                                        result[k] = v
+                                except Exception:
+                                    # Skip attributes that can't be processed
+                                    continue
+                    except Exception:
+                        # If accessing __dict__ fails, use a simple representation
+                        result = f"<{type(obj).__name__} object>"
+            elif hasattr(obj, '__slots__'):
+                # For slot-based objects at deep levels, use a simple representation
+                if depth > 2:
+                    result = f"<{type(obj).__name__} object with slots>"
+                else:
+                    # Handle objects with __slots__ instead of __dict__
+                    try:
+                        result = {}
+                        slots = list(obj.__slots__)[:25]  # More aggressive limit
+                        for slot in slots:
+                            if not slot.startswith('_'):
+                                try:
+                                    value = getattr(obj, slot, None)
+                                    if not callable(value):
+                                        # Simplify nested objects
+                                        if depth > 1 and hasattr(value, '__dict__'):
+                                            result[slot] = f"<{type(value).__name__} object>"
+                                        else:
+                                            result[slot] = value
+                                except Exception:
+                                    # Skip attributes that can't be processed
+                                    continue
+                    except Exception:
+                        result = f"<{type(obj).__name__} object with slots>"
+            elif hasattr(obj, '_asdict') and callable(getattr(obj, '_asdict', None)):
+                # Handle namedtuples and similar objects
+                try:
+                    result = obj._asdict()
+                except Exception:
+                    result = f"<{type(obj).__name__} namedtuple-like object>"
+            elif inspect.iscoroutine(obj) or inspect.isawaitable(obj):
+                # Handle coroutines and awaitable objects
+                result = f"<{type(obj).__name__} coroutine>"
+            elif inspect.isgenerator(obj) or inspect.isgeneratorfunction(obj):
+                # Handle generator objects
+                result = f"<{type(obj).__name__} generator>"
+            else:
+                # Try default serialization
+                try:
+                    result = super().default(obj)
+                except TypeError:
+                    # If that fails, try to represent as a string
+                    try:
+                        result = str(obj)
+                    except Exception:
+                        # Last resort - just use the type name
+                        result = f"<{type(obj).__name__} unserializable object>"
+                
+        except Exception as e:
+            # Catch any other exceptions during serialization
+            logger.warning(f"Error serializing object of type {type(obj).__name__}: {str(e)}")
+            result = f"<Error serializing {type(obj).__name__}: {str(e)[:50]}>"
+            
+        finally:
+            # Reset the encoding context
+            _encoding_context.reset(token)
+            # Reset depth
+            _max_encoding_depth.set(depth)
+            
+        return result
 
 # RedisService class - delegates to functional API
 class RedisService:
@@ -110,28 +275,204 @@ class RedisService:
         # Reset singleton instance
         RedisService._instance = None
     
-    async def get(self, key: str) -> Any:
-        """Get value from Redis."""
-        return await get(key)
-    
-    async def set(self, key: str, value: Any, ex: Optional[Union[int, timedelta]] = None, expire: Optional[int] = None) -> bool:
-        """Set value in Redis.
+    async def get(self, key: str, default: Any = None) -> Any:
+        """Get a value from Redis.
         
         Args:
-            key: Key to set
-            value: Value to set
-            ex: Expiration in seconds or timedelta (legacy parameter)
-            expire: Expiration in seconds (alias for ex for backward compatibility)
+            key: The key to get
+            default: The default value to return if the key doesn't exist
             
         Returns:
-            bool: True if successful, False otherwise
+            The value if it exists, otherwise the default value
         """
-        expiration = ex if ex is not None else expire
-        return await set(key, value, expiration)
+        try:
+            if self._client is None:
+                await self.init()
+            
+            value = await self._client.get(key)
+            if value is None:
+                return default
+            
+            # Try to deserialize from JSON if it looks like JSON
+            if isinstance(value, bytes):
+                value = value.decode('utf-8')
+                
+            if isinstance(value, str) and (value.startswith('{') or value.startswith('[')):
+                try:
+                    return json.loads(value)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"JSONDecodeError for key {key}: {str(e)}")
+                    # If not valid JSON, return as is
+                    return value
+                except Exception as e:
+                    logger.warning(f"Error parsing JSON for key {key}: {str(e)}")
+                    return value
+            
+            return value
+        except Exception as e:
+            logger.error(f"Failed to get key {key} from Redis: {str(e)}")
+            return default
     
-    async def delete(self, *keys: str) -> bool:
-        """Delete keys from Redis."""
-        return await delete(*keys)
+    async def set(self, key: str, value: Any, ex: Optional[int] = None, nx: bool = False, xx: bool = False):
+        """Set a key-value pair in Redis with optional expiration.
+        
+        Args:
+            key: The key to set
+            value: The value to set (will be JSON serialized)
+            ex: Optional expiration time in seconds
+            nx: Only set if the key does not exist
+            xx: Only set if the key already exists
+        
+        Returns:
+            True if the operation was successful, False otherwise
+        """
+        try:
+            if self._client is None:
+                await self.init()
+            
+            # Safely serialize value to JSON
+            try:
+                # For simple values, use direct serialization
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    serialized = value
+                else:
+                    # First try with normal encoding depth to preserve structure when possible
+                    max_depth = _max_encoding_depth.get()
+                    try:
+                        _max_encoding_depth.set(0)  # Reset the counter
+                        serialized = json.dumps(value, cls=UUIDEncoder)
+                    except (RecursionError, TypeError, ValueError, json.JSONDecodeError, OverflowError) as json_error:
+                        # If normal encoding fails due to recursion, retry with lower max depth
+                        logger.warning(f"Initial serialization failed for key {key}, retrying with simplified encoding: {str(json_error)}")
+                        _max_encoding_depth.set(0)  # Reset the counter
+                        try:
+                            # For extremely complex objects, use a more aggressive simplification
+                            # Create a simplified representation of the object
+                            simple_value = self._simplify_object(value)
+                            serialized = json.dumps(simple_value, cls=UUIDEncoder)
+                        except Exception as inner_e:
+                            logger.error(f"Simplified serialization also failed for key {key}: {str(inner_e)}")
+                            # As a last resort, convert to string representation
+                            serialized = str(value)
+                    finally:
+                        # Reset the depth counter to its original value
+                        _max_encoding_depth.set(max_depth)
+            except Exception as e:
+                logger.error(f"Failed to serialize value for key {key}: {str(e)}")
+                # Fall back to string representation if serialization fails
+                serialized = str(value)
+            
+            return await self._client.set(key, serialized, ex=ex, nx=nx, xx=xx)
+        except Exception as e:
+            logger.error(f"Failed to set key {key} in Redis: {str(e)}")
+            return False
+    
+    async def _simplify_object(self, obj: Any) -> Any:
+        """Create a simplified representation of an object suitable for serialization.
+        
+        This is a more aggressive simplification than the UUIDEncoder provides.
+        It's used as a fallback for very complex objects.
+        """
+        if obj is None or isinstance(obj, (str, int, float, bool)):
+            return obj
+            
+        if isinstance(obj, (list, tuple)):
+            # Limit list/tuple size and simplify each item
+            simplified = []
+            for i, item in enumerate(obj):
+                if i >= 20:  # Aggressive limit
+                    simplified.append(f"<{len(obj) - 20} more items>")
+                    break
+                simplified.append(self._simplify_object(item))
+            return simplified
+            
+        if isinstance(obj, dict):
+            # For dictionaries, simplify keys and values
+            simplified = {}
+            for i, (key, value) in enumerate(obj.items()):
+                if i >= 20:  # Aggressive limit
+                    simplified['...'] = f"<{len(obj) - 20} more items>"
+                    break
+                    
+                # Skip private keys and callable values
+                if isinstance(key, str) and key.startswith('_'):
+                    continue
+                if callable(value):
+                    continue
+                    
+                # Use string representation for non-primitive keys
+                if not isinstance(key, (str, int, float, bool)):
+                    str_key = str(key)
+                else:
+                    str_key = key
+                    
+                # Simplify the value
+                simplified[str_key] = self._simplify_object(value)
+            return simplified
+            
+        if isinstance(obj, UUID):
+            return str(obj)
+            
+        if isinstance(obj, Decimal):
+            return float(obj)
+            
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+            
+        if isinstance(obj, (set, frozenset)):
+            return list(obj)
+            
+        if inspect.isasyncgen(obj) or inspect.iscoroutine(obj) or inspect.isawaitable(obj):
+            return f"<{type(obj).__name__} object>"
+            
+        if inspect.isgenerator(obj) or inspect.isgeneratorfunction(obj):
+            return f"<{type(obj).__name__} object>"
+            
+        if hasattr(obj, '__dict__') and not isinstance(obj, type):
+            # For objects with __dict__, create a simplified dictionary
+            simplified = {}
+            simplified['__type__'] = type(obj).__name__
+            # Add a few key attributes for identification
+            for key in list(obj.__dict__.keys())[:10]:
+                if key.startswith('_'):
+                    continue
+                try:
+                    value = getattr(obj, key)
+                    if callable(value):
+                        continue
+                    if isinstance(value, (str, int, float, bool, type(None))):
+                        simplified[key] = value
+                    else:
+                        # Just use type name for complex values
+                        simplified[key] = f"<{type(value).__name__}>"
+                except Exception:
+                    continue
+            return simplified
+            
+        # Final fallback - just return the string representation
+        try:
+            return f"<{type(obj).__name__}: {str(obj)[:100]}>"
+        except Exception:
+            return f"<{type(obj).__name__}>"
+    
+    async def delete(self, key: str) -> bool:
+        """Delete a key from Redis.
+        
+        Args:
+            key: The key to delete
+            
+        Returns:
+            True if the key was deleted, False otherwise
+        """
+        try:
+            if self._client is None:
+                await self.init()
+            
+            result = await self._client.delete(key)
+            return result > 0
+        except Exception as e:
+            logger.error(f"Failed to delete key {key} from Redis: {str(e)}")
+            return False
     
     async def exists(self, key: str) -> bool:
         """Check if key exists in Redis."""
@@ -222,6 +563,22 @@ class RedisService:
         """Check if token is blacklisted."""
         key = f"blacklist:{token}"
         return await exists(key)
+
+    async def pipeline(self):
+        """Get a Redis pipeline for batch operations.
+        
+        Returns:
+            A Redis pipeline
+        """
+        try:
+            if self._client is None:
+                await self.init()
+            
+            return self._client.pipeline()
+        except Exception as e:
+            logger.error(f"Failed to create Redis pipeline: {str(e)}")
+            # Return a mock pipeline that does nothing
+            return MockRedisPipeline()
 
 async def get_redis_pool() -> Optional[ConnectionPool]:
     """Get Redis connection pool."""
@@ -459,66 +816,6 @@ async def ping() -> bool:
         return False
     except Exception as e:
         logger.error(f"Redis ping failed: {str(e)}")
-        return False
-
-async def get(key: str) -> Any:
-    """Get value from Redis."""
-    client = await get_redis_client()
-    
-    if client is None:
-        return None
-        
-    try:
-        return await client.get(key)
-    except Exception as e:
-        logger.error(f"Error getting Redis key {key}: {str(e)}")
-        return None
-
-async def set(key: str, value: Any, ex: Optional[Union[int, timedelta]] = None) -> bool:
-    """Set value in Redis."""
-    # Add a recursion guard
-    if getattr(set, "_in_set_call", False):
-        logger.warning("Recursion detected in Redis set() call")
-        return False
-        
-    try:
-        set._in_set_call = True
-        client = await get_redis_client()
-        
-        if client is None:
-            # For testing environments, simulate success
-            if settings.TESTING:
-                logger.debug(f"In testing mode - simulating successful set for key: {key}")
-                return True
-            return False
-            
-        try:
-            # Convert complex objects to JSON
-            if not isinstance(value, (str, int, float, bool, type(None))):
-                value = json.dumps(value, cls=UUIDEncoder)
-                
-            return await client.set(key, value, ex=ex)
-        except Exception as e:
-            logger.error(f"Error setting Redis key {key}: {str(e)}")
-            return False
-    finally:
-        set._in_set_call = False
-
-async def delete(*keys: str) -> bool:
-    """Delete keys from Redis."""
-    client = await get_redis_client()
-    
-    if client is None:
-        return False
-        
-    if not keys:
-        return True
-        
-    try:
-        result = await client.delete(*keys)
-        return result > 0
-    except Exception as e:
-        logger.error(f"Error deleting Redis keys: {str(e)}")
         return False
 
 async def exists(key: str) -> bool:
@@ -762,3 +1059,33 @@ async def get_redis_service():
         service._pool = None
         
         return service 
+
+# Add a mock pipeline class for testing
+class MockRedisPipeline:
+    """Mock Redis pipeline for testing."""
+    
+    def __init__(self):
+        self.commands = []
+        
+    async def set(self, key, value, ex=None, nx=False, xx=False):
+        """Add a set command to the pipeline."""
+        self.commands.append(('set', key, value, ex, nx, xx))
+        return self
+        
+    async def get(self, key):
+        """Add a get command to the pipeline."""
+        self.commands.append(('get', key))
+        return self
+        
+    async def delete(self, key):
+        """Add a delete command to the pipeline."""
+        self.commands.append(('delete', key))
+        return self
+        
+    async def execute(self):
+        """Execute the pipeline.
+        
+        In mock mode, this just returns a list of None values with the same
+        length as the commands list.
+        """
+        return [None] * len(self.commands) 

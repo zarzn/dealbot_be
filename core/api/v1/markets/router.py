@@ -77,8 +77,7 @@ async def list_markets(
 
 @router.get("/active", response_model=List[MarketResponse])
 async def get_active_markets(
-    market_service: MarketService = Depends(get_market_service),
-    _=Depends(get_current_user)
+    market_service: MarketService = Depends(get_market_service)
 ):
     """
     Get all active markets.

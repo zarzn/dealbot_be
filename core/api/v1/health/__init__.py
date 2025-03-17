@@ -1,4 +1,4 @@
-"""Price Tracking API module."""
+"""Health API module."""
 
 from .router import router
 

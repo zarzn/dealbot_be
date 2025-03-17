@@ -3,7 +3,7 @@
 This module provides metrics collection for database operations using Prometheus client.
 """
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Histogram, Gauge
 import time
 from typing import Optional
 
@@ -54,6 +54,25 @@ class DatabaseMetrics:
                 'Database query execution time in seconds',
                 buckets=(0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0)
             )
+            
+            # Connection pool metrics
+            self.pool_connections_used = Gauge(
+                'db_pool_connections_used',
+                'Number of connections currently in use from the pool'
+            )
+            self.pool_connections_overflow = Gauge(
+                'db_pool_connections_overflow',
+                'Number of overflow connections currently in use'
+            )
+            self.pool_utilization_percent = Gauge(
+                'db_pool_utilization_percent',
+                'Percentage of pool connections currently in use'
+            )
+            self.pool_size = Gauge(
+                'db_pool_size',
+                'Total size of the connection pool'
+            )
+            
             self._initialized = True
 
     def connection_checkout(self):
@@ -87,6 +106,23 @@ class DatabaseMetrics:
     def record_query_time(self, duration: float):
         """Record query execution time."""
         self.query_execution_time.observe(duration)
+    
+    def update_pool_usage_metrics(self, used: int, overflow: int, total_size: int):
+        """Update connection pool usage metrics.
+        
+        Args:
+            used: Number of connections currently in use
+            overflow: Number of overflow connections in use
+            total_size: Total size of the connection pool
+        """
+        self.pool_connections_used.set(used)
+        self.pool_connections_overflow.set(overflow)
+        self.pool_size.set(total_size)
+        
+        # Calculate utilization percentage
+        if total_size > 0:
+            utilization = (used / total_size) * 100
+            self.pool_utilization_percent.set(utilization)
         
     @property
     def connection_failures_count(self) -> int:

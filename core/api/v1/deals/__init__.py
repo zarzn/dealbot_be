@@ -1,1 +1,5 @@
-"""Deals API module.""" 
+"""Deals API module."""
+
+from .router import router
+
+__all__ = ["router"] 

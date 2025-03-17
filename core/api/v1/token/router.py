@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime, timedelta
+from sqlalchemy import select
+from uuid import uuid4
 
 from core.database import get_db
 from core.dependencies import get_current_user
@@ -22,7 +24,8 @@ from core.models.token import (
     TokenTransferRequest,
     TokenBurnRequest,
     TokenMintRequest,
-    TokenStakeRequest
+    TokenStakeRequest,
+    TokenBalance
 )
 from core.dependencies import get_analytics_service
 
@@ -35,7 +38,32 @@ async def get_balance(
 ):
     """Get token balance for current user"""
     token_service = TokenService(db)
-    return await token_service.get_balance(current_user.id)
+    balance_decimal = await token_service.get_balance(current_user.id)
+    
+    # Get the TokenBalance record for additional information
+    result = await db.execute(
+        select(TokenBalance).where(TokenBalance.user_id == current_user.id)
+    )
+    token_balance = result.scalar_one_or_none()
+    
+    # If we don't have a token balance record, create a response with defaults
+    if token_balance is None:
+        return TokenBalanceResponse(
+            id=uuid4(),
+            user_id=current_user.id,
+            balance=float(balance_decimal),
+            last_updated=datetime.utcnow(),
+            data={"source": "calculated"}
+        )
+    
+    # Return the properly formatted response
+    return TokenBalanceResponse(
+        id=token_balance.id,
+        user_id=current_user.id,
+        balance=float(balance_decimal),
+        last_updated=token_balance.updated_at,
+        data={"source": "database"}
+    )
 
 @router.post("/connect-wallet")
 async def connect_wallet(

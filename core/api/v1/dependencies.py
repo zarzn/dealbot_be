@@ -1,8 +1,9 @@
 """API dependencies."""
 
 from typing import AsyncGenerator, Optional
-from fastapi import Depends, BackgroundTasks
+from fastapi import Depends, BackgroundTasks, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+import logging
 
 from core.database import get_async_db_session as get_db
 from core.services.token import TokenService, SolanaTokenService
@@ -16,7 +17,7 @@ from core.services.auth import get_current_user, get_current_active_user
 from core.services.agent import AgentService
 from core.services.recommendation import RecommendationService
 from core.models.user import User
-from core.dependencies import get_optional_user
+from core.dependencies import get_optional_user, oauth2_scheme
 
 from core.repositories.market import MarketRepository
 from core.repositories.deal import DealRepository
@@ -24,11 +25,22 @@ from core.repositories.goal import GoalRepository
 from core.repositories.token import TokenRepository
 from core.repositories.analytics import AnalyticsRepository
 
+# Initialize logger
+logger = logging.getLogger(__name__)
+
 async def get_current_user_optional(
+    token: Optional[str] = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db)
 ) -> Optional[User]:
     """Get current user if authenticated, otherwise return None."""
-    return await get_optional_user(db=db)
+    logger.debug(f"get_current_user_optional called with token: {'Present' if token else 'None'}")
+    
+    # Handle the case where token is None (no Authorization header)
+    if not token:
+        return None
+    
+    # Pass the token to get_optional_user
+    return await get_optional_user(token, db)
 
 async def get_token_service(db: AsyncSession = Depends(get_db)) -> TokenService:
     """Get token service instance."""

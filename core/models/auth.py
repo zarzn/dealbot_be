@@ -16,6 +16,7 @@ from sqlalchemy.sql import text, func
 
 from core.models.base import Base
 from .auth_token import TokenType, TokenStatus, TokenScope, AuthToken
+from core.models.user import User
 
 class Token(BaseModel):
     """Token schema."""
@@ -100,49 +101,4 @@ class UserProfile(Base):
 
     def __repr__(self) -> str:
         """String representation of the profile."""
-        return f"<UserProfile(user_id={self.user_id})>"
-
-class User(Base):
-    """User model."""
-    __tablename__ = "users"
-    __table_args__ = {'extend_existing': True}
-
-    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'))
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=text('CURRENT_TIMESTAMP'), onupdate=text('CURRENT_TIMESTAMP'))
-    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    reset_token: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    reset_token_expires: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
-    sol_address: Mapped[Optional[str]] = mapped_column(String(44), unique=True, nullable=True)
-    token_balance: Mapped[float] = mapped_column(Numeric(precision=18, scale=8), default=0.0, nullable=False)
-
-    # Relationships
-    tokens = relationship("AuthToken", back_populates="user", cascade="all, delete-orphan")
-    profile = relationship("UserProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
-    goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")
-    notifications = relationship("Notification", back_populates="user", cascade="all, delete-orphan")
-    token_transactions = relationship("TokenTransaction", back_populates="user", cascade="all, delete-orphan")
-
-    def __repr__(self) -> str:
-        """String representation of the user."""
-        return f"<User {self.email}>"
-
-    def to_dict(self) -> dict:
-        """Convert user to dictionary."""
-        return {
-            "id": str(self.id),
-            "email": self.email,
-            "name": self.name,
-            "is_active": self.is_active,
-            "is_superuser": self.is_superuser,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-            "last_login": self.last_login.isoformat() if self.last_login else None,
-            "sol_address": self.sol_address,
-            "token_balance": float(self.token_balance) if self.token_balance is not None else 0.0
-        } 
+        return f"<UserProfile(user_id={self.user_id})>" 

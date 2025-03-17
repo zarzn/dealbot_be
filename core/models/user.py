@@ -54,9 +54,9 @@ from core.models.token_transaction import TokenTransaction
 from core.models.token_balance_history import TokenBalanceHistory
 from core.models.token_wallet import TokenWallet
 from core.models.token_balance import TokenBalance
-from core.models.deal_token import DealToken  # Import DealToken class instead of Token
-from core.models.token import Token  # Import Token class from token.py
-from core.models.chat_context import ChatContext  # Import ChatContext
+from core.models.deal_token import DealToken
+from core.models.token import Token
+from core.models.chat_context import ChatContext
 from core.utils.auth import create_token
 from core.models.enums import UserStatus, TokenType, TokenStatus, TokenScope, TokenTransactionType, BalanceChangeType
 
@@ -279,6 +279,10 @@ class User(Base):
     success_rate: Mapped[float] = mapped_column(Numeric(5, 4), nullable=False, default=0.0)
     total_tokens_spent: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
     total_rewards_earned: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False, default=0.0)
+    reset_token: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    reset_token_expires: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    email_verification_token: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    email_verification_expires: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Add token_balance as a computed column property
     token_balance = column_property(
@@ -306,6 +310,7 @@ class User(Base):
     agents = relationship("Agent", back_populates="user", cascade="all, delete-orphan")
     tracked_deals = relationship("TrackedDeal", back_populates="user", cascade="all, delete-orphan")
     user_preferences = relationship("UserPreferences", back_populates="user", cascade="all, delete-orphan")
+    profile = relationship("UserProfile", back_populates="user", cascade="all, delete-orphan")
     price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
     price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
     markets = relationship("Market", back_populates="user")

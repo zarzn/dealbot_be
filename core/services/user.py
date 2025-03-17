@@ -11,9 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.models.user import User, UserUpdate
 from core.models.user_preferences import UserPreferences
-from core.exceptions import UserNotFoundError, WalletError
-from core.exceptions import Exception  # We'll use base Exception temporarily
-from core.database import get_db_session
+from core.exceptions import UserNotFoundError, WalletError, BaseError, DatabaseError
+from core.database import get_db, AsyncSessionLocal
 
 
 async def get_user_by_email(email: str) -> Optional[User]:
@@ -29,11 +28,14 @@ async def get_user_by_email(email: str) -> Optional[User]:
         DatabaseError: If there's an issue with the database connection
     """
     try:
-        async with get_db_session() as session:
+        session = AsyncSessionLocal()
+        try:
             result = await session.execute(
                 select(User).where(User.email == email)
             )
             return result.scalars().first()
+        finally:
+            await session.close()
     except Exception as e:
         raise DatabaseError(f"Failed to get user by email: {str(e)}")
 
@@ -96,7 +98,7 @@ class UserService:
         """Get user wallet information."""
         user = await self.get_user(user_id)
         return {
-            "wallet_address": user.wallet_address,
+            "wallet_address": user.sol_address,
             "sol_address": user.sol_address,
             "token_balance": user.token_balance,
             "last_payment_at": user.last_payment_at
@@ -111,14 +113,14 @@ class UserService:
             raise WalletError("Invalid wallet address format")
 
         # Check if wallet is already connected to another user
-        query = select(User).where(User.wallet_address == wallet_address)
+        query = select(User).where(User.sol_address == wallet_address)
         result = await self.session.execute(query)
         existing_user = result.scalar_one_or_none()
         
         if existing_user and existing_user.id != user_id:
             raise WalletError("Wallet already connected to another account")
 
-        user.wallet_address = wallet_address
+        user.sol_address = wallet_address
         user.updated_at = datetime.utcnow()
         await self.session.commit()
         await self.session.refresh(user)
@@ -129,7 +131,7 @@ class UserService:
         """Disconnect wallet from user account."""
         user = await self.get_user(user_id)
         
-        user.wallet_address = None
+        user.sol_address = None
         user.updated_at = datetime.utcnow()
         await self.session.commit()
         await self.session.refresh(user)

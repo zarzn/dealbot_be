@@ -51,6 +51,31 @@ class ValidationError(BaseError):
             details['field_prefix'] = self.field_prefix
         return details
 
+class InvalidParameterError(ValidationError):
+    """Raised when an invalid parameter is provided."""
+    
+    def __init__(
+        self,
+        message: str,
+        parameter_name: str,
+        value: Any = None,
+        valid_values: Optional[List[Any]] = None
+    ):
+        errors = {parameter_name: str(value) if value is not None else "None"}
+        super().__init__(message, errors)
+        self.parameter_name = parameter_name
+        self.value = value
+        self.valid_values = valid_values
+        
+    def _get_details(self) -> Dict[str, Any]:
+        details = super()._get_details()
+        details['parameter_name'] = self.parameter_name
+        if self.value is not None:
+            details['value'] = str(self.value)
+        if self.valid_values:
+            details['valid_values'] = [str(v) for v in self.valid_values]
+        return details
+
 class NotFoundError(BaseError):
     """Raised when a requested resource is not found."""
     
