@@ -573,8 +573,8 @@ class NotificationService:
             notifications = result.scalars().all()
 
             for notification in notifications:
-                notification.read = True
                 notification.read_at = datetime.utcnow()
+                notification.status = NotificationStatus.READ
 
             await self.db.commit()
             return notifications

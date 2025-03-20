@@ -82,7 +82,36 @@ async def get_active_markets(
     """
     Get all active markets.
     """
-    return await market_service.get_active_markets()
+    markets = await market_service.get_active_markets()
+    
+    # Ensure all required fields are present in the response
+    response_markets = []
+    for market in markets:
+        # Create a dict with all required fields, ensuring proper types
+        market_dict = {
+            "id": market.id,
+            "name": market.name,
+            "type": market.type,
+            "description": market.description or "",
+            "api_endpoint": market.api_endpoint or "",
+            "rate_limit": int(market.rate_limit or 100),
+            "config": market.config or {},
+            "status": market.status,
+            "is_active": bool(market.is_active),
+            "success_rate": float(market.success_rate or 0.0),
+            "avg_response_time": float(market.avg_response_time or 0.0),
+            "total_requests": int(market.total_requests or 0),
+            "error_count": int(market.error_count or 0),
+            "requests_today": int(market.requests_today or 0),
+            "last_error": market.last_error,
+            "last_error_at": market.last_error_at,
+            "last_successful_request": market.last_successful_request,
+            "created_at": market.created_at,
+            "updated_at": market.updated_at
+        }
+        response_markets.append(market_dict)
+    
+    return response_markets
 
 @router.get("/supported", response_model=List[dict])
 async def get_supported_markets() -> Any:

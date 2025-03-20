@@ -1,11 +1,12 @@
 from typing import List, Optional, Dict
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_, func, or_, delete, text
+from sqlalchemy import select, update, delete, func, join, text, and_, or_
 from datetime import datetime, timedelta
 from sqlalchemy.exc import SQLAlchemyError
 import logging
 from sqlalchemy.orm import selectinload
+import os
 
 from core.models.market import Market, MarketCreate, MarketUpdate
 from core.models.enums import MarketType, MarketStatus, MarketCategory
@@ -35,6 +36,7 @@ class MarketRepository(BaseRepository[Market]):
             await self.db.rollback()
             logger.error(f"Failed to create market: {str(e)}")
             raise InvalidMarketDataError(
+                market="unknown",
                 reason=f"Invalid market data: {str(e)}",
                 details={"error": str(e)}
             )
@@ -49,8 +51,9 @@ class MarketRepository(BaseRepository[Market]):
         except SQLAlchemyError as e:
             logger.error(f"Failed to get market: {str(e)}")
             raise DatabaseError(
+                message=f"Database error: {str(e)}",
                 operation="get_by_id",
-                message=f"Database error: {str(e)}"
+                details={"market_id": market_id}
             )
 
     async def get_by_type(self, market_type: MarketType) -> Optional[Market]:
@@ -64,23 +67,26 @@ class MarketRepository(BaseRepository[Market]):
         )
         return result.scalar_one_or_none()
 
-    async def get_all_active(self) -> List[Market]:
-        query = select(Market).where(
-            and_(
-                Market.is_active == True,
-                Market.status == MarketStatus.ACTIVE
-            )
-        )
+    async def get_truly_active_markets(self) -> List[Market]:
+        """Get all active markets using a different approach."""
         try:
-            result = await self.db.execute(query)
-            return list(result.scalars().all())
-        except SQLAlchemyError as e:
-            logger.error(f"Database error when fetching active markets: {str(e)}")
-            raise DatabaseError(
-                message="Failed to fetch active markets",
-                operation="get_all_active", 
-                details={"error": str(e)}
-            )
+            # Direct approach without complex conditions
+            all_markets = await self.db.execute(select(Market))
+            markets = list(all_markets.scalars().all())
+            
+            # Filter in Python
+            active_markets = [m for m in markets if m.is_active and m.status == 'active']
+            
+            logger.info(f"Retrieved {len(active_markets)} truly active markets")
+            return active_markets
+        except Exception as e:
+            logger.error(f"Error in get_truly_active_markets: {str(e)}")
+            raise
+
+    async def get_all_active(self) -> List[Market]:
+        """Get all active markets."""
+        # Use the new method instead
+        return await self.get_truly_active_markets()
 
     async def get_all(self, page: int = 1, per_page: int = 20) -> List[Market]:
         """Get paginated list of markets"""
@@ -94,8 +100,9 @@ class MarketRepository(BaseRepository[Market]):
         except SQLAlchemyError as e:
             logger.error(f"Failed to get markets: {str(e)}")
             raise DatabaseError(
+                message=f"Database error: {str(e)}",
                 operation="get_all",
-                message=f"Database error: {str(e)}"
+                details={"page": page, "per_page": per_page}
             )
 
     async def get_all_filtered(self, **filters) -> List[Market]:
@@ -139,8 +146,9 @@ class MarketRepository(BaseRepository[Market]):
         except SQLAlchemyError as e:
             logger.error(f"Failed to get filtered markets: {str(e)}")
             raise DatabaseError(
+                message=f"Database error: {str(e)}",
                 operation="get_all_filtered",
-                message=f"Database error: {str(e)}"
+                details={"filters": filters}
             )
 
     async def get_by_category(self, category: MarketCategory) -> List[Market]:
@@ -153,8 +161,9 @@ class MarketRepository(BaseRepository[Market]):
         except SQLAlchemyError as e:
             logger.error(f"Failed to get markets by category: {str(e)}")
             raise DatabaseError(
+                message=f"Database error: {str(e)}",
                 operation="get_by_category",
-                message=f"Database error: {str(e)}"
+                details={"category": category}
             )
 
     async def update(self, market_id: str, **kwargs) -> Market:
@@ -185,6 +194,7 @@ class MarketRepository(BaseRepository[Market]):
             await self.db.rollback()
             logger.error(f"Failed to update market: {str(e)}")
             raise InvalidMarketDataError(
+                market=str(market_id),
                 reason=f"Invalid market data: {str(e)}",
                 details={"error": str(e)}
             )
@@ -202,23 +212,15 @@ class MarketRepository(BaseRepository[Market]):
             await self.db.rollback()
             logger.error(f"Failed to delete market: {str(e)}")
             raise DatabaseError(
+                message=f"Database error: {str(e)}",
                 operation="delete",
-                message=f"Database error: {str(e)}"
+                details={"market_id": market_id}
             )
 
     async def get_active_markets(self) -> List[Market]:
         """Get all active markets"""
-        try:
-            result = await self.db.execute(
-                select(Market).where(Market.status == MarketStatus.ACTIVE)
-            )
-            return list(result.scalars().all())
-        except SQLAlchemyError as e:
-            logger.error(f"Failed to get active markets: {str(e)}")
-            raise DatabaseError(
-                operation="get_active_markets",
-                message=f"Database error: {str(e)}"
-            )
+        # Use the new method
+        return await self.get_truly_active_markets()
 
     async def update_market_stats(self, market_id: str, stats_data: Dict) -> Market:
         """Update market statistics"""
@@ -236,8 +238,9 @@ class MarketRepository(BaseRepository[Market]):
             await self.db.rollback()
             logger.error(f"Failed to update market stats: {str(e)}")
             raise DatabaseError(
+                message=f"Database error: {str(e)}",
                 operation="update_market_stats",
-                message=f"Database error: {str(e)}"
+                details={"market_id": market_id}
             )
 
     async def get_market_performance(self, market_id: str, days: int = 30) -> List[Dict]:
@@ -274,8 +277,9 @@ class MarketRepository(BaseRepository[Market]):
         except SQLAlchemyError as e:
             logger.error(f"Failed to get market performance: {str(e)}")
             raise DatabaseError(
+                message=f"Database error: {str(e)}",
                 operation="get_market_performance",
-                message=f"Database error: {str(e)}"
+                details={"market_id": market_id}
             )
 
     async def get_market_metrics(self) -> Dict:
@@ -301,8 +305,8 @@ class MarketRepository(BaseRepository[Market]):
         except SQLAlchemyError as e:
             logger.error(f"Failed to get market metrics: {str(e)}")
             raise DatabaseError(
-                operation="get_market_metrics",
-                message=f"Database error: {str(e)}"
+                message=f"Database error: {str(e)}",
+                operation="get_market_metrics"
             )
 
     async def update_market_status(self, market_id: str, status: MarketStatus) -> Market:
@@ -321,8 +325,9 @@ class MarketRepository(BaseRepository[Market]):
             await self.db.rollback()
             logger.error(f"Failed to update market status: {str(e)}")
             raise DatabaseError(
+                message=f"Database error: {str(e)}",
                 operation="update_market_status",
-                message=f"Database error: {str(e)}"
+                details={"market_id": market_id, "status": status}
             )
 
     async def get_markets_with_deals(self) -> List[Market]:
@@ -337,8 +342,8 @@ class MarketRepository(BaseRepository[Market]):
         except SQLAlchemyError as e:
             logger.error(f"Failed to get markets with deals: {str(e)}")
             raise DatabaseError(
-                operation="get_markets_with_deals",
-                message=f"Database error: {str(e)}"
+                message=f"Database error: {str(e)}",
+                operation="get_markets_with_deals"
             )
 
     async def get_markets_by_performance(self, limit: int = 10) -> List[Market]:
@@ -362,19 +367,6 @@ class MarketRepository(BaseRepository[Market]):
                 and_(
                     Market.status == status,
                     Market.is_active == True
-                )
-            )
-        )
-        return list(result.scalars().all())
-
-    async def get_markets_with_high_error_rate(self, threshold: float = 0.1) -> List[Market]:
-        """Get markets with error rate above threshold."""
-        result = await self.db.execute(
-            select(Market)
-            .where(
-                and_(
-                    Market.is_active == True,
-                    Market.success_rate < (1 - threshold)
                 )
             )
         )

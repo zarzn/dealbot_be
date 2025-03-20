@@ -9,6 +9,7 @@ from .auth import AuthMiddleware
 from .rate_limit import RateLimitMiddleware
 from .performance import PerformanceMiddleware
 from .logging import RequestLoggingMiddleware
+from .error_handler import ErrorHandlerMiddleware
 from core.config import settings
 from core.utils.metrics import MetricsManager
 from core.utils.redis import get_redis_client
@@ -18,6 +19,7 @@ __all__ = [
     "RateLimitMiddleware",
     "PerformanceMiddleware",
     "RequestLoggingMiddleware",
+    "ErrorHandlerMiddleware",
     "setup_middleware"
 ]
 
@@ -27,9 +29,10 @@ async def setup_middleware(app: FastAPI) -> None:
     The order of middleware is important:
     1. CORS (outermost) - To handle preflight requests before other middleware
     2. Request Logging - To log all requests including those rejected by other middleware
-    3. Performance Monitoring - To track performance including auth and rate limiting overhead
-    4. Rate Limiting - To prevent abuse before processing auth
-    5. Authentication (innermost) - To authenticate requests that passed rate limiting
+    3. Error Handler - To catch and handle errors, providing better error responses
+    4. Performance Monitoring - To track performance including auth and rate limiting overhead
+    5. Rate Limiting - To prevent abuse before processing auth
+    6. Authentication (innermost) - To authenticate requests that passed rate limiting
     """
     # Initialize metrics manager
     metrics_manager = MetricsManager()
@@ -59,6 +62,9 @@ async def setup_middleware(app: FastAPI) -> None:
         log_headers=settings.LOG_HEADERS,
         log_query_params=settings.LOG_QUERY_PARAMS
     )
+    
+    # Error Handler Middleware - after logging, before performance monitoring
+    app.add_middleware(ErrorHandlerMiddleware)
     
     # Performance Monitoring Middleware
     app.add_middleware(

@@ -1,16 +1,19 @@
-"""Main application module."""
+"""Main application module.
+
+This module sets up the FastAPI application and its dependencies.
+"""
 
 import logging
 import logging.handlers
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Response, status
+from fastapi import FastAPI, Request, Response, status, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import configure_mappers
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 from fastapi.responses import JSONResponse
-from sqlalchemy.sql import text
+from sqlalchemy.sql import text, select
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.staticfiles import StaticFiles
@@ -255,6 +258,195 @@ def create_app() -> FastAPI:
         lifespan=lifespan
     )
 
+    # Add a public deals endpoint that doesn't go through authentication middleware
+    # This must be defined BEFORE any middleware is applied
+    @app.get("/api/v1/public-deals", tags=["Public Deals"])
+    async def get_public_deals(
+        page: int = Query(1, ge=1, description="Page number"),
+        page_size: int = Query(6, ge=1, le=20, description="Items per page"),
+        category: Optional[str] = None,
+        price_min: Optional[float] = None,
+        price_max: Optional[float] = None,
+        sort_by: Optional[str] = "relevance"
+    ):
+        """
+        Get public deals without requiring authentication.
+        This endpoint is publicly accessible.
+        """
+        logger = logging.getLogger(__name__)
+        try:
+            # Debug log all request parameters
+            logger.warning(f"PUBLIC DEALS ENDPOINT ACCESSED: page={page}, page_size={page_size}, category={category}, price_min={price_min}, price_max={price_max}, sort_by={sort_by}")
+            
+            # Create direct database session without dependencies
+            from sqlalchemy.ext.asyncio import AsyncSession
+            from core.models.deal import Deal, DealResponse
+            from core.models.enums import DealStatus
+            
+            async with AsyncSession(async_engine) as db:
+                try:
+                    # Build query
+                    offset = (page - 1) * page_size
+                    
+                    # Build the SQL query explicitly
+                    stmt = select(Deal).where(
+                        Deal.is_active == True,
+                        Deal.status == DealStatus.ACTIVE.value.lower()
+                    )
+                    
+                    # Apply filters if provided
+                    if category:
+                        stmt = stmt.where(Deal.category == category)
+                    if price_min is not None:
+                        stmt = stmt.where(Deal.price >= price_min)
+                    if price_max is not None:
+                        stmt = stmt.where(Deal.price <= price_max)
+                        
+                    # Apply sorting
+                    if sort_by == "price_asc":
+                        stmt = stmt.order_by(Deal.price.asc())
+                    elif sort_by == "price_desc":
+                        stmt = stmt.order_by(Deal.price.desc())
+                    else:
+                        stmt = stmt.order_by(Deal.created_at.desc())
+                        
+                    # Apply pagination
+                    stmt = stmt.offset(offset).limit(page_size)
+                    
+                    # Log the SQL being executed
+                    logger.warning(f"PUBLIC DEALS SQL: {str(stmt)}")
+                    
+                    # Execute query
+                    result = await db.execute(stmt)
+                    deals = result.scalars().all()
+                    
+                    logger.warning(f"Found {len(deals)} public deals")
+                    
+                    # Convert to response model and return
+                    response_deals = []
+                    for deal in deals:
+                        try:
+                            deal_dict = {
+                                "id": str(deal.id),
+                                "title": deal.title,
+                                "description": deal.description,
+                                "url": deal.url,
+                                "image_url": deal.image_url,
+                                "price": deal.price,
+                                "original_price": deal.original_price,
+                                "category": deal.category,
+                                "source": deal.source,
+                                "is_active": deal.is_active,
+                                "status": deal.status,
+                                "market_id": str(deal.market_id),
+                                "currency": deal.currency,
+                                "seller_info": deal.seller_info,
+                                "availability": deal.availability,
+                                "deal_metadata": deal.deal_metadata,
+                                "price_metadata": deal.price_metadata,
+                                "found_at": deal.found_at,
+                                "created_at": deal.created_at,
+                                "updated_at": deal.updated_at,
+                                "latest_score": deal.score,
+                                "price_history": []
+                            }
+                            response_deals.append(DealResponse(**deal_dict))
+                        except Exception as conversion_error:
+                            logger.warning(f"Error converting deal to response model: {str(conversion_error)}")
+                            # Skip this deal and continue with others
+                            continue
+                    
+                    # If we have no real deals and are in development mode, generate mock deals
+                    if len(response_deals) == 0 and os.environ.get("ENVIRONMENT", "development") == "development":
+                        logger.warning("No deals found, generating mock deals for development")
+                        from decimal import Decimal
+                        from uuid import uuid4
+                        from datetime import datetime, timedelta
+                        import random
+                        
+                        # Generate 10 mock deals
+                        for i in range(10):
+                            created_time = datetime.now() - timedelta(days=random.randint(1, 30))
+                            # Choose from valid market categories
+                            categories = ["electronics", "home", "fashion", "books", "sports"]
+                            # Choose from valid source types
+                            sources = ["amazon", "walmart", "ebay", "manual", "api"]
+                            
+                            # Create price history for the mock deal
+                            historical_price = Decimal(random.uniform(600, 1000)).quantize(Decimal('0.01'))
+                            current_price = Decimal(random.uniform(50, 500)).quantize(Decimal('0.01'))
+                            
+                            price_history = [
+                                {
+                                    "price": float(historical_price),
+                                    "currency": "USD",
+                                    "timestamp": (created_time - timedelta(days=7)).isoformat(),
+                                    "source": "historical"
+                                },
+                                {
+                                    "price": float(current_price),
+                                    "currency": "USD",
+                                    "timestamp": created_time.isoformat(),
+                                    "source": "current"
+                                }
+                            ]
+                            
+                            mock_deal = DealResponse(
+                                id=str(uuid4()),
+                                title=f"Mock Deal {i+1}",
+                                description="This is a mock deal for development purposes",
+                                url="https://example.com/mock-deal",
+                                image_url="https://via.placeholder.com/350x150",
+                                price=current_price,
+                                original_price=historical_price,
+                                currency="USD",
+                                source=random.choice(sources),
+                                category=random.choice(categories),
+                                is_active=True,
+                                status="active",
+                                market_id=str(uuid4()),
+                                found_at=created_time,
+                                created_at=created_time,
+                                updated_at=created_time,
+                                seller_info={"name": "Mock Seller", "rating": 4.5},
+                                availability={"in_stock": True, "quantity": 10},
+                                score=Decimal(random.uniform(80, 95)).quantize(Decimal('0.1')),
+                                latest_score=Decimal(random.uniform(80, 95)).quantize(Decimal('0.1')),
+                                price_history=price_history,
+                                deal_metadata={"vendor": random.choice(["Amazon", "Walmart", "Target", "Best Buy"]), "is_verified": True},
+                                price_metadata={
+                                    "price_history": [
+                                        {
+                                            "price": str(historical_price),
+                                            "timestamp": (created_time - timedelta(days=7)).isoformat(),
+                                            "source": "historical"
+                                        },
+                                        {
+                                            "price": str(current_price),
+                                            "timestamp": created_time.isoformat(),
+                                            "source": "current"
+                                        }
+                                    ]
+                                }
+                            )
+                            response_deals.append(mock_deal)
+                        
+                    logger.warning(f"Returning {len(response_deals)} public deals")
+                    
+                    # Explicitly commit the transaction (although it's a read-only operation)
+                    await db.commit()
+                    return response_deals
+                except Exception as db_error:
+                    # Make sure to roll back the transaction on error
+                    await db.rollback()
+                    logger.error(f"Database error in public deals endpoint: {str(db_error)}", exc_info=True)
+                    raise
+                
+        except Exception as e:
+            logger.error(f"Error in get_public_deals: {str(e)}", exc_info=True)
+            # Return empty list instead of an error to avoid breaking the UI
+            return []
+
     # Add CORS middleware first
     cors_origins = settings.CORS_ORIGINS
     # Convert to a proper list if it's a Pydantic FieldInfo
@@ -345,9 +537,11 @@ def create_app() -> FastAPI:
         
         This endpoint checks database and Redis connectivity.
         """
-        from core.database import get_async_db_session as get_db
+        from core.database import AsyncDatabaseSession
         from core.services.redis import get_redis_service
+        import time
         
+        start_time = time.time()
         health_status = {
             "status": "healthy",
             "checks": {
@@ -355,24 +549,30 @@ def create_app() -> FastAPI:
                 "redis": {"status": "unknown", "message": "Not checked"},
             },
             "version": settings.APP_VERSION,
-            "environment": str(settings.APP_ENVIRONMENT)
+            "environment": str(settings.APP_ENVIRONMENT),
+            "timestamp": start_time
         }
         
         # Check database connection
         try:
-            db_session = next(get_db())
-            with db_session.connect() as conn:
-                result = conn.execute(text("SELECT 1"))
-                if result.scalar() == 1:
+            async with AsyncDatabaseSession() as db_session:
+                # Simple query to check database connectivity
+                result = await db_session.execute(text("SELECT 1"))
+                value = result.scalar()
+                
+                if value == 1:
+                    db_response_time = time.time() - start_time
                     health_status["checks"]["database"] = {
                         "status": "healthy",
-                        "message": "Connected successfully"
+                        "message": "Connected successfully",
+                        "response_time_ms": round(db_response_time * 1000, 2)
                     }
                 else:
                     health_status["checks"]["database"] = {
                         "status": "unhealthy",
                         "message": "Database query failed"
                     }
+                    health_status["status"] = "unhealthy"
         except Exception as e:
             health_status["checks"]["database"] = {
                 "status": "unhealthy",
@@ -381,12 +581,17 @@ def create_app() -> FastAPI:
             health_status["status"] = "unhealthy"
         
         # Check Redis connection
+        redis_start_time = time.time()
         try:
             redis = await get_redis_service()
-            if await redis.ping():
+            ping_result = await redis.ping()
+            
+            redis_response_time = time.time() - redis_start_time
+            if ping_result:
                 health_status["checks"]["redis"] = {
                     "status": "healthy",
-                    "message": "Connected successfully"
+                    "message": "Connected successfully",
+                    "ping_time_ms": round(redis_response_time * 1000, 2)
                 }
             else:
                 health_status["checks"]["redis"] = {
@@ -400,6 +605,9 @@ def create_app() -> FastAPI:
                 "message": f"Redis connection error: {str(e)}"
             }
             health_status["status"] = "unhealthy"
+        
+        # Update total response time
+        health_status["response_time_ms"] = round((time.time() - start_time) * 1000, 2)
         
         return health_status
 

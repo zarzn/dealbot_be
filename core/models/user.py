@@ -314,6 +314,7 @@ class User(Base):
     price_trackers = relationship("PriceTracker", back_populates="user", cascade="all, delete-orphan")
     price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
     markets = relationship("Market", back_populates="user")
+    announcements = relationship("Announcement", back_populates="creator")
     
     # Rename the relationship to avoid conflict with the JSONB column
     preferences_relation = relationship("UserPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan", overlaps="user_preferences")
@@ -412,49 +413,92 @@ class User(Base):
         from core.models.token_balance import TokenBalance
         from core.models.token_balance_history import TokenBalanceHistory
         from core.models.enums import BalanceChangeType
+        
+        try:
+            # Import here to avoid circular import
+            from core.notifications import TemplatedNotificationService
+            
+            logger.info(f"Updating token balance for user {self.id} by {amount} ({reason})")
+            
+            # Get current balance
+            balance_before = self.token_balance
+            balance_after = balance_before + amount
 
-        # Get current balance
-        balance_before = self.token_balance
-        balance_after = balance_before + amount
+            # Determine change type
+            if amount > 0:
+                change_type = BalanceChangeType.REWARD.value
+            else:
+                change_type = BalanceChangeType.DEDUCTION.value
+                amount = abs(amount)  # Use absolute value for deductions
 
-        # Determine change type
-        if amount > 0:
-            change_type = BalanceChangeType.REWARD.value
-        else:
-            change_type = BalanceChangeType.DEDUCTION.value
-            amount = abs(amount)  # Use absolute value for deductions
+            # Create or update token balance
+            stmt = select(TokenBalance).where(TokenBalance.user_id == self.id)
+            result = await db.execute(stmt)
+            token_balance = result.scalar_one_or_none()
 
-        # Create or update token balance
-        stmt = select(TokenBalance).where(TokenBalance.user_id == self.id)
-        result = await db.execute(stmt)
-        token_balance = result.scalar_one_or_none()
+            if not token_balance:
+                token_balance = TokenBalance(
+                    user_id=self.id,
+                    balance=balance_after
+                )
+                db.add(token_balance)
+            else:
+                token_balance.balance = balance_after
 
-        if not token_balance:
-            token_balance = TokenBalance(
+            await db.flush()
+
+            # Create balance history record
+            history = TokenBalanceHistory(
                 user_id=self.id,
-                balance=balance_after
+                token_balance_id=token_balance.id,
+                balance_before=balance_before,
+                balance_after=balance_after,
+                change_amount=amount,
+                change_type=change_type,
+                reason=reason
             )
-            db.add(token_balance)
-        else:
-            token_balance.balance = balance_after
-
-        await db.flush()
-
-        # Create balance history record
-        history = TokenBalanceHistory(
-            user_id=self.id,
-            token_balance_id=token_balance.id,
-            balance_before=balance_before,
-            balance_after=balance_after,
-            change_amount=amount,
-            change_type=change_type,
-            reason=reason
-        )
-        db.add(history)
-        await db.flush()
+            db.add(history)
+            await db.flush()
+            
+            # Send token balance change notification
+            notification_service = TemplatedNotificationService(db)
+            
+            # Determine if it's a reward or a deduction
+            if change_type == BalanceChangeType.REWARD.value:
+                template_id = "token_reward"
+                template_params = {
+                    "amount": str(amount),
+                    "reason": reason or "platform activity"
+                }
+            else:
+                template_id = "token_balance_change"
+                template_params = {
+                    "amount": f"-{amount}",
+                    "new_balance": str(balance_after)
+                }
+            
+            # Send the notification
+            await notification_service.send_notification(
+                template_id=template_id,
+                user_id=self.id,
+                template_params=template_params,
+                metadata={
+                    "balance_before": str(balance_before),
+                    "balance_after": str(balance_after),
+                    "change_amount": str(amount),
+                    "change_type": change_type,
+                    "reason": reason
+                }
+            )
+        except Exception as e:
+            # Log the error but don't fail the token balance update
+            logger.error(f"Failed to send token balance notification: {str(e)}")
 
     def generate_token(self) -> str:
         """Generate a JWT token for this user."""
         return create_token(str(self.id))
+
+# Import at the bottom to avoid circular imports
+from core.models.announcement import Announcement
 
 

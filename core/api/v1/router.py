@@ -17,6 +17,8 @@ from .notifications.router import router as notifications_router
 from .health.router import router as health_router
 from .price_tracking.router import router as price_tracking_router
 from .price_prediction.router import router as price_prediction_router
+from .announcements.router import router as announcements_router
+from .admin.router import router as admin_router
 
 router = APIRouter()
 
@@ -31,6 +33,8 @@ router.include_router(token_router, prefix="/token", tags=["Token"])
 router.include_router(notifications_router, prefix="/notifications", tags=["Notifications"])
 router.include_router(price_tracking_router, prefix="/price-tracking", tags=["Price Tracking"])
 router.include_router(price_prediction_router, prefix="/price-prediction", tags=["Price Prediction"])
+router.include_router(announcements_router, prefix="/announcements", tags=["Announcements"])
+router.include_router(admin_router, prefix="/admin", tags=["Admin"])
 
 # System routes
 router.include_router(health_router, prefix="/health", tags=["System"])

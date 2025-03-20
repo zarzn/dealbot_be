@@ -391,7 +391,7 @@ async def check_db_connection() -> bool:
         try:
             # Basic connection test - most lightweight operation possible
             result = await conn.execute(text("SELECT 1"))
-            value = await result.scalar()
+            value = result.scalar()
             
             # Verify we got the expected result
             if value != 1:

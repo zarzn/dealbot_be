@@ -27,6 +27,7 @@ from core.models.token import (
     TokenStakeRequest,
     TokenBalance
 )
+from core.models.token_transaction import TransactionResponse
 from core.dependencies import get_analytics_service
 
 router = APIRouter(tags=["token"])
@@ -75,7 +76,7 @@ async def connect_wallet(
     token_service = TokenService(db)
     return await token_service.connect_wallet(current_user.id, request.wallet_address)
 
-@router.get("/transactions", response_model=List[TransactionHistoryResponse])
+@router.get("/transactions", response_model=List[TransactionResponse])
 async def get_transactions(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
@@ -88,7 +89,9 @@ async def get_transactions(
 ):
     """Get transaction history for current user with filtering and pagination"""
     token_service = TokenService(db)
-    return await token_service.get_transactions(
+    
+    # Fetch transactions
+    transactions = await token_service.get_transactions(
         user_id=current_user.id,
         start_date=start_date,
         end_date=end_date,
@@ -97,6 +100,44 @@ async def get_transactions(
         page=page,
         page_size=page_size
     )
+    
+    # Convert response for compatibility
+    # Map TokenTransactionType to TransactionType accepted by the response model
+    response_transactions = []
+    for tx in transactions:
+        # Map transaction types for compatibility
+        tx_type = tx.type
+        # Convert 'credit' to 'reward' if needed
+        if tx_type == 'credit':
+            tx_type = 'reward'
+        
+        # Create a compatible transaction response
+        response_tx = {
+            "id": tx.id,
+            "user_id": tx.user_id,
+            "type": tx_type,
+            "amount": float(tx.amount),
+            "status": tx.status,
+            "tx_hash": tx.tx_hash,
+            "created_at": tx.created_at,
+            "balance_before": 0.0,  # Default values since we might not have these in the original model
+            "balance_after": 0.0, 
+            "details": tx.meta_data,
+            "signature": None,
+            "updated_at": tx.updated_at,
+            "completed_at": tx.completed_at
+        }
+        
+        # If there's balance history related to this transaction, use those values
+        if hasattr(tx, 'balance_history') and tx.balance_history:
+            history = tx.balance_history[0] if len(tx.balance_history) > 0 else None
+            if history:
+                response_tx["balance_before"] = float(history.balance_before)
+                response_tx["balance_after"] = float(history.balance_after)
+        
+        response_transactions.append(response_tx)
+    
+    return response_transactions
 
 @router.get("/pricing", response_model=List[TokenPricingResponse])
 async def get_token_pricing(

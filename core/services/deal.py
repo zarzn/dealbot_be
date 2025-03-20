@@ -23,7 +23,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import httpx
 from uuid import UUID, uuid4
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from sqlalchemy.orm import joinedload, selectinload
 import numpy as np
 import decimal
@@ -50,7 +50,7 @@ from core.models.deal import (
     AIAnalysis,
     MarketCategory
 )
-from core.models.enums import MarketType
+from core.models.enums import MarketType, MarketStatus
 from core.repositories.deal import DealRepository
 from core.utils.redis import get_redis_client
 from core.utils.llm import create_llm_chain
@@ -270,7 +270,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
         market_id: UUID,
         title: str,
         description: Optional[str] = None,
-        price: Decimal = Decimal('0.00'),
+        price: Decimal = Decimal('0.01'),  # Changed from 0.00 to 0.01 to satisfy the constraint
         original_price: Optional[Decimal] = None,
         currency: str = 'USD',
         source: str = 'manual',
@@ -393,13 +393,14 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
 
     @retry(stop=stop_after_attempt(DEAL_ANALYSIS_RETRIES), 
            wait=wait_exponential(multiplier=1, min=4, max=10))
-    async def get_deal(self, deal_id: str) -> Deal:
+    async def get_deal(self, deal_id: str, user_id: Optional[UUID] = None) -> Dict[str, Any]:
         """Get deal by ID with cache fallback and retry mechanism"""
         try:
             # Try to get from cache first
             cached_deal = await self._get_cached_deal(deal_id)
             if cached_deal:
-                return cached_deal
+                # Convert to response before returning
+                return self._convert_to_response(cached_deal, user_id)
                 
             # Fallback to database
             deal = await self._repository.get_by_id(deal_id)
@@ -410,7 +411,8 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             # Cache the deal
             await self._cache_deal(deal)
             
-            return deal
+            # Convert to response before returning
+            return self._convert_to_response(deal, user_id)
         except DealNotFoundError:
             # Re-raise DealNotFoundError to be caught by the retry mechanism
             raise
@@ -1279,6 +1281,25 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                     except (ValueError, TypeError):
                         logger.warning(f"Failed to parse reviews from deal_data: {deal_data.get('review_count')}")
                 
+            # Validate and fix price to ensure it's positive (meets ch_positive_price constraint)
+            if 'price' in deal_data:
+                # Convert to Decimal if it's not already
+                if not isinstance(deal_data['price'], Decimal):
+                    try:
+                        deal_data['price'] = Decimal(str(deal_data['price']))
+                    except (ValueError, TypeError, InvalidOperation):
+                        logger.warning(f"Invalid price value: {deal_data['price']}, setting to minimum price")
+                        deal_data['price'] = Decimal('0.01')
+
+                # Ensure price is positive (satisfies ch_positive_price constraint)
+                if deal_data['price'] <= Decimal('0'):
+                    logger.warning(f"Price {deal_data['price']} is not positive, setting to minimum price")
+                    deal_data['price'] = Decimal('0.01')  # Set minimum valid price
+            else:
+                # If no price is provided, set a default minimum price
+                deal_data['price'] = Decimal('0.01')
+                logger.warning("No price provided for deal, setting to minimum price")
+
             # Create new deal
             logger.info(f"Creating new deal from scraped data: {deal_data['title']}")
             logger.info(f"Description available: {bool(deal_data.get('description'))}")
@@ -1644,12 +1665,80 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
             if not deal:
                 raise DealNotFoundError(f"Deal {deal_id} not found")
                 
+            # Check if status is being updated
+            original_status = deal.status
+            new_status = deal_data.get('status')
+            
             # Update the deal
             updated_deal = await self._repository.update(deal_id, deal_data)
             
             # Update cache if Redis is available
             if self._redis:
                 await self._cache_deal(updated_deal)
+                
+            # Send notification if status changed
+            if new_status and original_status != new_status:
+                try:
+                    # Import here to avoid circular imports
+                    from core.notifications import TemplatedNotificationService
+                    
+                    # Get related goals - we'll notify users who have this deal in their goals
+                    from core.models.goal import Goal
+                    
+                    # Create notification service
+                    notification_service = TemplatedNotificationService(self.session)
+                    
+                    # Get the user who owns the deal
+                    if updated_deal.user_id:
+                        # Format the status nicely for display
+                        status_display = new_status.replace("_", " ").title()
+                        
+                        # Send notification about status change
+                        await notification_service.send_notification(
+                            template_id="deal_status_update",
+                            user_id=updated_deal.user_id,
+                            template_params={
+                                "deal_title": updated_deal.title,
+                                "status": status_display
+                            },
+                            metadata={
+                                "deal_id": str(deal_id),
+                                "previous_status": original_status,
+                                "new_status": new_status
+                            },
+                            deal_id=deal_id
+                        )
+                    
+                    # If there's a goal associated with this deal, also notify goal owner
+                    if updated_deal.goal_id:
+                        stmt = select(Goal).where(Goal.id == updated_deal.goal_id)
+                        result = await self.session.execute(stmt)
+                        goal = result.scalar_one_or_none()
+                        
+                        if goal and goal.user_id and goal.user_id != updated_deal.user_id:
+                            # Format the status nicely
+                            status_display = new_status.replace("_", " ").title()
+                            
+                            # Send notification to goal owner
+                            await notification_service.send_notification(
+                                template_id="deal_status_update",
+                                user_id=goal.user_id,
+                                template_params={
+                                    "deal_title": updated_deal.title,
+                                    "status": status_display
+                                },
+                                metadata={
+                                    "deal_id": str(deal_id),
+                                    "goal_id": str(goal.id),
+                                    "previous_status": original_status,
+                                    "new_status": new_status
+                                },
+                                goal_id=goal.id,
+                                deal_id=deal_id
+                            )
+                except Exception as notification_error:
+                    # Log but don't fail the update
+                    logger.error(f"Failed to send deal status notification: {str(notification_error)}")
                 
             return updated_deal
         except DealNotFoundError:
@@ -2632,19 +2721,25 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
         
         created_deals = []
         all_filtered_products = []  # Initialize list to collect filtered products from all markets
-        max_products = 15  # Reduce from 20 to 15 to improve performance
-        
+        max_products = 15
+            
         try:
-            # Get active markets
-            markets_query = select(Market).where(Market.is_active == True)
+            # Get available markets for real-time search
+            markets_query = select(Market).where(
+                Market.is_active == True,
+                Market._status.in_([
+                    MarketStatus.ACTIVE.value.lower()
+                ])
+            )
+            
             result = await self.db.execute(markets_query)
             markets = result.scalars().all()
             
             # Import here to avoid circular imports
             from core.integrations.market_factory import MarketIntegrationFactory
             
-            # Create market factory
-            market_factory = MarketIntegrationFactory()
+            # Create market factory with database session
+            market_factory = MarketIntegrationFactory(db=self.db)
             
             # For multi-word searches, prepare search terms for post-filtering
             search_terms = query.lower().strip().split()
@@ -3137,7 +3232,7 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
                         "title": product.get("title") or product.get("name", "Unknown Product"),
                         "description": product.get("description", ""),
                         "url": product.get("url", ""),
-                        "price": Decimal(str(product.get("price", 0))),
+                        "price": max(Decimal(str(product.get("price", 0.01))), Decimal('0.01')),  # Ensure minimum price of 0.01
                         "original_price": Decimal(str(product.get("original_price", 0))) if product.get("original_price") else None,
                         "currency": product.get("currency", "USD"),
                         "source": market_obj.type,
@@ -3260,6 +3355,200 @@ class DealService(BaseService[Deal, DealCreate, DealUpdate]):
         except Exception as e:
             logger.error(f"Failed to get recent deals: {str(e)}")
             raise DatabaseError(f"Failed to get recent deals: {str(e)}", "get_recent_deals") from e
+
+    @log_exceptions
+    @sleep_and_retry
+    @limits(calls=API_CALLS_PER_MINUTE, period=60)
+    async def create_flash_deal(
+        self,
+        user_id: UUID,
+        goal_id: UUID,
+        market_id: UUID,
+        title: str,
+        description: Optional[str] = None,
+        price: Decimal = Decimal('0.01'),
+        original_price: Optional[Decimal] = None,
+        currency: str = 'USD',
+        source: str = 'manual',
+        url: Optional[str] = None,
+        image_url: Optional[str] = None,
+        expiry_hours: int = 24,
+        deal_metadata: Optional[Dict[str, Any]] = None,
+        notify_users: bool = True,
+        max_notifications: int = 100
+    ) -> Deal:
+        """Create a flash deal with high urgency and limited time availability.
+        
+        Flash deals are special time-limited deals that require immediate attention.
+        They have a shorter expiration window and are sent with high priority notifications.
+        
+        Args:
+            user_id: User who created the deal
+            goal_id: Goal ID associated with the deal
+            market_id: Market ID associated with the deal
+            title: Title of the deal
+            description: Description of the deal
+            price: Current price
+            original_price: Original price before discount
+            currency: Currency code (3-letter ISO)
+            source: Source of the deal
+            url: URL to the deal
+            image_url: URL to the product image
+            expiry_hours: Number of hours until the deal expires
+            deal_metadata: Additional metadata about the deal
+            notify_users: Whether to notify users about this flash deal
+            max_notifications: Maximum number of notifications to send
+            
+        Returns:
+            Created flash deal
+        """
+        try:
+            # Add flash deal marker to metadata
+            metadata = deal_metadata or {}
+            metadata["is_flash_deal"] = True
+            metadata["flash_deal_created"] = datetime.utcnow().isoformat()
+            metadata["urgency"] = "high"
+            
+            # Set expiration time
+            expires_at = datetime.utcnow() + timedelta(hours=expiry_hours)
+            
+            # Create the deal
+            flash_deal = await self.create_deal(
+                user_id=user_id,
+                goal_id=goal_id,
+                market_id=market_id,
+                title=title,
+                description=description,
+                price=price,
+                original_price=original_price,
+                currency=currency,
+                source=source,
+                url=url,
+                image_url=image_url,
+                deal_metadata=metadata,
+                expires_at=expires_at,
+                status=DealStatus.ACTIVE.value
+            )
+            
+            # If notifications are enabled, send flash deal notifications
+            if notify_users:
+                await self._send_flash_deal_notifications(flash_deal, max_notifications)
+                
+            return flash_deal
+            
+        except Exception as e:
+            logger.error(f"Error creating flash deal: {str(e)}")
+            raise
+    
+    async def _send_flash_deal_notifications(self, deal: Deal, max_notifications: int) -> int:
+        """Send flash deal notifications to suitable users.
+        
+        This method identifies users who might be interested in this flash deal
+        based on their goals, preferences, and purchase history.
+        
+        Args:
+            deal: The flash deal to notify about
+            max_notifications: Maximum number of notifications to send
+            
+        Returns:
+            Number of notifications sent
+        """
+        from core.notifications import TemplatedNotificationService
+        
+        notification_service = TemplatedNotificationService(self.db)
+        notifications_sent = 0
+        
+        try:
+            # Calculate discount percentage if original price is available
+            discount_percentage = None
+            if deal.original_price and deal.price < deal.original_price:
+                discount_percentage = ((deal.original_price - deal.price) / deal.original_price) * 100
+                discount_percentage = round(discount_percentage, 1)
+            
+            # First, send notification to the deal creator
+            if deal.user_id:
+                await notification_service.send_notification(
+                    template_id="flash_deal",
+                    user_id=deal.user_id,
+                    template_params={
+                        "deal_title": deal.title,
+                        "price": str(deal.price),
+                        "currency": deal.currency,
+                        "discount_percentage": str(discount_percentage) if discount_percentage else "N/A",
+                        "expiry_hours": str(deal.expires_at - datetime.utcnow()).split(".")[0] if deal.expires_at else "24 hours"
+                    },
+                    deal_id=deal.id,
+                    override_priority="high",
+                    metadata={
+                        "deal_id": str(deal.id),
+                        "is_flash_deal": True,
+                        "price": float(deal.price),
+                        "original_price": float(deal.original_price) if deal.original_price else None,
+                        "url": deal.url
+                    }
+                )
+                notifications_sent += 1
+            
+            # Find users who might be interested in this deal
+            # First, find users with matching goals
+            from sqlalchemy import select
+            from core.models.goal import Goal
+            
+            # Get the deal's category or use a default category for matching
+            deal_category = deal.category or "other"
+            
+            # Find goals that match this category or have no category specified
+            goals_query = select(Goal).where(
+                (Goal.status == "active") & 
+                ((Goal.item_category == deal_category) | (Goal.item_category == None))
+            )
+            
+            goals_result = await self.db.execute(goals_query)
+            matching_goals = goals_result.scalars().all()
+            
+            # Send notifications to users with matching goals, up to max_notifications
+            users_notified = set()
+            if deal.user_id:
+                users_notified.add(deal.user_id)  # Don't send duplicate to creator
+                
+            for goal in matching_goals:
+                if notifications_sent >= max_notifications:
+                    break
+                    
+                if goal.user_id and goal.user_id not in users_notified:
+                    # Check if the deal matches the goal's constraints
+                    if self._matches_goal_criteria(deal, goal):
+                        await notification_service.send_notification(
+                            template_id="flash_deal",
+                            user_id=goal.user_id,
+                            template_params={
+                                "deal_title": deal.title,
+                                "price": str(deal.price),
+                                "currency": deal.currency,
+                                "discount_percentage": str(discount_percentage) if discount_percentage else "N/A",
+                                "expiry_hours": str(deal.expires_at - datetime.utcnow()).split(".")[0] if deal.expires_at else "24 hours",
+                                "goal_title": goal.title
+                            },
+                            deal_id=deal.id,
+                            goal_id=goal.id,
+                            override_priority="high",
+                            metadata={
+                                "deal_id": str(deal.id),
+                                "goal_id": str(goal.id),
+                                "is_flash_deal": True,
+                                "price": float(deal.price),
+                                "original_price": float(deal.original_price) if deal.original_price else None,
+                                "url": deal.url
+                            }
+                        )
+                        users_notified.add(goal.user_id)
+                        notifications_sent += 1
+            
+            return notifications_sent
+            
+        except Exception as e:
+            logger.error(f"Error sending flash deal notifications: {str(e)}")
+            return notifications_sent
 
 def _map_ai_category_to_enum(category: str) -> str:
     """Map AI-generated category to a valid MarketCategory enum value."""

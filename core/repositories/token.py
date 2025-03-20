@@ -152,7 +152,9 @@ class TokenRepository:
         limit: int = 50,
         offset: int = 0,
         transaction_type: Optional[TransactionType] = None,
-        status: Optional[TransactionStatus] = None
+        status: Optional[TransactionStatus] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None
     ) -> List[TokenTransaction]:
         """Get user's transactions.
         
@@ -162,6 +164,8 @@ class TokenRepository:
             offset: Number of transactions to skip
             transaction_type: Optional filter by transaction type
             status: Optional filter by transaction status
+            start_date: Optional filter for transactions after this date
+            end_date: Optional filter for transactions before this date
             
         Returns:
             List of transaction records
@@ -179,6 +183,12 @@ class TokenRepository:
                 
             if status:
                 query = query.where(TokenTransaction.status == status)
+                
+            if start_date:
+                query = query.where(TokenTransaction.created_at >= start_date)
+                
+            if end_date:
+                query = query.where(TokenTransaction.created_at <= end_date)
                 
             query = query.order_by(desc(TokenTransaction.created_at))
             query = query.offset(offset).limit(limit)
@@ -571,7 +581,7 @@ class TokenRepository:
         limit: int = 100,
         offset: int = 0
     ) -> List[TokenTransaction]:
-        """Get user's transaction history.
+        """Get transaction history for a user.
         
         Args:
             user_id: User ID
@@ -579,27 +589,50 @@ class TokenRepository:
             offset: Offset for pagination
             
         Returns:
-            List of transaction records
+            List of transactions
             
         Raises:
-            DatabaseError: If there is an error retrieving the history
+            DatabaseError: If there is a database error
         """
         try:
-            result = await self.session.execute(
+            query = (
                 select(TokenTransaction)
                 .where(TokenTransaction.user_id == user_id)
-                .order_by(desc(TokenTransaction.created_at))
+                .order_by(TokenTransaction.timestamp.desc())
                 .offset(offset)
                 .limit(limit)
             )
-            return list(result.scalars().all())
             
-        except SQLAlchemyError as e:
+            result = await self.session.execute(query)
+            transactions = result.scalars().all()
+            
+            return list(transactions)
+        except Exception as e:
             logger.error(f"Error getting transaction history: {str(e)}")
             raise DatabaseError(
                 operation="get_transaction_history",
-                message=f"Failed to get transaction history: {str(e)}"
+                reason=f"Failed to get transaction history: {str(e)}",
+                details={"user_id": user_id}
             )
+    
+    # Add compatibility method for get_transactions
+    async def get_transactions(
+        self,
+        user_id: str,
+        limit: int = 100,
+        offset: int = 0
+    ) -> List[TokenTransaction]:
+        """Get transactions for a user (alias for get_transaction_history).
+        
+        Args:
+            user_id: User ID
+            limit: Maximum number of transactions to return
+            offset: Offset for pagination
+            
+        Returns:
+            List of transactions
+        """
+        return await self.get_transaction_history(user_id, limit, offset)
 
     async def create_wallet(
         self,
@@ -868,8 +901,8 @@ class TokenRepository:
                     and_(
                         TokenTransaction.created_at < cutoff_date,
                         TokenTransaction.status.in_([
-                            TransactionStatus.COMPLETED,
-                            TransactionStatus.FAILED
+                            "completed",
+                            "failed"
                         ])
                     )
                 )

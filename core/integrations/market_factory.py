@@ -2,6 +2,7 @@
 
 from typing import List, Dict, Any, Optional
 from pydantic import SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
 from core.exceptions.market_exceptions import MarketIntegrationError
@@ -15,12 +16,14 @@ class MarketIntegrationFactory:
     def __init__(
         self,
         redis_client=None,
-        api_key: Optional[SecretStr] = None
+        api_key: Optional[SecretStr] = None,
+        db: Optional[AsyncSession] = None
     ):
         """Initialize factory."""
         self.redis_client = redis_client
         self._scraper_api = None
         self._api_key = api_key or settings.SCRAPER_API_KEY
+        self.db = db
 
     @property
     def scraper_api(self) -> ScraperAPIService:
@@ -28,7 +31,8 @@ class MarketIntegrationFactory:
         if not self._scraper_api:
             self._scraper_api = ScraperAPIService(
                 api_key=self._api_key,
-                redis_client=self.redis_client
+                redis_client=self.redis_client,
+                db=self.db
             )
         return self._scraper_api
 

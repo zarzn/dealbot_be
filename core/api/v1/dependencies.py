@@ -1,7 +1,8 @@
 """API dependencies."""
 
 from typing import AsyncGenerator, Optional
-from fastapi import Depends, BackgroundTasks, Request
+from fastapi import Depends, BackgroundTasks, Request, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
@@ -24,12 +25,19 @@ from core.repositories.deal import DealRepository
 from core.repositories.goal import GoalRepository
 from core.repositories.token import TokenRepository
 from core.repositories.analytics import AnalyticsRepository
+from core.config import settings
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
+# Make OAuth2 scheme with auto_error=False to make token optional
+oauth2_scheme_optional = OAuth2PasswordBearer(
+    tokenUrl=f"{settings.API_PREFIX}/auth/login",
+    auto_error=False
+)
+
 async def get_current_user_optional(
-    token: Optional[str] = Depends(oauth2_scheme),
+    token: Optional[str] = Depends(oauth2_scheme_optional),
     db: AsyncSession = Depends(get_db)
 ) -> Optional[User]:
     """Get current user if authenticated, otherwise return None."""

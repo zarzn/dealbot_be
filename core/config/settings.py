@@ -231,7 +231,9 @@ class Settings(BaseSettings):
             "/api/v1/docs",
             "/api/v1/openapi.json",
             "/api/v1/health",
-            "/api/v1/metrics"
+            "/api/v1/metrics",
+            "/api/v1/deals/public",
+            "/api/v1/deals/open-public"
         ]
     )
 

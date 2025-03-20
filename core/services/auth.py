@@ -52,6 +52,8 @@ from core.exceptions import (
 from core.database import get_db
 from core.services.redis import get_redis_service, RedisService
 from core.services.token import TokenService, get_token_service
+from core.models.enums import NotificationType, NotificationPriority
+from core.notifications import TemplatedNotificationService
 
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
@@ -990,7 +992,14 @@ class AuthService:
                 await self.db.flush()
                 await self.db.refresh(user)
                 
+                # Send registration confirmation notification
+                notification_service = TemplatedNotificationService(self.db)
+                await notification_service.send_registration_confirmation(
+                    user_id=user.id
+                )
+                
                 logger.info(f"User registered successfully: {user.email}")
+                
                 return user
             except Exception as inner_e:
                 logger.error(f"Error creating user object: {str(inner_e)}")

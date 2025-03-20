@@ -66,6 +66,66 @@ class UserService:
         await self.session.refresh(user)
         return user
 
+    async def get_active_users(self) -> list[User]:
+        """Get all active users.
+        
+        Returns:
+            List of active users
+        """
+        from core.models.user import UserStatus
+        
+        query = select(User).where(User.status == UserStatus.ACTIVE.value)
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+    
+    async def get_users_by_group(self, group_name: str) -> list[User]:
+        """Get users belonging to a specific group.
+        
+        This can be based on user preferences, role, or any other criteria 
+        that defines a user group.
+        
+        Args:
+            group_name: The name of the group to filter by
+            
+        Returns:
+            List of users in the specified group
+        """
+        users = []
+        
+        # Handle special group types
+        if group_name == "admin":
+            # Get admin users
+            query = select(User).where(User.role == "admin")
+            result = await self.session.execute(query)
+            users = list(result.scalars().all())
+        elif group_name == "premium":
+            # Get premium users (subscription_tier can be customized based on your model)
+            query = select(User).where(User.subscription_tier == "premium")
+            result = await self.session.execute(query)
+            users = list(result.scalars().all())
+        elif group_name == "new_users":
+            # Get users created in the last 30 days
+            from datetime import timedelta
+            thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+            query = select(User).where(User.created_at >= thirty_days_ago)
+            result = await self.session.execute(query)
+            users = list(result.scalars().all())
+        else:
+            # For custom groups, check if they exist in user preferences
+            # For example, if users have "groups" in their preferences
+            query = select(User).where(User.status == 'active')
+            result = await self.session.execute(query)
+            all_active_users = list(result.scalars().all())
+            
+            # Filter users who have the group in their preferences
+            for user in all_active_users:
+                user_preferences = getattr(user, 'preferences', {}) or {}
+                user_groups = user_preferences.get('groups', [])
+                if group_name in user_groups:
+                    users.append(user)
+        
+        return users
+
     async def get_user_preferences(self, user_id: UUID) -> UserPreferences:
         """Get user preferences."""
         query = select(UserPreferences).where(UserPreferences.user_id == user_id)

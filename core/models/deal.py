@@ -49,6 +49,8 @@ class DealSearch(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
     use_realtime_scraping: Optional[bool] = Field(default=False)
     use_ai_enhanced_search: Optional[bool] = Field(default=True, description="Whether to use AI to enhance search results by analyzing query and filtering results")
+    perform_ai_analysis: Optional[bool] = Field(default=False, description="Whether to perform AI analysis on the search results")
+    max_results: Optional[int] = Field(default=10, description="Maximum number of results to return for AI analysis")
 
     @field_validator("max_price")
     @classmethod

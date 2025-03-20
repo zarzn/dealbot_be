@@ -361,7 +361,49 @@ def create_default_user_docker():
             check=True
         )
         
-        logger.info(f"Test user created successfully with ID: {test_user_id}")
+        # Add token balance for the test user
+        token_balance_id = str(uuid4())
+        initial_balance = 1000.0  # Start with 1000 tokens
+        
+        insert_token_balance_query = f"""
+        INSERT INTO token_balances (
+            id, user_id, balance, created_at, updated_at
+        ) VALUES (
+            '{token_balance_id}', '{test_user_id}', {initial_balance}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        """
+        
+        subprocess.run(
+            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', insert_token_balance_query],
+            check=True
+        )
+        
+        # Add a few token transactions for the test user
+        for i in range(5):
+            tx_id = str(uuid4())
+            amount = 50.0 + (i * 10)  # Varying amounts
+            tx_type = "credit" if i % 2 == 0 else "deduction"
+            description = f"Test transaction #{i+1}" if tx_type == "credit" else f"Service fee #{i+1}"
+            status = "completed"
+            timestamp = f"CURRENT_TIMESTAMP - INTERVAL '{i} days'"
+            
+            insert_tx_query = f"""
+            INSERT INTO token_transactions (
+                id, user_id, amount, type, status, meta_data,
+                created_at, updated_at, completed_at
+            ) VALUES (
+                '{tx_id}', '{test_user_id}', {amount}, '{tx_type}', '{status}', 
+                '{{"description": "{description}", "source": "test_data"}}', 
+                {timestamp}, {timestamp}, {timestamp}
+            )
+            """
+            
+            subprocess.run(
+                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', insert_tx_query],
+                check=True
+            )
+        
+        logger.info(f"Test user created successfully with ID: {test_user_id} and initial balance of {initial_balance} tokens")
         return True
         
     except Exception as e:
@@ -468,89 +510,193 @@ def create_default_markets_docker():
     """Create default markets data for Docker environment."""
     try:
         sql_commands = [
-            # Insert Amazon market
+            # Insert Amazon market with comprehensive data
             """
-            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            INSERT INTO markets (
+                id, name, type, description, status, api_endpoint, config, 
+                is_active, error_count, requests_today, total_requests, 
+                success_rate, avg_response_time, rate_limit, 
+                created_at, updated_at
+            )
             VALUES (
-                gen_random_uuid(), 
+                '363b6f97-b37f-41f2-9170-721fafa68b5e', 
                 'Amazon', 
                 'amazon', 
                 'Amazon Marketplace Integration', 
                 'active', 
                 'https://api.amazon.com', 
-                '{"api_key": "DEMO_KEY", "region": "us-east-1", "throttle_rate": 60}',
+                '{"api_key": "SAMPLE_KEY", "region": "us-east-1"}',
+                TRUE,
+                15,
+                125,
+                1000,
+                0.95,
+                180.5,
+                100,
                 NOW(), 
                 NOW()
             ) ON CONFLICT (name) DO NOTHING;
             """,
             
-            # Insert Walmart market
+            # Insert Walmart market with comprehensive data
             """
-            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            INSERT INTO markets (
+                id, name, type, description, status, api_endpoint, config, 
+                is_active, error_count, requests_today, total_requests, 
+                success_rate, avg_response_time, rate_limit, 
+                created_at, updated_at
+            )
             VALUES (
-                gen_random_uuid(), 
+                'aadf3354-5d6e-4e83-b507-7e0871535bd1', 
                 'Walmart', 
                 'walmart', 
                 'Walmart Marketplace Integration', 
                 'active', 
                 'https://api.walmart.com', 
-                '{"api_key": "DEMO_KEY", "throttle_rate": 50}',
+                '{"api_key": "SAMPLE_KEY"}',
+                TRUE,
+                10,
+                85,
+                850,
+                0.90,
+                210.3,
+                100,
                 NOW(), 
                 NOW()
             ) ON CONFLICT (name) DO NOTHING;
             """,
             
-            # Insert eBay market
+            # Insert Google Shopping market with comprehensive data
             """
-            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            INSERT INTO markets (
+                id, name, type, description, status, api_endpoint, config, 
+                is_active, error_count, requests_today, total_requests, 
+                success_rate, avg_response_time, rate_limit, 
+                created_at, updated_at
+            )
             VALUES (
-                gen_random_uuid(), 
-                'eBay', 
-                'ebay', 
-                'eBay Marketplace Integration', 
+                '828c2bb8-005e-458d-bd20-cd80e7a45b6d', 
+                'Google Shopping', 
+                'google_shopping', 
+                'Google Shopping Integration', 
                 'active', 
-                'https://api.ebay.com', 
-                '{"api_key": "DEMO_KEY", "sandbox": true}',
+                'https://api.googleshopping.com', 
+                '{"api_key": "SAMPLE_KEY", "region": "us"}',
+                TRUE,
+                8,
+                95,
+                720,
+                0.88,
+                195.7,
+                100,
                 NOW(), 
                 NOW()
             ) ON CONFLICT (name) DO NOTHING;
             """,
             
-            # Create sample deals - using hardcoded system user ID
+            # Insert real deals for Amazon market
             """
-            INSERT INTO deals (id, title, description, url, price, currency, market_id, created_at, updated_at, status, user_id)
-            SELECT 
-                gen_random_uuid(), 
-                'Sample Electronics Deal', 
-                'Great deal on electronics item', 
-                'https://amazon.com/sample1', 
-                99.99, 
-                'USD', 
-                id, 
-                NOW(), 
-                NOW(),
+            INSERT INTO deals (
+                id, title, description, url, image_url, price, original_price, 
+                currency, source, category, 
+                is_active, status, market_id, user_id,
+                seller_info, availability, score, deal_metadata, price_metadata,
+                created_at, updated_at, found_at
+            )
+            VALUES (
+                '502e7599-6006-4a5a-8946-b68713440ee1', 
+                'Sony WH-1000XM4 Wireless Noise Cancelling Headphones',
+                'Industry-leading noise cancellation with Dual Noise Sensor technology',
+                'https://amazon.com/sony-wh1000xm4',
+                'https://m.media-amazon.com/images/I/51SKmu2G9FL._AC_SX522_.jpg',
+                249.99,
+                348.00,
+                'USD',
+                'amazon',
+                'electronics',
+                TRUE,
                 'active',
-                '00000000-0000-4000-a000-000000000001'
-            FROM markets WHERE name = 'Amazon'
-            ON CONFLICT DO NOTHING;
+                '363b6f97-b37f-41f2-9170-721fafa68b5e',
+                '00000000-0000-4000-a000-000000000001',
+                '{"name": "Sony Store", "rating": 4.8}',
+                '{"in_stock": true, "quantity": 120}',
+                92.5,
+                '{"vendor": "Sony", "is_verified": true}',
+                '{"price_history": [{"price": "348.00", "timestamp": "2023-12-15T00:00:00Z", "source": "historical"}, {"price": "299.99", "timestamp": "2023-12-25T00:00:00Z", "source": "historical"}, {"price": "249.99", "timestamp": "2024-01-05T00:00:00Z", "source": "current"}]}',
+                NOW(),
+                NOW(),
+                NOW() - INTERVAL '5 days'
+            ) ON CONFLICT DO NOTHING;
             """,
             
+            # Insert real deals for Walmart market
             """
-            INSERT INTO deals (id, title, description, url, price, currency, market_id, created_at, updated_at, status, user_id)
-            SELECT 
-                gen_random_uuid(), 
-                'Walmart Special Offer', 
-                'Limited time offer from Walmart', 
-                'https://walmart.com/sample1', 
-                49.99, 
-                'USD', 
-                id, 
-                NOW(), 
-                NOW(),
+            INSERT INTO deals (
+                id, title, description, url, image_url, price, original_price, 
+                currency, source, category, 
+                is_active, status, market_id, user_id,
+                seller_info, availability, score, deal_metadata, price_metadata,
+                created_at, updated_at, found_at
+            )
+            VALUES (
+                'a1b2c3d4-e5f6-4a5a-8946-123456789abc', 
+                'iRobot Roomba i3 EVO Robot Vacuum',
+                'Smart robot vacuum with Wi-Fi connectivity and personalized cleaning suggestions',
+                'https://walmart.com/roomba-i3',
+                'https://i5.walmartimages.com/seo/iRobot-Roomba-i3-EVO-3150-Wi-Fi-Robotic-Vacuum-Cleaner-Gray_3bced1e6-e4ad-4ad7-8889-4fa6ae1aff91.e1d1fd52ee25f4d68cff1f06d1855ebe.jpeg',
+                299.00,
+                399.99,
+                'USD',
+                'walmart',
+                'home',
+                TRUE,
                 'active',
-                '00000000-0000-4000-a000-000000000001'
-            FROM markets WHERE name = 'Walmart'
-            ON CONFLICT DO NOTHING;
+                'aadf3354-5d6e-4e83-b507-7e0871535bd1',
+                '00000000-0000-4000-a000-000000000001',
+                '{"name": "Walmart", "rating": 4.6}',
+                '{"in_stock": true, "quantity": 45}',
+                88.0,
+                '{"vendor": "iRobot", "is_verified": true}',
+                '{"price_history": [{"price": "399.99", "timestamp": "2023-12-01T00:00:00Z", "source": "historical"}, {"price": "349.99", "timestamp": "2023-12-20T00:00:00Z", "source": "historical"}, {"price": "299.00", "timestamp": "2024-01-10T00:00:00Z", "source": "current"}]}',
+                NOW(),
+                NOW(),
+                NOW() - INTERVAL '3 days'
+            ) ON CONFLICT DO NOTHING;
+            """,
+            
+            # Insert real deals for Google Shopping market
+            """
+            INSERT INTO deals (
+                id, title, description, url, image_url, price, original_price, 
+                currency, source, category, 
+                is_active, status, market_id, user_id,
+                seller_info, availability, score, deal_metadata, price_metadata,
+                created_at, updated_at, found_at
+            )
+            VALUES (
+                'f9e8d7c6-b5a4-4a5a-8946-987654321fed', 
+                'Apple MacBook Air 13.3" Laptop M1 Chip',
+                'Apple M1 chip with 8-core CPU and 7-core GPU, 8GB RAM, 256GB SSD',
+                'https://googleshopping.com/macbook-air-m1',
+                'https://pisces.bbystatic.com/image2/BestBuy_US/images/products/6366/6366606_sd.jpg',
+                799.99,
+                999.00,
+                'USD',
+                'google_shopping',
+                'electronics',
+                TRUE,
+                'active',
+                '828c2bb8-005e-458d-bd20-cd80e7a45b6d',
+                '00000000-0000-4000-a000-000000000001',
+                '{"name": "TechDeals", "rating": 4.9}',
+                '{"in_stock": true, "quantity": 12}',
+                95.0,
+                '{"vendor": "Apple", "is_verified": true}',
+                '{"price_history": [{"price": "999.00", "timestamp": "2023-11-25T00:00:00Z", "source": "historical"}, {"price": "849.99", "timestamp": "2023-12-15T00:00:00Z", "source": "historical"}, {"price": "799.99", "timestamp": "2024-01-01T00:00:00Z", "source": "current"}]}',
+                NOW(),
+                NOW(),
+                NOW() - INTERVAL '7 days'
+            ) ON CONFLICT DO NOTHING;
             """
         ]
         
@@ -560,10 +706,10 @@ def create_default_markets_docker():
                 check=True,
             )
             
-        logger.info("Default markets created successfully (Docker)")
+        logger.info("Default markets and deals created successfully (Docker)")
         return True
     except Exception as e:
-        logger.error(f"Failed to create default markets (Docker): {str(e)}")
+        logger.error(f"Failed to create default markets and deals (Docker): {str(e)}")
         return False
 
 def create_default_markets_local():
@@ -582,103 +728,208 @@ def create_default_markets_local():
         
         # SQL commands to insert default market data
         sql_commands = [
-            # Insert Amazon market
+            # Insert Amazon market with comprehensive data
             """
-            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            INSERT INTO markets (
+                id, name, type, description, status, api_endpoint, config, 
+                is_active, error_count, requests_today, total_requests, 
+                success_rate, avg_response_time, rate_limit, 
+                created_at, updated_at
+            )
             VALUES (
-                gen_random_uuid(), 
+                '363b6f97-b37f-41f2-9170-721fafa68b5e', 
                 'Amazon', 
                 'amazon', 
                 'Amazon Marketplace Integration', 
                 'active', 
                 'https://api.amazon.com', 
-                '{"api_key": "DEMO_KEY", "region": "us-east-1", "throttle_rate": 60}',
+                '{"api_key": "SAMPLE_KEY", "region": "us-east-1"}',
+                TRUE,
+                15,
+                125,
+                1000,
+                0.95,
+                180.5,
+                100,
                 NOW(), 
                 NOW()
             ) ON CONFLICT (name) DO NOTHING;
             """,
             
-            # Insert Walmart market
+            # Insert Walmart market with comprehensive data
             """
-            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            INSERT INTO markets (
+                id, name, type, description, status, api_endpoint, config, 
+                is_active, error_count, requests_today, total_requests, 
+                success_rate, avg_response_time, rate_limit, 
+                created_at, updated_at
+            )
             VALUES (
-                gen_random_uuid(), 
+                'aadf3354-5d6e-4e83-b507-7e0871535bd1', 
                 'Walmart', 
                 'walmart', 
                 'Walmart Marketplace Integration', 
                 'active', 
                 'https://api.walmart.com', 
-                '{"api_key": "DEMO_KEY", "throttle_rate": 50}',
+                '{"api_key": "SAMPLE_KEY"}',
+                TRUE,
+                10,
+                85,
+                850,
+                0.90,
+                210.3,
+                100,
                 NOW(), 
                 NOW()
             ) ON CONFLICT (name) DO NOTHING;
             """,
             
-            # Insert eBay market
+            # Insert Google Shopping market with comprehensive data
             """
-            INSERT INTO markets (id, name, type, description, status, api_endpoint, config, created_at, updated_at)
+            INSERT INTO markets (
+                id, name, type, description, status, api_endpoint, config, 
+                is_active, error_count, requests_today, total_requests, 
+                success_rate, avg_response_time, rate_limit, 
+                created_at, updated_at
+            )
             VALUES (
-                gen_random_uuid(), 
-                'eBay', 
-                'ebay', 
-                'eBay Marketplace Integration', 
+                '828c2bb8-005e-458d-bd20-cd80e7a45b6d', 
+                'Google Shopping', 
+                'google_shopping', 
+                'Google Shopping Integration', 
                 'active', 
-                'https://api.ebay.com', 
-                '{"api_key": "DEMO_KEY", "sandbox": true}',
+                'https://api.googleshopping.com', 
+                '{"api_key": "SAMPLE_KEY", "region": "us"}',
+                TRUE,
+                8,
+                95,
+                720,
+                0.88,
+                195.7,
+                100,
                 NOW(), 
                 NOW()
             ) ON CONFLICT (name) DO NOTHING;
             """,
             
-            # Create sample deals - using hardcoded system user ID
+            # Insert real deals for Amazon market
             """
-            INSERT INTO deals (id, title, description, url, price, currency, market_id, created_at, updated_at, status, user_id)
-            SELECT 
-                gen_random_uuid(), 
-                'Sample Electronics Deal', 
-                'Great deal on electronics item', 
-                'https://amazon.com/sample1', 
-                99.99, 
-                'USD', 
-                id, 
-                NOW(), 
-                NOW(),
+            INSERT INTO deals (
+                id, title, description, url, image_url, price, original_price, 
+                currency, source, category, 
+                is_active, status, market_id, user_id,
+                seller_info, availability, score, deal_metadata, price_metadata,
+                created_at, updated_at, found_at
+            )
+            VALUES (
+                '502e7599-6006-4a5a-8946-b68713440ee1', 
+                'Sony WH-1000XM4 Wireless Noise Cancelling Headphones',
+                'Industry-leading noise cancellation with Dual Noise Sensor technology',
+                'https://amazon.com/sony-wh1000xm4',
+                'https://m.media-amazon.com/images/I/51SKmu2G9FL._AC_SX522_.jpg',
+                249.99,
+                348.00,
+                'USD',
+                'amazon',
+                'electronics',
+                TRUE,
                 'active',
-                '00000000-0000-4000-a000-000000000001'
-            FROM markets WHERE name = 'Amazon'
-            ON CONFLICT DO NOTHING;
+                '363b6f97-b37f-41f2-9170-721fafa68b5e',
+                '00000000-0000-4000-a000-000000000001',
+                '{"name": "Sony Store", "rating": 4.8}',
+                '{"in_stock": true, "quantity": 120}',
+                92.5,
+                '{"vendor": "Sony", "is_verified": true}',
+                '{"price_history": [{"price": "348.00", "timestamp": "2023-12-15T00:00:00Z", "source": "historical"}, {"price": "299.99", "timestamp": "2023-12-25T00:00:00Z", "source": "historical"}, {"price": "249.99", "timestamp": "2024-01-05T00:00:00Z", "source": "current"}]}',
+                NOW(),
+                NOW(),
+                NOW() - INTERVAL '5 days'
+            ) ON CONFLICT DO NOTHING;
             """,
             
+            # Insert real deals for Walmart market
             """
-            INSERT INTO deals (id, title, description, url, price, currency, market_id, created_at, updated_at, status, user_id)
-            SELECT 
-                gen_random_uuid(), 
-                'Walmart Special Offer', 
-                'Limited time offer from Walmart', 
-                'https://walmart.com/sample1', 
-                49.99, 
-                'USD', 
-                id, 
-                NOW(), 
-                NOW(),
+            INSERT INTO deals (
+                id, title, description, url, image_url, price, original_price, 
+                currency, source, category, 
+                is_active, status, market_id, user_id,
+                seller_info, availability, score, deal_metadata, price_metadata,
+                created_at, updated_at, found_at
+            )
+            VALUES (
+                'a1b2c3d4-e5f6-4a5a-8946-123456789abc', 
+                'iRobot Roomba i3 EVO Robot Vacuum',
+                'Smart robot vacuum with Wi-Fi connectivity and personalized cleaning suggestions',
+                'https://walmart.com/roomba-i3',
+                'https://i5.walmartimages.com/seo/iRobot-Roomba-i3-EVO-3150-Wi-Fi-Robotic-Vacuum-Cleaner-Gray_3bced1e6-e4ad-4ad7-8889-4fa6ae1aff91.e1d1fd52ee25f4d68cff1f06d1855ebe.jpeg',
+                299.00,
+                399.99,
+                'USD',
+                'walmart',
+                'home',
+                TRUE,
                 'active',
-                '00000000-0000-4000-a000-000000000001'
-            FROM markets WHERE name = 'Walmart'
-            ON CONFLICT DO NOTHING;
+                'aadf3354-5d6e-4e83-b507-7e0871535bd1',
+                '00000000-0000-4000-a000-000000000001',
+                '{"name": "Walmart", "rating": 4.6}',
+                '{"in_stock": true, "quantity": 45}',
+                88.0,
+                '{"vendor": "iRobot", "is_verified": true}',
+                '{"price_history": [{"price": "399.99", "timestamp": "2023-12-01T00:00:00Z", "source": "historical"}, {"price": "349.99", "timestamp": "2023-12-20T00:00:00Z", "source": "historical"}, {"price": "299.00", "timestamp": "2024-01-10T00:00:00Z", "source": "current"}]}',
+                NOW(),
+                NOW(),
+                NOW() - INTERVAL '3 days'
+            ) ON CONFLICT DO NOTHING;
+            """,
+            
+            # Insert real deals for Google Shopping market
+            """
+            INSERT INTO deals (
+                id, title, description, url, image_url, price, original_price, 
+                currency, source, category, 
+                is_active, status, market_id, user_id,
+                seller_info, availability, score, deal_metadata, price_metadata,
+                created_at, updated_at, found_at
+            )
+            VALUES (
+                'f9e8d7c6-b5a4-4a5a-8946-987654321fed', 
+                'Apple MacBook Air 13.3" Laptop M1 Chip',
+                'Apple M1 chip with 8-core CPU and 7-core GPU, 8GB RAM, 256GB SSD',
+                'https://googleshopping.com/macbook-air-m1',
+                'https://pisces.bbystatic.com/image2/BestBuy_US/images/products/6366/6366606_sd.jpg',
+                799.99,
+                999.00,
+                'USD',
+                'google_shopping',
+                'electronics',
+                TRUE,
+                'active',
+                '828c2bb8-005e-458d-bd20-cd80e7a45b6d',
+                '00000000-0000-4000-a000-000000000001',
+                '{"name": "TechDeals", "rating": 4.9}',
+                '{"in_stock": true, "quantity": 12}',
+                95.0,
+                '{"vendor": "Apple", "is_verified": true}',
+                '{"price_history": [{"price": "999.00", "timestamp": "2023-11-25T00:00:00Z", "source": "historical"}, {"price": "849.99", "timestamp": "2023-12-15T00:00:00Z", "source": "historical"}, {"price": "799.99", "timestamp": "2024-01-01T00:00:00Z", "source": "current"}]}',
+                NOW(),
+                NOW(),
+                NOW() - INTERVAL '7 days'
+            ) ON CONFLICT DO NOTHING;
             """
         ]
         
+        # Execute each SQL command
         for sql in sql_commands:
             conn.execute(text(sql))
             
+        # Commit the transaction
         conn.execute(text("COMMIT"))
-        
-        logger.info("Default markets created successfully (Local)")
         conn.close()
-        engine.dispose()
+        
+        logger.info("Default markets and deals created successfully (Local)")
         return True
     except Exception as e:
-        logger.error(f"Failed to create default markets (Local): {str(e)}")
+        logger.error(f"Failed to create default markets and deals (Local): {str(e)}")
         return False
 
 def determine_environment():
@@ -738,61 +989,88 @@ def add_initial_tokens_docker():
             return False
         
         user_id = lines[2].strip()
-        logger.info(f"Adding tokens to test user with ID: {user_id}")
+        logger.info(f"User found with ID: {user_id}, ensuring token transactions exist")
         
-        # Check if user already has a balance record
-        balance_result = subprocess.run(
+        # Check if user already has transactions
+        tx_result = subprocess.run(
             ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
-             f"SELECT id FROM token_balances WHERE user_id = '{user_id}'"],
+             f"SELECT COUNT(*) FROM token_transactions WHERE user_id = '{user_id}'"],
             capture_output=True,
             text=True,
             check=True
         )
         
+        # Extract transaction count
+        try:
+            tx_lines = tx_result.stdout.strip().split('\n')
+            if len(tx_lines) < 4:
+                tx_count = 0
+            else:
+                tx_count = int(tx_lines[2].strip())
+                
+            if tx_count > 0:
+                logger.info(f"User already has {tx_count} token transactions, skipping additional creation")
+                return True
+                
+        except Exception as count_err:
+            logger.error(f"Error parsing transaction count: {str(count_err)}")
+            # Continue anyway to try to add transactions
+        
         # Current timestamp for all records
         timestamp = "NOW()"
         
-        if "0 rows" in balance_result.stdout:
-            # Create balance record if it doesn't exist
-            subprocess.run(
-                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
-                 f"""
-                 INSERT INTO token_balances (user_id, balance, updated_at, created_at)
-                 VALUES ('{user_id}', 100.0, {timestamp}, {timestamp})
-                 """],
-                check=True
-            )
-            logger.info(f"Created balance record for test user with 100 tokens")
-        else:
-            # Update balance if it exists
-            subprocess.run(
-                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
-                 f"""
-                 UPDATE token_balances SET balance = 100.0, updated_at = {timestamp}
-                 WHERE user_id = '{user_id}'
-                 """],
-                check=True
-            )
-            logger.info(f"Updated balance for test user to 100 tokens")
+        # Standard token amount
+        token_amount = 1000.0
         
-        # Create a transaction record for the initial tokens
-        subprocess.run(
-            ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
-             f"""
-             INSERT INTO token_transactions (
-                user_id, type, amount, status, meta_data, created_at
-             ) VALUES (
-                '{user_id}', 
-                'reward', 
-                100.0, 
-                'completed', 
-                '{{"reason": "Initial token allocation"}}', 
-                {timestamp}
-             )
-             """],
-            check=True
-        )
-        logger.info(f"Created transaction record for initial token allocation")
+        # Check if user has token balance but no transactions - add a main transaction
+        try:
+            transaction_query = f"""
+            INSERT INTO token_transactions (
+                id, user_id, amount, type, status, meta_data,
+                created_at, updated_at, completed_at
+            ) VALUES (
+                '{str(uuid4())}', '{user_id}', {token_amount}, 'credit', 'completed', 
+                '{{"description": "Initial balance allocation", "source": "system"}}', 
+                {timestamp}, {timestamp}, {timestamp}
+            )
+            """
+            
+            subprocess.run(
+                ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
+                transaction_query],
+                check=True
+            )
+            logger.info(f"Created initial transaction record for {token_amount} tokens")
+            
+            # Add a few more transactions for history
+            for i in range(3):
+                tx_id = str(uuid4())
+                amount = 25.0 + (i * 15)  # Different amounts than the ones in create_test_user
+                tx_type = "credit" if i % 2 == 0 else "deduction"
+                reason = f"Sample {tx_type} transaction #{i+1}"
+                past_timestamp = f"NOW() - INTERVAL '{i+7} days'"
+                
+                sample_tx_query = f"""
+                INSERT INTO token_transactions (
+                    id, user_id, amount, type, status, meta_data,
+                    created_at, updated_at, completed_at
+                ) VALUES (
+                    '{tx_id}', '{user_id}', {amount}, '{tx_type}', 'completed', 
+                    '{{"description": "{reason}", "source": "system"}}', 
+                    {past_timestamp}, {past_timestamp}, {past_timestamp}
+                )
+                """
+                
+                subprocess.run(
+                    ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
+                    sample_tx_query],
+                    check=True
+                )
+                logger.info(f"Created additional sample transaction: {reason}")
+                
+        except Exception as tx_error:
+            logger.error(f"Failed to create transaction record(s): {str(tx_error)}")
+            # Continue execution even if transaction record creation fails
         
         return True
     except Exception as e:
@@ -1094,7 +1372,7 @@ def create_test_goals_local():
 def create_test_deals_docker():
     """Create test deals for the test user in Docker environment."""
     try:
-        # Check if test user exists and get the ID
+        # Check if test user exists
         result = subprocess.run(
             ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
              "SELECT id FROM users WHERE email = 'test@test.com'"],
@@ -1103,21 +1381,20 @@ def create_test_deals_docker():
             check=True
         )
         
-        # If no test user, skip deal creation
         if "0 rows" in result.stdout:
             logger.info("Test user does not exist, skipping test deals creation (Docker)")
             return True
         
         # Extract user ID from the result
         lines = result.stdout.strip().split('\n')
-        if len(lines) < 4:  # Header + separator + data + row count
+        if len(lines) < 4:
             logger.error("Could not parse user ID from database query result")
             return False
         
         user_id = lines[2].strip()
         logger.info(f"Creating test deals for user with ID: {user_id}")
         
-        # Get a market ID
+        # Check if there's a market we can use
         market_result = subprocess.run(
             ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
              "SELECT id FROM markets LIMIT 1"],
@@ -1126,7 +1403,7 @@ def create_test_deals_docker():
             check=True
         )
         
-        # If no markets, create one
+        # If no market exists, create one
         if "0 rows" in market_result.stdout:
             logger.info("No markets found, creating a test market")
             market_id = str(uuid.uuid4())
@@ -1134,10 +1411,11 @@ def create_test_deals_docker():
                 ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
                  f"""
                  INSERT INTO markets (
-                     id, name, url, status, type, created_at, updated_at
+                     id, name, type, description, status, api_endpoint, config, 
+                     is_active, created_at, updated_at
                  ) VALUES (
-                     '{market_id}', 'Test Market', 'https://testmarket.com', 'active', 'test',
-                     NOW(), NOW()
+                     '{market_id}', 'Test Market', 'test', 'Test Market for Deals', 'active', 
+                     'https://api.testmarket.com', '{{}}', true, NOW(), NOW()
                  )
                  """],
                 check=True
@@ -1145,7 +1423,7 @@ def create_test_deals_docker():
         else:
             # Extract market ID from the result
             market_lines = market_result.stdout.strip().split('\n')
-            if len(market_lines) < 4:  # Header + separator + data + row count
+            if len(market_lines) < 4:
                 logger.error("Could not parse market ID from database query result")
                 return False
             
@@ -1158,14 +1436,22 @@ def create_test_deals_docker():
             ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
              f"""
              INSERT INTO deals (
-                 id, user_id, market_id, title, description, url, price, 
-                 original_price, currency, source, image_url, category, 
-                 status, created_at, updated_at
+                 id, user_id, market_id, title, description, url, image_url, 
+                 price, original_price, currency, source, category, 
+                 status, is_active, seller_info, availability, score,
+                 deal_metadata, price_metadata, created_at, updated_at, found_at
              ) VALUES (
                  '{str(uuid.uuid4())}', '{user_id}', '{market_id}', 'Gaming Laptop for Sale', 
                  'High-performance gaming laptop with RTX 3080', 'https://testmarket.com/deals/gaming-laptop',
-                 1200.00, 1500.00, 'USD', 'manual', 'https://example.com/images/laptop.jpg', 'electronics',
-                 'active', NOW(), NOW()
+                 'https://example.com/images/laptop.jpg',
+                 1200.00, 1500.00, 'USD', 'manual', 'electronics',
+                 'active', TRUE, 
+                 '{{"name": "Test Seller", "rating": 4.7}}',
+                 '{{"in_stock": true, "quantity": 50}}',
+                 90.5,
+                 '{{"vendor": "ASUS", "is_verified": true}}',
+                 '{{"price_history": [{{"price": "1500.00", "timestamp": "2023-11-01T00:00:00Z", "source": "historical"}}, {{"price": "1200.00", "timestamp": "2024-01-01T00:00:00Z", "source": "current"}}]}}',
+                 NOW(), NOW(), NOW() - INTERVAL '2 days'
              )
              """],
             check=True
@@ -1175,14 +1461,22 @@ def create_test_deals_docker():
             ['docker', 'exec', 'deals_postgres', 'psql', '-U', 'postgres', '-d', 'agentic_deals', '-c', 
              f"""
              INSERT INTO deals (
-                 id, user_id, market_id, title, description, url, price, 
-                 original_price, currency, source, image_url, category, 
-                 status, created_at, updated_at
+                 id, user_id, market_id, title, description, url, image_url, 
+                 price, original_price, currency, source, category, 
+                 status, is_active, seller_info, availability, score,
+                 deal_metadata, price_metadata, created_at, updated_at, found_at
              ) VALUES (
                  '{str(uuid.uuid4())}', '{user_id}', '{market_id}', 'Wireless Headphones', 
                  'Noise-cancelling wireless headphones', 'https://testmarket.com/deals/headphones',
-                 200.00, 250.00, 'USD', 'manual', 'https://example.com/images/headphones.jpg', 'electronics',
-                 'active', NOW(), NOW()
+                 'https://example.com/images/headphones.jpg',
+                 200.00, 250.00, 'USD', 'manual', 'electronics',
+                 'active', TRUE, 
+                 '{{"name": "Audio Shop", "rating": 4.5}}',
+                 '{{"in_stock": true, "quantity": 25}}',
+                 85.0,
+                 '{{"vendor": "Sony", "is_verified": true}}',
+                 '{{"price_history": [{{"price": "250.00", "timestamp": "2023-12-01T00:00:00Z", "source": "historical"}}, {{"price": "200.00", "timestamp": "2024-01-01T00:00:00Z", "source": "current"}}]}}',
+                 NOW(), NOW(), NOW() - INTERVAL '1 day'
              )
              """],
             check=True
@@ -1233,17 +1527,22 @@ def create_test_deals_local():
             session.execute(
                 text("""
                 INSERT INTO markets (
-                    id, name, url, status, type, created_at, updated_at
+                    id, name, type, description, status, api_endpoint, config,
+                    is_active, created_at, updated_at
                 ) VALUES (
-                    :id, :name, :url, :status, :type, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    :id, :name, :type, :description, :status, :api_endpoint, :config,
+                    :is_active, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )
                 """),
                 {
                     "id": market_id,
                     "name": "Test Market",
-                    "url": "https://testmarket.com",
+                    "type": "test",
+                    "description": "Test Market for Deals",
                     "status": "active",
-                    "type": "test"
+                    "api_endpoint": "https://api.testmarket.com",
+                    "config": "{}",
+                    "is_active": True
                 }
             )
         else:
@@ -1255,13 +1554,15 @@ def create_test_deals_local():
         session.execute(
             text("""
             INSERT INTO deals (
-                id, user_id, market_id, title, description, url, price, 
-                original_price, currency, source, image_url, category, 
-                status, created_at, updated_at
+                id, user_id, market_id, title, description, url, image_url, 
+                price, original_price, currency, source, category, 
+                status, is_active, seller_info, availability, score,
+                deal_metadata, price_metadata, created_at, updated_at, found_at
             ) VALUES (
-                :id, :user_id, :market_id, :title, :description, :url, :price, 
-                :original_price, :currency, :source, :image_url, :category, 
-                :status, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                :id, :user_id, :market_id, :title, :description, :url, :image_url, 
+                :price, :original_price, :currency, :source, :category, 
+                :status, :is_active, :seller_info, :availability, :score,
+                :deal_metadata, :price_metadata, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, :found_at
             )
             """),
             {
@@ -1271,26 +1572,35 @@ def create_test_deals_local():
                 "title": "Gaming Laptop for Sale",
                 "description": "High-performance gaming laptop with RTX 3080",
                 "url": "https://testmarket.com/deals/gaming-laptop",
+                "image_url": "https://example.com/images/laptop.jpg",
                 "price": 1200.00,
                 "original_price": 1500.00,
                 "currency": "USD",
                 "source": "manual",
-                "image_url": "https://example.com/images/laptop.jpg",
                 "category": "electronics",
-                "status": "active"
+                "status": "active",
+                "is_active": True,
+                "seller_info": json.dumps({"name": "Test Seller", "rating": 4.7}),
+                "availability": json.dumps({"in_stock": True, "quantity": 50}),
+                "score": 90.5,
+                "deal_metadata": json.dumps({"vendor": "ASUS", "is_verified": True}),
+                "price_metadata": json.dumps({"price_history": [{"price": "1500.00", "timestamp": "2023-11-01T00:00:00Z", "source": "historical"}, {"price": "1200.00", "timestamp": "2024-01-01T00:00:00Z", "source": "current"}]}),
+                "found_at": datetime.now() - timedelta(days=2)
             }
         )
         
         session.execute(
             text("""
             INSERT INTO deals (
-                id, user_id, market_id, title, description, url, price, 
-                original_price, currency, source, image_url, category, 
-                status, created_at, updated_at
+                id, user_id, market_id, title, description, url, image_url, 
+                price, original_price, currency, source, category, 
+                status, is_active, seller_info, availability, score,
+                deal_metadata, price_metadata, created_at, updated_at, found_at
             ) VALUES (
-                :id, :user_id, :market_id, :title, :description, :url, :price, 
-                :original_price, :currency, :source, :image_url, :category, 
-                :status, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                :id, :user_id, :market_id, :title, :description, :url, :image_url, 
+                :price, :original_price, :currency, :source, :category, 
+                :status, :is_active, :seller_info, :availability, :score,
+                :deal_metadata, :price_metadata, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, :found_at
             )
             """),
             {
@@ -1300,13 +1610,20 @@ def create_test_deals_local():
                 "title": "Wireless Headphones",
                 "description": "Noise-cancelling wireless headphones",
                 "url": "https://testmarket.com/deals/headphones",
+                "image_url": "https://example.com/images/headphones.jpg",
                 "price": 200.00,
                 "original_price": 250.00,
                 "currency": "USD",
                 "source": "manual",
-                "image_url": "https://example.com/images/headphones.jpg",
                 "category": "electronics",
-                "status": "active"
+                "status": "active",
+                "is_active": True,
+                "seller_info": json.dumps({"name": "Audio Shop", "rating": 4.5}),
+                "availability": json.dumps({"in_stock": True, "quantity": 25}),
+                "score": 85.0,
+                "deal_metadata": json.dumps({"vendor": "Sony", "is_verified": True}),
+                "price_metadata": json.dumps({"price_history": [{"price": "250.00", "timestamp": "2023-12-01T00:00:00Z", "source": "historical"}, {"price": "200.00", "timestamp": "2024-01-01T00:00:00Z", "source": "current"}]}),
+                "found_at": datetime.now() - timedelta(days=1)
             }
         )
         

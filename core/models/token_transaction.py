@@ -39,7 +39,7 @@ __all__ = [
 
 class TokenTransactionBase(BaseModel):
     user_id: UUID
-    type: TransactionType
+    type: str  # Changed from TransactionType to str to allow more flexible validation
     amount: float = Field(..., gt=0)
     status: TransactionStatus = TransactionStatus.PENDING
     tx_hash: Optional[str] = Field(
@@ -51,9 +51,15 @@ class TokenTransactionBase(BaseModel):
 
     @model_validator(mode='after')
     def validate_transaction(self) -> 'TokenTransactionBase':
-        """Validate amount is positive."""
+        """Validate amount is positive and transaction type is valid."""
         if self.amount <= 0:
             raise ValueError("Transaction amount must be positive")
+            
+        # Validate the transaction type
+        valid_types = set([t.value for t in TransactionType] + [t.value for t in TokenTransactionType])
+        if self.type not in valid_types:
+            raise ValueError(f"Invalid transaction type. Must be one of: {', '.join(valid_types)}")
+            
         return self
 
 class TokenTransactionCreate(TokenTransactionBase):

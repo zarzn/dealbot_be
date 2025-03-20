@@ -9,10 +9,12 @@ import json
 import logging
 import asyncio
 from datetime import datetime
+import time
 from urllib.parse import urlencode, quote_plus, quote
 
 from pydantic import SecretStr
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from core.utils.logger import get_logger
@@ -23,6 +25,9 @@ from core.exceptions.market_exceptions import (
     ProductNotFoundError
 )
 from core.services.redis import get_redis_service
+from core.models.enums import MarketType
+# Import this conditionally to avoid circular imports
+from core.services.market_metrics import MarketMetricsService
 
 logger = get_logger(__name__)
 
@@ -33,7 +38,8 @@ class ScraperAPIService:
         self,
         api_key: Optional[Union[str, SecretStr]] = None,
         base_url: Optional[str] = None,
-        redis_client: Optional[Any] = None
+        redis_client: Optional[Any] = None,
+        db: Optional[AsyncSession] = None
     ):
         # Handle API key initialization
         if api_key is None:
@@ -46,6 +52,10 @@ class ScraperAPIService:
 
         self.base_url = base_url or settings.SCRAPER_API_BASE_URL
         self.redis_client = redis_client
+        self.db = db
+        self.metrics_service = None
+        if db:
+            self.metrics_service = MarketMetricsService(db)
         # Redis client will be initialized asynchronously in the first request
         
         # Rate limiting
@@ -300,6 +310,10 @@ class ScraperAPIService:
         if page > 1:
             params['page'] = str(page)
 
+        start_time = time.time()
+        success = False
+        error_msg = None
+        
         try:
             response = await self._make_request(
                 target_url=target_url,
@@ -502,19 +516,30 @@ class ScraperAPIService:
             
             logger.info(f"Successfully normalized {len(normalized_products)} out of {len(products)} products")
             
-            # Return only the first 50 products
+            # Record market metrics for AMAZON
+            await self._record_market_metrics(
+                market_type=MarketType.AMAZON,
+                success=True,
+                response_time=time.time() - start_time,
+                error=error_msg
+            )
+            
             return normalized_products[:15]
             
-        except MarketConnectionError as e:
-            # Log the error but don't fail the entire operation
-            logger.error(f"Connection to Amazon failed: {str(e)}", exc_info=True)
-            logger.warning("Returning empty results due to connection error")
-            return []
         except Exception as e:
-            # Log other exceptions but still return empty results
-            logger.error(f"Amazon search failed: {str(e)}", exc_info=True)
-            logger.warning("Returning empty results due to error")
-            return []
+            error_msg = str(e)
+            logger.error(f"Amazon search failed: {error_msg}")
+            
+            # Record market metrics for AMAZON with failure
+            await self._record_market_metrics(
+                market_type=MarketType.AMAZON,
+                success=False,
+                response_time=time.time() - start_time,
+                error=error_msg
+            )
+            
+            # Re-raise the exception
+            raise
     
     async def get_amazon_product(
         self,
@@ -522,6 +547,13 @@ class ScraperAPIService:
         cache_ttl: int = 1800  # 30 minutes
     ) -> Dict[str, Any]:
         """Get Amazon product details."""
+        logger.debug(f"Getting Amazon product details for: {product_id}")
+        
+        # Start timing
+        start_time = time.time()
+        success = False
+        error_msg = None
+        
         try:
             target_url = "https://api.scraperapi.com/structured/amazon/product"
             
@@ -599,16 +631,38 @@ class ScraperAPIService:
                 }
             }
                 
+            # Mark as successful if we reach this point
+            success = True
+            
+            # Record market metrics for AMAZON
+            await self._record_market_metrics(
+                market_type=MarketType.AMAZON,
+                success=success,
+                response_time=time.time() - start_time,
+                error=error_msg
+            )
+            
             return normalized_product
             
         except ProductNotFoundError:
             raise
         except Exception as e:
-            logger.error(f"Amazon product fetch failed: {str(e)}")
+            error_msg = str(e)
+            logger.error(f"Amazon product fetch failed: {error_msg}")
+            
+            # Record market metrics for AMAZON with failure
+            await self._record_market_metrics(
+                market_type=MarketType.AMAZON,
+                success=False,
+                response_time=time.time() - start_time,
+                error=error_msg
+            )
+            
+            # Re-raise the exception
             raise MarketIntegrationError(
                 market="amazon",
                 operation="get_product",
-                reason=f"Product fetch failed: {str(e)}"
+                reason=f"Product fetch failed: {error_msg}"
             )
     
     async def search_walmart_products(
@@ -618,7 +672,14 @@ class ScraperAPIService:
         cache_ttl: int = 1800,  # 30 minutes
         limit: int = 15  # Explicitly limit to 15 products
     ) -> List[Dict[str, Any]]:
-        """Search for products on Walmart."""
+        """Search Walmart for products matching the query."""
+        logger.debug(f"Searching Walmart for query: '{query}', page: {page}")
+        
+        # Start timing
+        start_time = time.time()
+        success = False
+        error_msg = None
+        
         try:
             # Properly encode the query for Walmart
             encoded_query = quote_plus(query)
@@ -821,15 +882,33 @@ class ScraperAPIService:
             
             logger.info(f"Successfully normalized {len(normalized_products)} out of {len(products)} products")
             
-            # Return only the first 50 products
+            # Record market metrics for WALMART
+            await self._record_market_metrics(
+                market_type=MarketType.WALMART,
+                success=True,
+                response_time=time.time() - start_time,
+                error=error_msg
+            )
+            
             return normalized_products[:50]
             
         except Exception as e:
-            logger.error(f"Walmart search failed: {str(e)}", exc_info=True)
+            error_msg = str(e)
+            logger.error(f"Walmart search failed: {error_msg}")
+            
+            # Record market metrics for WALMART with failure
+            await self._record_market_metrics(
+                market_type=MarketType.WALMART,
+                success=False,
+                response_time=time.time() - start_time,
+                error=error_msg
+            )
+            
+            # Re-raise the exception
             raise MarketIntegrationError(
                 market="walmart",
                 operation="search_products",
-                reason=f"Search failed: {str(e)}"
+                reason=f"Search failed: {error_msg}"
             )
     
     async def get_walmart_product(self, product_id: str) -> Dict[str, Any]:
@@ -1032,3 +1111,37 @@ class ScraperAPIService:
         except Exception as e:
             logger.warning(f"Failed to initialize Redis client: {str(e)}, continuing without Redis")
             self.redis_client = None
+
+    async def _record_market_metrics(
+        self,
+        market_type: MarketType,
+        success: bool,
+        response_time: Optional[float] = None,
+        error: Optional[str] = None
+    ) -> None:
+        """Record metrics for a market request.
+        
+        Args:
+            market_type: Type of market (e.g., AMAZON, WALMART)
+            success: Whether the request was successful
+            response_time: Response time in seconds (optional)
+            error: Error message if the request failed (optional)
+        """
+        if not self.db:
+            logger.warning("Cannot record market metrics: no database session provided")
+            return
+            
+        # Initialize metrics service if needed
+        if self.metrics_service is None:
+            self.metrics_service = MarketMetricsService(self.db)
+            
+        try:
+            # Record the metrics
+            await self.metrics_service.record_market_request(
+                market_type=market_type,
+                success=success,
+                response_time=response_time,
+                error=error
+            )
+        except Exception as e:
+            logger.error(f"Failed to record market metrics: {str(e)}", exc_info=True)

@@ -383,23 +383,23 @@ async def check_database(response: Response):
         return result
 
 @router.get("/scraper-api/usage", response_model=Dict[str, int])
-async def get_scraper_api_usage():
+async def get_scraper_api_usage(db: AsyncSession = Depends(get_db)):
     """Get current ScraperAPI credit usage."""
     try:
         # Import here to avoid circular imports
         from core.integrations.market_factory import MarketIntegrationFactory
         
-        market_factory = MarketIntegrationFactory()
+        market_factory = MarketIntegrationFactory(db=db)
         # Check if get_credit_usage method exists, otherwise return dummy data
-        if hasattr(market_factory, 'get_credit_usage'):
-            return await market_factory.get_credit_usage()
+        if hasattr(market_factory.scraper_api, 'get_credit_usage'):
+            return await market_factory.scraper_api.get_credit_usage()
         else:
             # Return mock data to avoid errors
             return {"credits_used": 0, "credits_remaining": 1000}
     except MarketIntegrationError as e:
         raise HTTPException(
             status_code=500,
-            detail=str(e)
+            detail=f"Failed to get ScraperAPI usage: {str(e)}"
         )
 
 @router.get("/")

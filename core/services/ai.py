@@ -1,21 +1,34 @@
-from typing import Optional, Dict, Any, List
-import logging
-import json
+"""AI service for analyzing deals and generating recommendations."""
+
 import os
-from decimal import Decimal
-from uuid import UUID
-from datetime import datetime, timedelta
-import traceback
-import sys
-import hashlib
-import asyncio
 import re
+import json
+import logging
+import asyncio
+import time
+import uuid
+import sys
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, List, Tuple, Union, Callable
+import traceback
+import threading
+from enum import Enum
+from pydantic import BaseModel
+import tiktoken
+import openai
+from openai import AsyncOpenAI, OpenAI
+import tenacity
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from core.models.deal import Deal, AIAnalysis
-from core.utils.llm import get_llm_instance, LLMProvider, test_llm_connection
 from core.config import settings
+from core.models.enums import DealSource, MarketType, AIModelType
+from core.models.deal import Deal
+from core.utils.logger import get_logger
+from core.exceptions import AIServiceError, ConfigurationError, ValidationError
+from core.utils.llm import get_llm_instance
 
-logger = logging.getLogger(__name__)
+# Configure module-level logger
+logger = get_logger(__name__)
 
 class AIService:
     """Service for AI-powered analysis and predictions"""
@@ -1203,37 +1216,93 @@ class AIService:
         
     def _extract_json_from_response(self, response_text: str) -> Dict[str, Any]:
         """Extract JSON from LLM response text."""
+        if not response_text or not isinstance(response_text, str):
+            logger.error("Invalid response text provided to JSON extractor")
+            return {}
+        
         try:
-            # Try to find a JSON block in the response
-            matches = re.findall(r'```(?:json)?\s*([\s\S]*?)```', response_text)
-            if matches:
-                # Try each match until we find valid JSON
-                for match in matches:
+            # Log the first part of the response for debugging
+            preview_length = min(300, len(response_text))
+            logger.debug(f"Extracting JSON from response (preview): {response_text[:preview_length]}...")
+            
+            # Try different methods to extract JSON
+            
+            # Method 1: Extract from markdown code blocks with 'json' tag
+            json_code_blocks = re.findall(r"```json\s*([\s\S]*?)\s*```", response_text)
+            if json_code_blocks:
+                for block in json_code_blocks:
                     try:
-                        return json.loads(match.strip())
+                        result = json.loads(block.strip())
+                        logger.info("Successfully extracted JSON from code block with json tag")
+                        return result
                     except json.JSONDecodeError:
                         continue
             
-            # If no JSON blocks with markers, try to extract JSON directly
-            # Find anything that looks like a dictionary
-            matches = re.findall(r'({[\s\S]*})', response_text)
-            if matches:
-                # Try each match until we find valid JSON
-                for match in matches:
+            # Method 2: Extract from any markdown code blocks
+            generic_code_blocks = re.findall(r"```\s*([\s\S]*?)\s*```", response_text)
+            if generic_code_blocks:
+                for block in generic_code_blocks:
                     try:
-                        return json.loads(match.strip())
+                        result = json.loads(block.strip())
+                        logger.info("Successfully extracted JSON from generic code block")
+                        return result
+                    except json.JSONDecodeError:
+                        continue
+                    
+            # Method 3: Look for JSON objects with balanced braces
+            # This uses a more robust regex that ensures balanced braces
+            def find_json_objects(s):
+                """Find potential JSON objects in a string."""
+                results = []
+                # Find all occurrences of { followed by any characters and then }
+                brace_pattern = r'(\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\})'
+                matches = re.finditer(brace_pattern, s)
+                for match in matches:
+                    results.append(match.group(0))
+                return results
+            
+            json_objects = find_json_objects(response_text)
+            if json_objects:
+                for obj in json_objects:
+                    try:
+                        result = json.loads(obj)
+                        logger.info("Successfully extracted JSON object with balanced braces")
+                        return result
                     except json.JSONDecodeError:
                         continue
             
-            # If that fails, check if the entire response is JSON
+            # Method 4: Try to parse the entire response as JSON
             try:
-                return json.loads(response_text.strip())
+                result = json.loads(response_text.strip())
+                logger.info("Successfully parsed entire response as JSON")
+                return result
             except json.JSONDecodeError:
-                # If all extraction attempts fail, return empty dict
-                logger.error(f"Failed to extract JSON from response")
-                return {}
+                pass
+            
+            # Method 5: Last resort - look for anything that looks like JSON
+            # This will find patterns like {"key": "value"} anywhere in the text
+            simple_json_pattern = r'(\{["\'].*?["\']:\s*.*?\})'
+            simple_matches = re.findall(simple_json_pattern, response_text)
+            if simple_matches:
+                for match in simple_matches:
+                    try:
+                        result = json.loads(match)
+                        logger.info("Extracted simple JSON pattern")
+                        return result
+                    except json.JSONDecodeError:
+                        continue
+                    
+            # Log failure details for debugging
+            logger.error("All JSON extraction methods failed")
+            logger.debug(f"Response text that failed parsing: {response_text[:500]}...")
+            
+            # If all extraction attempts fail, create a minimal valid response
+            logger.warning("Generating fallback empty JSON response")
+            return {}
+            
         except Exception as e:
             logger.error(f"Error extracting JSON from response: {str(e)}")
+            logger.error(traceback.format_exc())
             return {}
             
     async def analyze_goal(self, goal_data: Dict[str, Any]) -> Dict[str, Any]:

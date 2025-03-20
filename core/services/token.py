@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import timedelta
+from datetime import datetime, timedelta
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -205,20 +205,80 @@ class SolanaTokenService(ITokenService):
         limit: int = 100,
         offset: int = 0
     ) -> List[TokenTransaction]:
-        """Get user's token transaction history"""
+        """Get transaction history for a user
+
+        Args:
+            user_id: User ID
+            limit: Maximum number of transactions to return
+            offset: Offset for pagination
+
+        Returns:
+            List of token transactions
+        """
+        # TODO: Implement connection to Solana blockchain to fetch real transaction history
+        return await self.repository.get_transactions(user_id, limit, offset)
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    async def get_transactions(
+        self,
+        user_id: str,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        transaction_type: Optional[str] = None,
+        status: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20
+    ) -> List[TokenTransaction]:
+        """Get transactions for a user with filtering and pagination
+
+        Args:
+            user_id: User ID
+            start_date: Optional start date filter
+            end_date: Optional end date filter
+            transaction_type: Optional transaction type filter
+            status: Optional transaction status filter
+            page: Page number (1-indexed)
+            page_size: Number of items per page
+
+        Returns:
+            List of filtered token transactions
+        """
         try:
-            transactions = await self.repository.get_transaction_history(
-                user_id, limit, offset
+            # Convert page to offset
+            offset = (page - 1) * page_size
+            
+            # Convert string enum values to actual enum values if provided
+            transaction_type_enum = None
+            status_enum = None
+            
+            if transaction_type:
+                try:
+                    transaction_type_enum = TokenTransactionType(transaction_type.upper())
+                except ValueError:
+                    logger.warning(f"Invalid transaction type: {transaction_type}")
+            
+            if status:
+                try:
+                    status_enum = TokenTransactionStatus(status.upper())
+                except ValueError:
+                    logger.warning(f"Invalid transaction status: {status}")
+            
+            # Use repository to get filtered transactions
+            return await self.repository.get_user_transactions(
+                user_id=user_id,
+                limit=page_size,
+                offset=offset,
+                transaction_type=transaction_type_enum,
+                status=status_enum,
+                start_date=start_date,
+                end_date=end_date
             )
-            logger.debug(f"Retrieved {len(transactions)} transactions for user {user_id}")
-            return transactions
         except Exception as e:
-            logger.error(f"Failed to get transaction history for user {user_id}: {str(e)}")
+            logger.error(f"Failed to get transactions for user {user_id}: {str(e)}")
             raise TokenTransactionError(
-                transaction_id="history",
-                operation="get_transaction_history",
-                reason=f"Failed to get transaction history: {str(e)}",
-                details={"user_id": user_id, "limit": limit, "offset": offset}
+                operation="get_transactions",
+                reason=f"Failed to get transactions: {str(e)}",
+                details={"user_id": user_id}
             )
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))

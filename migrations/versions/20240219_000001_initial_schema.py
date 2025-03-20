@@ -57,23 +57,28 @@ def upgrade() -> None:
         # Drop existing enum types
         logger.info("Dropping existing enum types...")
         conn.execute(text("""
-            DROP TYPE IF EXISTS userstatus CASCADE;
-            DROP TYPE IF EXISTS goalstatus CASCADE;
-            DROP TYPE IF EXISTS marketcategory CASCADE;
-            DROP TYPE IF EXISTS markettype CASCADE;
-            DROP TYPE IF EXISTS marketstatus CASCADE;
-            DROP TYPE IF EXISTS notificationpriority CASCADE;
-            DROP TYPE IF EXISTS notificationstatus CASCADE;
-            DROP TYPE IF EXISTS messagerole CASCADE;
-            DROP TYPE IF EXISTS dealstatus CASCADE;
-            DROP TYPE IF EXISTS transactiontype CASCADE;
-            DROP TYPE IF EXISTS transactionstatus CASCADE;
-            DROP TYPE IF EXISTS dealsource CASCADE;
-            DROP TYPE IF EXISTS goalpriority CASCADE;
-            DROP TYPE IF EXISTS tokentype CASCADE;
-            DROP TYPE IF EXISTS tokenstatus CASCADE;
-            DROP TYPE IF EXISTS tokenscope CASCADE;
-            DROP TYPE IF EXISTS balancechangetype CASCADE;
+            DROP TYPE IF EXISTS goalstatus;
+            DROP TYPE IF EXISTS goalpriority;
+            DROP TYPE IF EXISTS dealstatus;
+            DROP TYPE IF EXISTS dealsource;
+            DROP TYPE IF EXISTS markettype;
+            DROP TYPE IF EXISTS marketstatus;
+            DROP TYPE IF EXISTS taskstatus;
+            DROP TYPE IF EXISTS taskpriority;
+            DROP TYPE IF EXISTS notificationtype;
+            DROP TYPE IF EXISTS notificationpriority;
+            DROP TYPE IF EXISTS notificationchannel;
+            DROP TYPE IF EXISTS notificationstatus;
+            DROP TYPE IF EXISTS transactiontype;
+            DROP TYPE IF EXISTS transactionstatus;
+            DROP TYPE IF EXISTS token_transaction_type;
+            DROP TYPE IF EXISTS token_transaction_status;
+            DROP TYPE IF EXISTS balancechangetype;
+            DROP TYPE IF EXISTS tokenstatus;
+            DROP TYPE IF EXISTS tokenscope;
+            DROP TYPE IF EXISTS tokentype;
+            DROP TYPE IF EXISTS currency;
+            DROP TYPE IF EXISTS userstatus;
         """))
         logger.info("Existing enum types dropped")
 
@@ -105,7 +110,7 @@ def upgrade() -> None:
 
             DO $$ 
             BEGIN
-                CREATE TYPE markettype AS ENUM ('amazon', 'walmart', 'ebay', 'target', 'bestbuy', 'test', 'crypto');
+                CREATE TYPE markettype AS ENUM ('amazon', 'walmart', 'ebay', 'target', 'bestbuy', 'test', 'crypto', 'google_shopping');
             EXCEPTION 
                 WHEN duplicate_object THEN NULL;
             END $$;
@@ -168,7 +173,7 @@ def upgrade() -> None:
 
             DO $$ 
             BEGIN
-                CREATE TYPE dealsource AS ENUM ('amazon', 'walmart', 'ebay', 'target', 'bestbuy', 'manual', 'api', 'scraper', 'user', 'agent');
+                CREATE TYPE dealsource AS ENUM ('amazon', 'walmart', 'ebay', 'target', 'bestbuy', 'manual', 'api', 'scraper', 'user', 'agent', 'google_shopping');
             EXCEPTION 
                 WHEN duplicate_object THEN NULL;
             END $$;

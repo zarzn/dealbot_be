@@ -4,7 +4,7 @@ import logging
 import asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import update, delete, and_, func
+from sqlalchemy import update, delete, and_
 from pydantic import BaseModel, field_validator
 from fastapi import BackgroundTasks
 from datetime import datetime, timezone, timedelta
@@ -12,7 +12,6 @@ import json
 from sqlalchemy.orm import joinedload
 from redis.asyncio import Redis
 from enum import Enum
-from decimal import Decimal
 
 from core.models.goal import (
     GoalCreate, 
@@ -22,7 +21,6 @@ from core.models.goal import (
     Goal as GoalModel
 )
 from core.models.goal_types import GoalStatus, GoalPriority
-from core.models.enums import DealStatus
 from core.exceptions import (
     GoalError,
     GoalNotFoundError,
@@ -212,6 +210,44 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             # Cache the goal
             await self._cache_goal(goal)
             
+            # Send notification for goal creation
+            try:
+                # Import here to avoid circular imports
+                from core.notifications import TemplatedNotificationService
+                
+                # Create notification service
+                notification_service = TemplatedNotificationService(self.session)
+                
+                # Get priority label for display
+                priority_labels = {
+                    1: "Low",
+                    2: "Medium",
+                    3: "High",
+                    4: "Urgent",
+                    5: "Critical"
+                }
+                priority_label = priority_labels.get(priority_value, "Medium")
+                
+                # Send notification
+                await notification_service.send_notification(
+                    template_id="goal_created",
+                    user_id=user_id,
+                    template_params={
+                        "goal_title": title
+                    },
+                    metadata={
+                        "goal_id": str(goal.id),
+                        "priority": priority_label,
+                        "status": goal.status,
+                        "deadline": goal.deadline.isoformat() if goal.deadline else None
+                    },
+                    goal_id=goal.id,
+                    action_url=f"/goals/{goal.id}"
+                )
+            except Exception as notification_error:
+                # Log but don't fail the goal creation
+                logger.error(f"Failed to send goal creation notification: {str(notification_error)}")
+            
             logger.info(
                 f"Created goal {goal.id} for user {user_id}",
                 extra={"user_id": str(user_id), "goal_id": str(goal.id)}
@@ -309,6 +345,7 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         """
         try:
             # Build query
+            from sqlalchemy import func
             query = select(func.count()).select_from(GoalModel).filter(GoalModel.user_id == user_id)
             
             # Apply filters
@@ -434,6 +471,7 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         try:
             # Get and validate goal
             goal = await self.get_goal(goal_id)
+            original_status = goal.status
             
             # Update status
             await self.session.execute(
@@ -442,6 +480,42 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
                 .values(status=status, updated_at=datetime.utcnow())
             )
             await self.session.commit()
+            
+            # Get updated goal for notification
+            updated_goal = await self.get_goal_by_id(goal_id)
+            
+            # Send notification if status changed to completed
+            if status.lower() == GoalStatus.COMPLETED.value.lower() and original_status.lower() != GoalStatus.COMPLETED.value.lower():
+                try:
+                    # Import here to avoid circular imports
+                    from core.notifications import TemplatedNotificationService
+                    
+                    # Create notification service
+                    notification_service = TemplatedNotificationService(self.session)
+                    
+                    # Send completion notification
+                    await notification_service.send_notification(
+                        template_id="goal_completed",
+                        user_id=user_id,
+                        template_params={
+                            "goal_title": updated_goal.title
+                        },
+                        metadata={
+                            "goal_id": str(goal_id),
+                            "previous_status": original_status,
+                            "completed_at": datetime.utcnow().isoformat()
+                        },
+                        goal_id=goal_id,
+                        action_url=f"/goals/{goal_id}"
+                    )
+                    
+                    logger.info(
+                        f"Sent goal completion notification for goal {goal_id}",
+                        extra={"goal_id": str(goal_id), "user_id": str(user_id)}
+                    )
+                except Exception as notification_error:
+                    # Log but don't fail the goal status update
+                    logger.error(f"Failed to send goal completion notification: {str(notification_error)}")
             
             # Invalidate cache
             await self._invalidate_goal_cache(user_id, goal_id)
@@ -516,11 +590,6 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             goal: The goal to cache
         """
         try:
-            # Skip caching if Redis is not available
-            if self._redis is None:
-                logger.debug(f"Redis client is None, skipping goal caching for ID {goal.id}")
-                return
-                
             cache_key = GoalCacheKey(user_id=goal.user_id, goal_id=goal.id)
             
             # Create a clean dictionary with only serializable data
@@ -607,121 +676,121 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             )
         except Exception as e:
             logger.warning(f"Failed to cache goal {goal.id}: {str(e)}", exc_info=True)
-            # Don't raise the exception - caching errors shouldn't affect the main functionality
-            # Just log and continue
-
+            raise APIServiceUnavailableError("Failed to cache goal") from e
+            
     async def _cache_goals(self, user_id: UUID, goals: List[GoalModel]) -> None:
-        """Cache user goals in Redis.
-        
+        """Cache all goals for a user.
+
         Args:
             user_id: The user ID
-            goals: The goals to cache
+            goals: List of goals to cache
         """
         try:
-            # Skip caching if Redis is not available
-            if not self._redis:
-                logger.debug("Redis not available, skipping goal caching")
-                return
+            cache_key = f"goal_cache:{user_id}:all"
             
-            # Skip caching if no goals
-            if not goals:
-                logger.debug(f"No goals to cache for user {user_id}")
-                return
-            
-            # Create a clean list of goals for caching
+            # Create a list of clean dictionaries with only serializable data
             goal_dicts = []
-            
             for goal in goals:
-                try:
-                    # Convert goal to dict format
-                    goal_dict = {
-                        "id": str(goal.id),  # Convert UUID to string for serialization
-                        "user_id": str(goal.user_id),  # Convert UUID to string
-                        "title": goal.title,
-                        "description": goal.description,
-                        "status": goal.status,
-                        "priority": goal.priority,
-                        "created_at": goal.created_at.isoformat() if goal.created_at else None,
-                        "updated_at": goal.updated_at.isoformat() if goal.updated_at else None,
-                        "due_date": goal.deadline.isoformat() if goal.deadline else None,
-                        "completed_at": goal.completed_at.isoformat() if goal.completed_at else None,
-                        "item_category": goal.item_category,
-                        "max_tokens": float(goal.max_tokens) if goal.max_tokens else None,
-                        "metadata": {}  # Default empty metadata
-                    }
-                    
-                    # Handle metadata separately to avoid serialization issues
-                    if goal.metadata:
+                goal_dict = {
+                    'id': goal.id,
+                    'user_id': goal.user_id,
+                    'title': goal.title,
+                    'description': goal.description,
+                    'item_category': goal.item_category,
+                    'constraints': goal.constraints,
+                    'deadline': goal.deadline,
+                    'status': goal.status,
+                    'created_at': goal.created_at,
+                    'updated_at': goal.updated_at or goal.created_at,  # Ensure updated_at is not None
+                    'last_checked_at': goal.last_checked_at,
+                    'max_matches': goal.max_matches,
+                    'max_tokens': goal.max_tokens,
+                    'auto_buy_threshold': goal.auto_buy_threshold
+                }
+                
+                # Convert priority to integer if it's an enum
+                if hasattr(goal, 'priority'):
+                    if isinstance(goal.priority, Enum):
+                        # If it's an enum, try to get the integer value
                         try:
-                            # Make a copy of metadata to ensure it's serializable
-                            metadata = dict(goal.metadata)
-                            # Handle nested objects and UUIDs in metadata
-                            goal_dict["metadata"] = self._prepare_metadata_for_cache(metadata)
-                        except Exception as e:
-                            logger.warning(f"Failed to process metadata for goal {goal.id}: {str(e)}")
-                            goal_dict["metadata"] = {}
+                            # For integer-based enum (GoalPriority from goal_types)
+                            goal_dict['priority'] = int(goal.priority.value)
+                        except (ValueError, TypeError):
+                            # For string-based enum (GoalPriority from enums)
+                            priority_map = {
+                                'low': 1,
+                                'medium': 2,
+                                'high': 3,
+                                'urgent': 4,
+                                'critical': 5
+                            }
+                            goal_dict['priority'] = priority_map.get(goal.priority.value.lower(), 2)  # Default to MEDIUM (2)
+                    elif isinstance(goal.priority, int):
+                        goal_dict['priority'] = goal.priority
+                    elif isinstance(goal.priority, str):
+                        # Handle string values
+                        priority_map = {
+                            'low': 1,
+                            'medium': 2,
+                            'high': 3,
+                            'urgent': 4,
+                            'critical': 5
+                        }
+                        goal_dict['priority'] = priority_map.get(goal.priority.lower(), 2)  # Default to MEDIUM (2)
+                    else:
+                        goal_dict['priority'] = 2  # Default to MEDIUM
+                else:
+                    goal_dict['priority'] = 2  # Default to MEDIUM
+                
+                # Ensure metadata is a clean dictionary without SQLAlchemy objects
+                if hasattr(goal, 'metadata') and goal.metadata is not None:
+                    # Create a clean metadata dictionary without any SQLAlchemy objects
+                    goal_dict['metadata'] = {}
                     
-                    # Add the goal to our list
-                    goal_dicts.append(goal_dict)
-                except Exception as goal_error:
-                    logger.warning(f"Failed to process goal {getattr(goal, 'id', 'unknown')} for caching: {str(goal_error)}")
-                    continue
+                    # Only include primitive types that can be serialized
+                    if isinstance(goal.metadata, dict):
+                        for key, value in goal.metadata.items():
+                            # Skip SQLAlchemy objects and complex types
+                            if not isinstance(value, (dict, list, str, int, float, bool, type(None))):
+                                continue
+                            
+                            # For nested dictionaries, only include if they don't contain complex objects
+                            if isinstance(value, dict):
+                                clean_dict = {}
+                                for k, v in value.items():
+                                    if isinstance(v, (str, int, float, bool, type(None))):
+                                        clean_dict[k] = v
+                                goal_dict['metadata'][key] = clean_dict
+                            else:
+                                goal_dict['metadata'][key] = value
+                else:
+                    goal_dict['metadata'] = {}
+                
+                goal_dicts.append(goal_dict)
             
-            # Only try to cache if we have valid goals
-            if not goal_dicts:
-                logger.warning(f"No valid goals to cache for user {user_id}")
-                return
-                
             # Cache the goals
-            try:
-                # Create cache key
-                cache_key = GoalCacheKey(user_id=user_id, goal_id="all")
-                key = f"goals:{cache_key.user_id}:{cache_key.goal_id}"
-                
-                # Convert to responses for proper formatting
-                goal_responses = []
-                for gd in goal_dicts:
-                    try:
-                        goal_responses.append(GoalResponse.model_validate(gd))
-                    except Exception as validate_error:
-                        logger.warning(f"Failed to validate goal dict for response: {str(validate_error)}")
-                
-                # Serialize to JSON
-                try:
-                    serialized_data = json.dumps([response.model_dump() for response in goal_responses])
-                    
-                    # Cache in Redis
-                    await self._redis.set(
-                        key,
-                        serialized_data,
-                        ex=getattr(settings, "GOAL_CACHE_TTL", 3600)  # Default 1 hour
-                    )
-                    logger.debug(f"Successfully cached {len(goal_responses)} goals for user {user_id}")
-                except Exception as json_error:
-                    logger.warning(f"JSON serialization error when caching goals: {str(json_error)}")
-            except Exception as serialize_error:
-                logger.warning(f"Failed to serialize or cache goals for user {user_id}: {str(serialize_error)}")
-                # Do not propagate - this is a non-critical operation
+            goal_responses = [GoalResponse.model_validate(goal_dict) for goal_dict in goal_dicts]
+            await self._redis.set(
+                cache_key,
+                json.dumps([response.model_dump() for response in goal_responses]),
+                ex=settings.GOAL_CACHE_TTL
+            )
         except Exception as e:
             logger.warning(f"Failed to cache goals for user {user_id}: {str(e)}", exc_info=True)
-            # Don't raise an exception even in case of a severe error - caching should be non-critical
-            # and errors shouldn't affect the main functionality
-
+            raise APIServiceUnavailableError("Failed to cache goals") from e
+            
     async def _get_cached_goal(self, user_id: UUID, goal_id: UUID) -> Optional[GoalResponse]:
         """Get a cached goal by ID"""
         try:
-            if not self._redis:
-                logger.debug(f"Redis client is None, skipping goal cache lookup for ID {goal_id}")
-                return None
-                
-            cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
-            cached_data = await self._redis.get(cache_key.json())
-            if cached_data:
-                # Handle both dict and string responses from Redis
-                if isinstance(cached_data, dict):
-                    return GoalResponse.model_validate(cached_data)
-                else:
-                    return GoalResponse.parse_raw(cached_data)
+            if self._redis:
+                cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
+                cached_data = await self._redis.get(cache_key.json())
+                if cached_data:
+                    # Handle both dict and string responses from Redis
+                    if isinstance(cached_data, dict):
+                        return GoalResponse.model_validate(cached_data)
+                    else:
+                        return GoalResponse.parse_raw(cached_data)
             return None
         except Exception as e:
             logger.warning(
@@ -729,27 +798,24 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
                 exc_info=True,
                 extra={"goal_id": goal_id}
             )
-            return None  # Return None instead of raising to provide a graceful fallback
+            raise APIServiceUnavailableError("Failed to get cached goal") from e
             
     async def _get_cached_goals(self, user_id: UUID) -> Optional[List[GoalResponse]]:
         """Get cached goals for a user"""
         try:
-            if not self._redis:
-                logger.debug(f"Redis client is None, skipping goals cache lookup for user {user_id}")
-                return None
-                
-            # Use a string directly for the all goals cache key to avoid UUID validation
-            all_goals_key = f"goal_cache:{user_id}:all"
-            cached_data = await self._redis.get(all_goals_key)
-            if cached_data:
-                result = []
-                for item in cached_data:
-                    # Handle both dict and string responses from Redis
-                    if isinstance(item, dict):
-                        result.append(GoalResponse.model_validate(item))
-                    else:
-                        result.append(GoalResponse.parse_raw(item))
-                return result
+            if self._redis:
+                # Use a string directly for the all goals cache key to avoid UUID validation
+                all_goals_key = f"goal_cache:{user_id}:all"
+                cached_data = await self._redis.get(all_goals_key)
+                if cached_data:
+                    result = []
+                    for item in cached_data:
+                        # Handle both dict and string responses from Redis
+                        if isinstance(item, dict):
+                            result.append(GoalResponse.model_validate(item))
+                        else:
+                            result.append(GoalResponse.parse_raw(item))
+                    return result
             return None
         except Exception as e:
             logger.warning(
@@ -757,31 +823,27 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
                 exc_info=True,
                 extra={"user_id": user_id}
             )
-            return None  # Return None instead of raising to provide a graceful fallback
+            raise APIServiceUnavailableError("Failed to get cached goals") from e
             
     async def _invalidate_goal_cache(self, user_id: UUID, goal_id: UUID) -> None:
         """Invalidate cache for a goal"""
         try:
-            if not self._redis:
-                logger.debug(f"Redis client is None, skipping cache invalidation for goal {goal_id}")
-                return
+            if self._redis:
+                # Invalidate individual goal cache
+                individual_cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
+                await self._redis.delete(individual_cache_key.json())
                 
-            # Invalidate individual goal cache
-            individual_cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
-            await self._redis.delete(individual_cache_key.json())
-            
-            # Invalidate user's goals list cache
-            # Use a string directly for the all goals cache key to avoid UUID validation
-            all_goals_key = f"goal_cache:{user_id}:all"
-            await self._redis.delete(all_goals_key)
+                # Invalidate user's goals list cache
+                # Use a string directly for the all goals cache key to avoid UUID validation
+                all_goals_key = f"goal_cache:{user_id}:all"
+                await self._redis.delete(all_goals_key)
         except Exception as e:
             logger.warning(
                 f"Failed to invalidate cache for goal {goal_id}: {str(e)}",
                 exc_info=True,
                 extra={"goal_id": goal_id}
             )
-            # Just log the error but don't throw, as cache invalidation is not critical for functionality
-            logger.debug(f"Continuing despite cache invalidation failure for goal {goal_id}")
+            raise APIServiceUnavailableError("Failed to invalidate cache") from e
 
     async def get_goal_analytics(self, goal_id: UUID, user_id: UUID) -> GoalAnalytics:
         """Get analytics for a goal."""
@@ -789,7 +851,7 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         from datetime import datetime, timedelta
 
         # If we have a goal_id and user_id, fetch the goal model
-        goal = await self.get_goal_by_id(goal_id, user_id)
+        goal = await self.get_goal_by_id(goal_id)
 
         # Now goal is always a GoalModel with matched_deals relationship
         matched_deals = [
@@ -1443,18 +1505,65 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             
             self.session.add(match)
             
+            # Store original matches_found for notification
+            original_matches_found = goal.matches_found or 0
+            
             # Update goal metrics
             goal.matches_found = (goal.matches_found or 0) + 1
             
+            # Calculate progress percentage if max_matches is set
+            progress_percentage = None
+            if goal.max_matches:
+                progress_percentage = min(int((goal.matches_found / goal.max_matches) * 100), 100)
+            
             # Check if goal should be completed (max matches reached)
+            goal_completed = False
             if goal.max_matches and goal.matches_found >= goal.max_matches:
-                goal.status = GoalStatus.COMPLETED
+                goal.status = GoalStatus.COMPLETED.value
+                goal_completed = True
                 logger.info(f"Goal {goal_id} completed: reached max matches ({goal.max_matches})")
             
             await self.session.commit()
             
             # Clear cache
             await self._invalidate_goal_cache(goal.user_id, goal_id)
+            
+            # Send notification about goal progress
+            try:
+                # Import here to avoid circular imports
+                from core.notifications import TemplatedNotificationService
+                
+                # Create notification service
+                notification_service = TemplatedNotificationService(self.session)
+                
+                # Send goal progress notification
+                progress_text = f"{progress_percentage}%" if progress_percentage is not None else f"{goal.matches_found} matches"
+                
+                await notification_service.send_notification(
+                    template_id="goal_progress_update",
+                    user_id=goal.user_id,
+                    template_params={
+                        "goal_title": goal.title,
+                        "progress": progress_text,
+                        "deal_title": deal.title
+                    },
+                    metadata={
+                        "goal_id": str(goal_id),
+                        "deal_id": str(deal_id),
+                        "matches_found": goal.matches_found,
+                        "previous_matches": original_matches_found,
+                        "match_score": match_score,
+                        "progress_percentage": progress_percentage,
+                        "goal_completed": goal_completed
+                    },
+                    goal_id=goal_id,
+                    action_url=f"/goals/{goal_id}/deals"
+                )
+                
+                logger.info(f"Sent goal progress notification for goal {goal_id} - Progress: {progress_text}")
+            except Exception as notification_error:
+                # Log but don't fail the deal match processing
+                logger.error(f"Failed to send goal progress notification: {str(notification_error)}")
             
             logger.info(f"Successfully processed match between goal {goal_id} and deal {deal_id}")
             
@@ -1521,225 +1630,119 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             logger.error(f"Error checking expired goals: {str(e)}")
             raise GoalError(f"Failed to check expired goals: {str(e)}")
             
-    async def check_goal_matches(self, goal_id: UUID) -> List[Dict[str, Any]]:
-        """Check for new matches for a specific goal and send notifications.
+    async def check_approaching_deadlines(self, days_threshold: int = 3) -> int:
+        """Check and notify users about goals with approaching deadlines.
         
         Args:
-            goal_id: The ID of the goal to check for matches
+            days_threshold: Number of days to consider as 'approaching deadline'
             
         Returns:
-            List of match details for deals matched to this goal
+            int: The number of notifications sent
         """
         try:
-            logger.info(f"Checking matches for goal {goal_id}")
+            logger.info(f"Checking for goals with deadlines approaching in the next {days_threshold} days")
+            now = datetime.utcnow()
             
-            # Get the goal
-            goal = await self.get_goal_by_id(goal_id)
-            if not goal:
-                raise GoalNotFoundError(f"Goal {goal_id} not found")
+            # Calculate date thresholds
+            approaching_date = now + timedelta(days=days_threshold)
+            
+            # Find all active goals with deadline approaching
+            approaching_goals_query = select(GoalModel).where(
+                and_(
+                    GoalModel.status == GoalStatus.ACTIVE.value,
+                    GoalModel.deadline.is_not(None),
+                    GoalModel.deadline > now,  # Future deadline
+                    GoalModel.deadline <= approaching_date  # Within the threshold
+                )
+            )
+            
+            result = await self.session.execute(approaching_goals_query)
+            approaching_goals = result.scalars().all()
+            
+            notification_count = 0
+            
+            for goal in approaching_goals:
+                # Calculate days remaining
+                days_remaining = (goal.deadline - now).days
+                hours_remaining = int((goal.deadline - now).total_seconds() / 3600)
                 
-            if goal.status != GoalStatus.ACTIVE.value:
-                logger.info(f"Goal {goal_id} is not active (status: {goal.status}), skipping match check")
-                return []
+                # Only send notification if we haven't recently notified about this deadline
+                # This uses the 'last_deadline_notification' field in the goal metadata to track
+                # when the last deadline notification was sent
+                metadata = goal.metadata or {}
+                last_notification = metadata.get('last_deadline_notification')
                 
-            # Find matching deals
-            matching_deals = await self.find_matching_deals(goal_id)
-            if not matching_deals:
-                logger.info(f"No matching deals found for goal {goal_id}")
-                return []
-                
-            # Process matches and send notifications
-            match_details = []
-            for deal in matching_deals:
-                # Check if we should notify the user about this match
-                should_notify = await self.should_notify_user(goal_id, deal.id)
+                # Determine if we should send a notification
+                should_notify = True
+                if last_notification:
+                    try:
+                        last_notification_time = datetime.fromisoformat(last_notification)
+                        # Don't notify if we've sent a notification in the last 24 hours
+                        if (now - last_notification_time).total_seconds() < 86400:  # 24 hours in seconds
+                            should_notify = False
+                    except (ValueError, TypeError):
+                        # If we can't parse the last notification time, proceed with notification
+                        pass
                 
                 if should_notify:
-                    # Prepare notification data
-                    notification_data = {
-                        "goal_id": str(goal_id),
-                        "deal_id": str(deal.id),
-                        "title": deal.title,
-                        "price": str(deal.price),
-                        "url": deal.url,
-                        "match_time": datetime.utcnow().isoformat()
-                    }
-                    
-                    # Send notification
-                    # First check if we have a notification service
-                    if hasattr(self, '_notification_service') and self._notification_service:
-                        await self._notification_service.send_notification(
+                    try:
+                        # Import here to avoid circular imports
+                        from core.notifications import TemplatedNotificationService
+                        
+                        # Create notification service
+                        notification_service = TemplatedNotificationService(self.session)
+                        
+                        # Prepare time remaining text
+                        if days_remaining > 0:
+                            time_remaining = f"{days_remaining} days"
+                        else:
+                            time_remaining = f"{hours_remaining} hours"
+                        
+                        # Send deadline approaching notification
+                        await notification_service.send_notification(
+                            template_id="goal_deadline_approaching",
                             user_id=goal.user_id,
-                            notification_type="DEAL_MATCH",
-                            data=notification_data
+                            template_params={
+                                "goal_title": goal.title,
+                                "time_remaining": time_remaining,
+                                "deadline": goal.deadline.strftime("%Y-%m-%d %H:%M")
+                            },
+                            metadata={
+                                "goal_id": str(goal.id),
+                                "days_remaining": days_remaining,
+                                "hours_remaining": hours_remaining,
+                                "deadline": goal.deadline.isoformat()
+                            },
+                            goal_id=goal.id,
+                            action_url=f"/goals/{goal.id}"
                         )
-                    
-                    # Log the match
-                    logger.info(
-                        f"Match found between goal {goal_id} and deal {deal.id}",
-                        extra={
-                            "goal_id": str(goal_id),
-                            "deal_id": str(deal.id),
-                            "user_id": str(goal.user_id)
-                        }
-                    )
-                    
-                    # Add to match details
-                    match_details.append({
-                        "goal_id": str(goal_id),
-                        "deal_id": str(deal.id),
-                        "match_score": 0.95,  # This would be calculated in a real implementation
-                        "matched_at": datetime.utcnow().isoformat()
-                    })
-                    
-                    # Check if we should automatically purchase this deal
-                    should_buy = await self.should_auto_buy(goal_id, deal.id)
-                    if should_buy:
-                        # This would trigger an automatic purchase flow
-                        # Not implemented in this MVP version
+                        
+                        # Update the goal metadata to record this notification
+                        goal.metadata = goal.metadata or {}
+                        goal.metadata['last_deadline_notification'] = now.isoformat()
+                        
+                        notification_count += 1
+                        
                         logger.info(
-                            f"Auto-buy criteria met for goal {goal_id} and deal {deal.id}",
+                            f"Sent deadline approaching notification for goal {goal.id} - Deadline in {time_remaining}",
                             extra={
-                                "goal_id": str(goal_id),
-                                "deal_id": str(deal.id),
-                                "user_id": str(goal.user_id)
+                                "goal_id": str(goal.id),
+                                "user_id": str(goal.user_id),
+                                "deadline": goal.deadline.isoformat()
                             }
                         )
+                    except Exception as notification_error:
+                        # Log but continue with other notifications
+                        logger.error(f"Failed to send deadline notification for goal {goal.id}: {str(notification_error)}")
             
-            return match_details
+            # Commit all changes (to update goal metadata with last notification timestamps)
+            if notification_count > 0:
+                await self.session.commit()
+                logger.info(f"Sent {notification_count} deadline approaching notifications")
             
-        except GoalNotFoundError:
-            raise
-        except Exception as e:
-            logger.error(f"Error checking matches for goal {goal_id}: {str(e)}")
-            raise GoalError(f"Failed to check goal matches: {str(e)}")
-            
-    async def find_matching_deals(self, goal_id: UUID) -> List[Any]:
-        """Find deals that match the goal's constraints.
-        
-        Args:
-            goal_id: The ID of the goal to find matches for
-            
-        Returns:
-            List of matching Deal objects
-        """
-        try:
-            # Get the goal with its constraints
-            goal = await self.get_goal_by_id(goal_id)
-            if not goal:
-                raise GoalNotFoundError(f"Goal {goal_id} not found")
-                
-            # Get deal service from dependencies
-            from core.services.deal import DealService
-            deal_service = DealService(self.session, self._redis)
-            
-            # Get active deals
-            deals = await deal_service.list_deals(status=DealStatus.ACTIVE.value)
-            
-            # Filter deals that match the goal's constraints
-            matching_deals = []
-            for deal in deals:
-                if self._matches_constraints(deal, goal.constraints):
-                    matching_deals.append(deal)
-                    
-            return matching_deals
-            
-        except GoalNotFoundError:
-            raise
-        except Exception as e:
-            logger.error(f"Error finding matching deals for goal {goal_id}: {str(e)}")
-            raise GoalError(f"Failed to find matching deals: {str(e)}")
-
-    async def match_deal_with_goals(
-        self,
-        deal_id: UUID,
-        user_id: Optional[UUID] = None
-    ) -> List[Any]:
-        """
-        Find goals that match a given deal.
-        
-        Args:
-            deal_id: The ID of the deal to match
-            user_id: Optional user ID to filter goals by user
-            
-        Returns:
-            List of matching goals
-            
-        Raises:
-            GoalError: If there is an error matching the deal with goals
-        """
-        try:
-            from core.models.deal import Deal
-            from core.models.goal import Goal
-            
-            # Get the deal
-            stmt = select(Deal).where(Deal.id == deal_id)
-            if user_id:
-                stmt = stmt.where(Deal.user_id == user_id)
-                
-            result = await self.session.execute(stmt)
-            deal = result.scalar_one_or_none()
-            
-            if not deal:
-                logger.warning(f"Deal {deal_id} not found for matching with goals")
-                return []
-                
-            # Get active goals
-            stmt = select(Goal).where(Goal.status == "active")
-            if user_id:
-                stmt = stmt.where(Goal.user_id == user_id)
-                
-            result = await self.session.execute(stmt)
-            goals = result.scalars().all()
-            
-            if not goals:
-                logger.info(f"No active goals found for matching with deal {deal_id}")
-                return []
-                
-            # Match deal with goals
-            matching_goals = []
-            for goal in goals:
-                if self._matches_constraints(deal, goal.constraints):
-                    # Convert goal to response model
-                    goal_response = await self._to_response(goal)
-                    matching_goals.append(goal_response)
-                    
-                    # Process the match in the background
-                    asyncio.create_task(self.process_deal_match(goal.id, deal_id))
-                    
-            return matching_goals
+            return notification_count
             
         except Exception as e:
-            logger.error(f"Error matching deal {deal_id} with goals: {str(e)}")
-            raise GoalError(f"Failed to match deal with goals: {str(e)}")
-
-    def _prepare_metadata_for_cache(self, metadata: Dict) -> Dict:
-        """Prepare metadata for caching by ensuring all values are serializable.
-        
-        Args:
-            metadata: The metadata to prepare
-            
-        Returns:
-            Dict: Serializable metadata
-        """
-        if not metadata:
-            return {}
-        
-        result = {}
-        for key, value in metadata.items():
-            if isinstance(value, UUID):
-                result[key] = str(value)
-            elif isinstance(value, (datetime, date)):
-                result[key] = value.isoformat()
-            elif isinstance(value, dict):
-                result[key] = self._prepare_metadata_for_cache(value)
-            elif isinstance(value, (list, tuple)):
-                result[key] = [
-                    self._prepare_metadata_for_cache(item) if isinstance(item, dict)
-                    else str(item) if isinstance(item, (UUID, datetime, date))
-                    else item
-                    for item in value
-                ]
-            else:
-                result[key] = value
-        return result
+            await self.session.rollback()
+            logger.error(f"Error checking approaching deadlines: {str(e)}")
+            raise GoalError(f"Failed to check approaching deadlines: {str(e)}")

@@ -21,6 +21,8 @@ from core.exceptions.deal_exceptions import DealValidationError
 from core.utils.logger import get_logger
 from core.celery import celery_app
 from core.services.notification import NotificationService
+from core.models.notification import NotificationType, NotificationPriority
+from core.notifications import TemplatedNotificationService
 
 class PriceMonitorError(BaseError):
     """Base error for price monitoring operations."""
@@ -216,25 +218,34 @@ async def trigger_price_alerts(session: AsyncSession, price_changes: List[Dict[s
         
         # Check if change exceeds notification threshold
         if abs(change["change_percentage"]) >= goal.notification_threshold:
-            message = (
-                f"Price {('increased' if change['is_increase'] else 'decreased')} by "
-                f"{abs(change['change_percentage']):.2f}% for {deal.title}\n"
-                f"New price: {change['new_price']} {deal.currency}\n"
-                f"URL: {deal.url}"
-            )
+            # Format price with currency symbol
+            formatted_price = f"{change['new_price']} {deal.currency}"
             
-            await notification_service.create_notification(
+            # Determine if this is a price drop or increase
+            template_id = "price_drop_alert" if not change["is_increase"] else "price_increase_alert"
+            
+            # Create templated notification service
+            templated_notification_service = TemplatedNotificationService(session)
+            
+            # Send notification using template
+            await templated_notification_service.send_notification(
+                template_id=template_id,
                 user_id=goal.user_id,
-                title=f"Price Alert for {goal.title}",
-                message=message,
-                notification_type="price_alert",
-                priority="high" if abs(change["change_percentage"]) >= 20 else "medium",
+                template_params={
+                    "item_name": deal.title,
+                    "target_price": formatted_price,
+                    "threshold_price": formatted_price
+                },
+                override_priority=NotificationPriority.HIGH if abs(change["change_percentage"]) >= 20 else NotificationPriority.MEDIUM,
                 metadata={
                     "goal_id": str(goal.id),
                     "deal_id": str(deal.id),
                     "price_change": float(change["change_percentage"]),
-                    "type": "price_alert"
-                }
+                    "is_increase": change["is_increase"]
+                },
+                goal_id=goal.id,
+                deal_id=deal.id,
+                action_url=f"/deals/{deal.id}"
             )
             
             # Check for auto-buy trigger
@@ -313,13 +324,7 @@ async def create_price_alert(
     deal_id: str,
     price_change: Dict[str, Any]
 ) -> None:
-    """Create a price alert for significant price changes.
-    
-    Args:
-        session: Database session
-        deal_id: Deal ID
-        price_change: Price change information
-    """
+    """Create a price alert for users watching a deal."""
     try:
         # Get deal and goal
         stmt = select(Deal).where(Deal.id == deal_id)
@@ -338,27 +343,34 @@ async def create_price_alert(
             
         # Check notification threshold
         if abs(price_change["change_percentage"]) >= goal.notification_threshold:
-            notification_service = NotificationService(session)
+            # Format price with currency symbol
+            formatted_price = f"{price_change['new_price']} {deal.currency}"
             
-            message = (
-                f"Price {('increased' if price_change['is_increase'] else 'decreased')} by "
-                f"{abs(price_change['change_percentage']):.2f}% for {deal.title}\n"
-                f"New price: {price_change['new_price']} {deal.currency}\n"
-                f"URL: {deal.url}"
-            )
+            # Determine if this is a price drop or increase
+            template_id = "price_drop_alert" if not price_change["is_increase"] else "price_increase_alert"
             
-            await notification_service.create_notification(
+            # Create templated notification service
+            templated_notification_service = TemplatedNotificationService(session)
+            
+            # Send notification using template
+            await templated_notification_service.send_notification(
+                template_id=template_id,
                 user_id=goal.user_id,
-                title=f"Price Alert for {goal.title}",
-                message=message,
-                notification_type="price_alert",
-                priority="high" if abs(price_change["change_percentage"]) >= 20 else "medium",
+                template_params={
+                    "item_name": deal.title,
+                    "target_price": formatted_price,
+                    "threshold_price": formatted_price
+                },
+                override_priority=NotificationPriority.HIGH if abs(price_change["change_percentage"]) >= 20 else NotificationPriority.MEDIUM,
                 metadata={
                     "goal_id": str(goal.id),
                     "deal_id": str(deal.id),
                     "price_change": float(price_change["change_percentage"]),
-                    "type": "price_alert"
-                }
+                    "is_increase": price_change["is_increase"]
+                },
+                goal_id=goal.id,
+                deal_id=deal.id,
+                action_url=f"/deals/{deal.id}"
             )
             
             # Check auto-buy threshold

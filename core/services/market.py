@@ -98,7 +98,72 @@ class MarketService(BaseService[Market, MarketCreate, MarketUpdate]):
             filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_model_params}
 
             # Create the market using filtered kwargs
-            return await self.market_repository.create(filtered_kwargs)
+            market = await self.market_repository.create(filtered_kwargs)
+            
+            # Send notification about new market
+            try:
+                # Import here to avoid circular imports
+                from core.notifications import TemplatedNotificationService
+                
+                # Create notification service
+                notification_service = TemplatedNotificationService(self.market_repository.session)
+                
+                # Format market name and type for display
+                market_name = market.name
+                market_type_display = (market.type or "").replace("_", " ").title()
+                
+                # Get users to notify about new market
+                # In a real implementation, you might query users with specific preferences
+                # For now, we'll notify the market owner and admin users
+                users_to_notify = []
+                
+                # Add market owner
+                if market.user_id:
+                    users_to_notify.append(market.user_id)
+                
+                # Add admin users - in a production system, query for admin users
+                from core.config import settings
+                admin_user_id = getattr(settings, 'ADMIN_USER_ID', None)
+                if admin_user_id:
+                    users_to_notify.append(admin_user_id)
+                
+                # Get all users with market-related preferences (sample implementation)
+                # In a real system, you'd query users with market notifications enabled
+                from sqlalchemy import select
+                from core.models.user import User
+                
+                stmt = select(User.id).where(
+                    User.is_active == True,
+                    User.notification_preferences.contains({"markets": True})
+                )
+                result = await self.market_repository.session.execute(stmt)
+                for user_id in result.scalars().all():
+                    if user_id not in users_to_notify:
+                        users_to_notify.append(user_id)
+                
+                # Send notification to all users
+                for user_id in users_to_notify:
+                    await notification_service.send_notification(
+                        template_id="market_new",
+                        user_id=user_id,
+                        template_params={
+                            "market_name": market_name,
+                            "market_type": market_type_display
+                        },
+                        metadata={
+                            "market_id": str(market.id),
+                            "market_type": market.type,
+                            "created_at": market.created_at.isoformat() if market.created_at else None
+                        },
+                        action_url=f"/markets/{market.id}"
+                    )
+            except Exception as notification_error:
+                # Log but don't fail the market creation
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"Failed to send new market notification: {str(notification_error)}")
+            
+            return market
         except Exception as e:
             raise ValidationError(f"Failed to create market: {str(e)}")
 
@@ -183,6 +248,9 @@ class MarketService(BaseService[Market, MarketCreate, MarketUpdate]):
         """
         try:
             market = await self.get_market(market_id)
+            
+            # Store original status to detect status changes
+            original_status = market.status
 
             # Validate API credentials if provided
             api_credentials = kwargs.get('api_credentials')
@@ -224,7 +292,52 @@ class MarketService(BaseService[Market, MarketCreate, MarketUpdate]):
             filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_model_params}
 
             # Update the market
-            return await self.market_repository.update(market_id, **filtered_kwargs)
+            updated_market = await self.market_repository.update(market_id, **filtered_kwargs)
+            
+            # Send notification if status has changed
+            if 'status' in filtered_kwargs and original_status != updated_market.status:
+                try:
+                    # Import here to avoid circular imports
+                    from core.notifications import TemplatedNotificationService
+                    
+                    # Format the statuses for display
+                    original_status_display = original_status.replace("_", " ").title()
+                    new_status_display = updated_market.status.replace("_", " ").title()
+                    
+                    # Create notification service
+                    notification_service = TemplatedNotificationService(self.market_repository.session)
+                    
+                    # Get all related users (market owner)
+                    affected_users = []
+                    if updated_market.user_id:
+                        affected_users.append(updated_market.user_id)
+                    
+                    # Also notify admins - in a real system, you'd get admin users from the database
+                    # For now, we'll just notify the market owner
+                    
+                    # Send notification to all affected users
+                    for user_id in affected_users:
+                        await notification_service.send_notification(
+                            template_id="market_status_change",
+                            user_id=user_id,
+                            template_params={
+                                "market_name": updated_market.name,
+                                "old_status": original_status_display,
+                                "new_status": new_status_display
+                            },
+                            metadata={
+                                "market_id": str(market_id),
+                                "old_status": original_status,
+                                "new_status": updated_market.status,
+                                "changed_at": datetime.utcnow().isoformat()
+                            },
+                            action_url=f"/markets/{market_id}"
+                        )
+                except Exception as notification_error:
+                    # Log but don't fail the market update
+                    logger.warning(f"Failed to send market status change notification: {str(notification_error)}")
+            
+            return updated_market
         except MarketNotFoundError:
             raise
         except Exception as e:
@@ -270,6 +383,13 @@ class MarketService(BaseService[Market, MarketCreate, MarketUpdate]):
                 {"id": "electronics", "name": "Electronics", "parent_id": None},
                 {"id": "home", "name": "Home", "parent_id": None},
                 {"id": "grocery", "name": "Grocery", "parent_id": None}
+            ],
+            MarketType.GOOGLE_SHOPPING: [
+                {"id": "electronics", "name": "Electronics", "parent_id": None},
+                {"id": "fashion", "name": "Fashion", "parent_id": None},
+                {"id": "home", "name": "Home & Garden", "parent_id": None},
+                {"id": "beauty", "name": "Beauty & Personal Care", "parent_id": None},
+                {"id": "toys", "name": "Toys & Games", "parent_id": None}
             ]
         }
         

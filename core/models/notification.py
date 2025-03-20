@@ -480,7 +480,7 @@ class Notification(Base):
                 cls.user_id == user_id,
                 cls.type == type.value,
                 cls.created_at >= cutoff_time,
-                cls.status.in_([NotificationStatus.PENDING.value, NotificationStatus.SENT.value])
+                cls.status.in_(["pending", "sent"])
             ).order_by(cls.created_at.desc())
             result = await db.execute(stmt)
             recent_notifications = result.scalars().all()

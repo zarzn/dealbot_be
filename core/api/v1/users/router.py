@@ -26,6 +26,9 @@ from core.models.user_preferences import (
 )
 from core.exceptions.auth_exceptions import TokenRefreshError
 from core.exceptions import InvalidCredentialsError
+from core.services.notification import NotificationService
+from core.models.notification import NotificationType, NotificationChannel, NotificationPriority
+from core.notifications import TemplatedNotificationService
 
 router = APIRouter(tags=["auth"])
 logger = get_logger(__name__)
@@ -94,6 +97,13 @@ async def register_user(
                 "timezone": "UTC"
             }
         })
+        
+        # Send registration confirmation notification
+        notification_service = TemplatedNotificationService(db)
+        background_tasks.add_task(
+            notification_service.send_registration_confirmation,
+            user_id=new_user.id
+        )
         
         return new_user
     except Exception as e:
@@ -392,6 +402,12 @@ async def confirm_password_reset(
         user.reset_token_expires = None
         await db.commit()
         
+        # Create notification for password reset using templated service
+        notification_service = TemplatedNotificationService(db)
+        await notification_service.send_password_reset_notification(
+            user_id=user.id
+        )
+        
         return {"message": "Password successfully reset"}
     except HTTPException:
         raise
@@ -531,6 +547,12 @@ async def update_password(
         # Update password
         hashed_password = get_password_hash(request.new_password)
         await User.update(db, current_user.id, {"password": hashed_password})
+        
+        # Create notification for password change using templated service
+        notification_service = TemplatedNotificationService(db)
+        await notification_service.send_password_changed_notification(
+            user_id=current_user.id
+        )
         
         return {"message": "Password updated successfully"}
     except HTTPException:
@@ -935,6 +957,32 @@ async def update_settings(
         try:
             await db.commit()
             await db.refresh(preferences)
+            
+            # Send notification for security-related preference changes
+            if (request.push_enabled is not None or 
+                request.sms_enabled is not None or 
+                request.telegram_enabled is not None or 
+                request.discord_enabled is not None or
+                request.enabled_channels is not None):
+                
+                # Initialize notification service
+                notification_service = TemplatedNotificationService(db)
+                
+                # Send security settings updated notification
+                await notification_service.send_notification(
+                    template_id="sec_settings_updated",
+                    user_id=current_user.id,
+                    metadata={
+                        "updated_at": datetime.utcnow().isoformat(),
+                        "settings_updated": {
+                            "notification_channels": request.enabled_channels is not None,
+                            "push_enabled": request.push_enabled is not None,
+                            "sms_enabled": request.sms_enabled is not None,
+                            "telegram_enabled": request.telegram_enabled is not None,
+                            "discord_enabled": request.discord_enabled is not None
+                        }
+                    }
+                )
         except Exception as e:
             await db.rollback()
             logger.error(f"Database error updating preferences: {str(e)}")
