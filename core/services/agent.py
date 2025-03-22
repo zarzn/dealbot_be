@@ -44,8 +44,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         self.redis = get_redis_service()
         
         # Initialize AI service
-        from core.services.ai import AIService
-        self._ai_service = AIService()
+        self._ai_service = None
 
     @property
     def background_tasks(self) -> Optional[BackgroundTasks]:
@@ -287,7 +286,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         
         try:
             # Use the AI service for analysis
-            return await self.ai_service.analyze_goal(goal_data)
+            return await self._get_ai_service().analyze_goal(goal_data)
         except Exception as e:
             logger.error(f"Error analyzing goal with AI service: {str(e)}")
             # Fall back to predefined analysis with sensible defaults
@@ -326,7 +325,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         
         try:
             # Use the AI service to analyze the deal
-            return await self.ai_service.analyze_deal(deal_id)
+            return await self._get_ai_service().analyze_deal(deal_id)
         except Exception as e:
             logger.error(f"Error analyzing deal with AI service: {str(e)}")
             # Fall back to predefined analysis with sensible defaults
@@ -358,7 +357,7 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         
         try:
             # Use the AI service to search the market
-            return await self.ai_service.search_market(market_id, search_params)
+            return await self._get_ai_service().search_market(market_id, search_params)
         except Exception as e:
             logger.error(f"Error searching market: {str(e)}")
             # Return empty list as fallback
@@ -528,3 +527,10 @@ class AgentService(BaseService[Agent, AgentCreate, AgentUpdate]):
         llm_service = await self._get_llm_service()
         response = await llm_service.generate_text(prompt)
         return response.content
+
+    async def _get_ai_service(self):
+        """Get the AI service instance lazily."""
+        if self._ai_service is None:
+            from core.services.ai import get_ai_service
+            self._ai_service = await get_ai_service()
+        return self._ai_service

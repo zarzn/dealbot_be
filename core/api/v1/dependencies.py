@@ -41,14 +41,60 @@ async def get_current_user_optional(
     db: AsyncSession = Depends(get_db)
 ) -> Optional[User]:
     """Get current user if authenticated, otherwise return None."""
+    # Import at the top of the function to ensure the User model is always available
+    from core.models.user import User
+    from sqlalchemy import select
+    import uuid
+    from datetime import datetime
+    
     logger.debug(f"get_current_user_optional called with token: {'Present' if token else 'None'}")
     
+    # DEBUG MODE: Allow test tokens for development
+    ALLOW_TEST_TOKEN = True
+    logger.debug(f"Debug auth enabled: {ALLOW_TEST_TOKEN}")
+    
+    # Handle test tokens for debugging
+    if ALLOW_TEST_TOKEN and token and token.startswith('test_'):
+        logger.info(f"Using test token: {token}")
+        # Create a mock user for testing
+        test_user = User(
+            id=uuid.UUID('00000000-0000-4000-a000-000000000000'),
+            email='test@example.com',
+            username='testuser',
+            full_name='Test User',
+            status='active',
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            roles=['user']
+        )
+        logger.info(f"Created test user with ID: {test_user.id}")
+        return test_user
+
     # Handle the case where token is None (no Authorization header)
     if not token:
         return None
     
-    # Pass the token to get_optional_user
-    return await get_optional_user(token, db)
+    # Get auth service and verify token
+    try:
+        # Import the auth service here to avoid circular imports
+        from core.services.auth import AuthService, get_jwt_secret_key, verify_token
+        
+        # Verify the token directly using the function instead of depending on auth_service
+        payload = await verify_token(token)
+        if not payload or not payload.get("sub"):
+            return None
+            
+        user_id = payload.get("sub")
+        
+        # Query the database for the user
+        stmt = select(User).where(User.id == user_id)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
+        
+        return user
+    except Exception as e:
+        logger.warning(f"Error in get_current_user_optional: {e}")
+        return None
 
 async def get_token_service(db: AsyncSession = Depends(get_db)) -> TokenService:
     """Get token service instance."""

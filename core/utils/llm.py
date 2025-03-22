@@ -11,8 +11,10 @@ import sys
 import os
 import traceback
 import importlib.util
+import threading
 from typing import Optional, Dict, Any, List, Union
 from enum import Enum
+import time
 
 # Initialize module variables
 ChatDeepSeek = None
@@ -62,6 +64,7 @@ from core.config import settings
 from core.exceptions import AIServiceError
 
 _llm_instance = None
+_llm_instance_lock = threading.Lock()
 
 # Custom exceptions
 class MonkeyPatchingError(Exception):
@@ -72,28 +75,6 @@ class LLMProvider(str, Enum):
     """Enum for LLM providers."""
     DEEPSEEK = "deepseek"
     OPENAI = "openai"
-    MOCK = "mock"
-
-class MockLLM(Runnable):
-    """
-    A simple mock LLM for testing purposes
-    """
-    def __init__(self, *args, **kwargs):
-        self.args = args
-        self.kwargs = kwargs
-        self.model_name = "mock-llm"
-        self.provider = LLMProvider.MOCK
-        logger.info("Initialized MockLLM for testing")
-    
-    def invoke(self, prompt, **kwargs):
-        """Mock invoke method that returns a fixed response for testing"""
-        logger.info(f"MockLLM received prompt: {prompt[:100]}...")
-        return "This is a mock response from the LLM for testing purposes."
-    
-    async def ainvoke(self, prompt, **kwargs):
-        """Mock async invoke method that returns a fixed response for testing"""
-        logger.info(f"MockLLM async received prompt: {prompt[:100]}...")
-        return "This is a mock async response from the LLM for testing purposes."
 
 def create_llm_chain(prompt_template: Union[str, PromptTemplate], output_parser=None):
     """Create an LLM chain with the specified prompt template and output parser.
@@ -103,12 +84,16 @@ def create_llm_chain(prompt_template: Union[str, PromptTemplate], output_parser=
         output_parser: Optional output parser. Defaults to StrOutputParser.
         
     Returns:
-        A runnable LLM chain.
+        A runnable LLM chain or None if no LLM is available.
     """
     if output_parser is None:
         output_parser = StrOutputParser()
         
     llm = get_llm_instance()
+    
+    if llm is None:
+        logger.warning("Cannot create LLM chain: No LLM instance available")
+        return None
     
     # Handle both string and PromptTemplate inputs
     if isinstance(prompt_template, str):
@@ -165,134 +150,158 @@ def monkeypatch_pydantic_validator():
         return False
 
 def get_llm_instance():
-    """
-    Get the appropriate LLM instance based on settings.
+    """Get a language model instance for AI functionalities.
     
-    The function applies a monkey patch to fix duplicate validator issues in langchain,
-    then initializes and returns the appropriate LLM instance.
+    This function implements the singleton pattern to ensure only one LLM
+    instance is created for the application lifetime.
     
     Returns:
-        An LLM instance based on configuration (DeepSeek or OpenAI)
+        An instance of a language model to use for AI functions or None if no LLM is available
     """
     global _llm_instance
     
-    if _llm_instance is not None:
-        logger.debug("Returning existing LLM instance")
-        return _llm_instance
-    
-    logger.info("Initializing new LLM instance")
-    
-    # Apply the monkey patch to fix the duplicate validator issue
-    patch_success = monkeypatch_pydantic_validator()
-    logger.info(f"Pydantic validator patch applied: {patch_success}")
-    
-    # Log available API keys for debugging
-    deepseek_key_available = bool(os.environ.get("DEEPSEEK_API_KEY"))
-    openai_key_available = bool(os.environ.get("OPENAI_API_KEY"))
-    
-    logger.info(f"DeepSeek API key available: {deepseek_key_available}")
-    logger.info(f"OpenAI API key available: {openai_key_available}")
-    
-    # Check if LLM classes were imported successfully
-    if ChatDeepSeek is None:
-        logger.error("ChatDeepSeek class is not available - missing langchain-deepseek package?")
-    
-    if ChatOpenAI is None:
-        logger.error("ChatOpenAI class is not available - missing langchain-openai package?")
-    
-    # Get configured provider
-    try:
-        # Get environment - we should prioritize DeepSeek in production
-        environment = getattr(settings, "APP_ENVIRONMENT", "development").lower()
-        testing = getattr(settings, "TESTING", False)
-        logger.info(f"Current environment: {environment}, Testing mode: {testing}")
-        
-        # Determine the provider - always prefer DeepSeek unless explicitly set to OpenAI
-        provider_str = getattr(settings, "LLM_PROVIDER", "deepseek").lower()
-        provider = LLMProvider(provider_str) if isinstance(provider_str, str) else LLMProvider.DEEPSEEK
-        logger.info(f"Configured LLM provider: {provider}")
-        
-        # DEEPSEEK CONFIGURATION
-        if provider == LLMProvider.DEEPSEEK:
-            if not deepseek_key_available:
-                logger.warning("DeepSeek model requested but API key not available, falling back to OpenAI")
-                provider = LLMProvider.OPENAI
-            elif ChatDeepSeek is None:
-                logger.error("DeepSeek model requested but ChatDeepSeek class is not available, falling back to OpenAI")
-                provider = LLMProvider.OPENAI
-            else:
-                try:
-                    # Get model name from settings
-                    model_name = getattr(settings, "LLM_MODEL", "deepseek-chat")
-                    temperature = getattr(settings, "LLM_TEMPERATURE", 0.7)
-                    
-                    # Use lower max_tokens to speed up responses
-                    max_tokens = getattr(settings, "LLM_MAX_TOKENS", 1000)
-                    max_tokens = min(max_tokens, 500)  # Further limit max tokens for speed
-                    
-                    logger.info(f"Initializing DeepSeek model: {model_name} with max_tokens={max_tokens}")
-                    _llm_instance = ChatDeepSeek(
-                        api_key=os.environ.get("DEEPSEEK_API_KEY"),
-                        model_name=model_name,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        request_timeout=15  # Add 15-second timeout at the API level
-                    )
-                    logger.info("DeepSeek model initialized successfully")
-                    return _llm_instance
-                except ImportError as e:
-                    logger.warning(f"DeepSeek model requested but package not available: {str(e)}. Using fallback.")
-                    provider = LLMProvider.OPENAI
-                except Exception as e:
-                    logger.error(f"Error initializing DeepSeek model: {str(e)}")
-                    logger.error(traceback.format_exc())
-                    provider = LLMProvider.OPENAI
-        
-        # OPENAI CONFIGURATION
-        if provider == LLMProvider.OPENAI:
-            if not openai_key_available:
-                logger.error("OpenAI model requested but API key not available")
-                raise AIServiceError("OpenAI API key required but not available")
-            elif ChatOpenAI is None:
-                logger.error("OpenAI model requested but ChatOpenAI class is not available")
-                raise AIServiceError("OpenAI integration requested but langchain-openai package is not available")
-            else:
-                try:
-                    # Get model name from settings
-                    model_name = getattr(settings, "OPENAI_MODEL", "gpt-4o")
-                    temperature = getattr(settings, "LLM_TEMPERATURE", 0.7)
-                    
-                    # Use lower max_tokens to speed up responses
-                    max_tokens = getattr(settings, "LLM_MAX_TOKENS", 1000)
-                    max_tokens = min(max_tokens, 500)  # Further limit max tokens for speed
-                    
-                    logger.info(f"Initializing OpenAI model: {model_name} with max_tokens={max_tokens}")
-                    _llm_instance = ChatOpenAI(
-                        api_key=os.environ.get("OPENAI_API_KEY"),
-                        model_name=model_name,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        request_timeout=15  # Add 15-second timeout at the API level
-                    )
-                    logger.info("OpenAI model initialized successfully")
-                    return _llm_instance
-                except Exception as e:
-                    logger.error(f"Error initializing OpenAI model: {str(e)}")
-                    logger.error(traceback.format_exc())
-                    raise AIServiceError(f"Failed to initialize OpenAI LLM: {str(e)}")
-    
-    except Exception as e:
-        logger.error(f"Failed to initialize LLM instance: {str(e)}")
-        logger.error(traceback.format_exc())
-        
-        # Only use MockLLM if no API keys are available or if imports failed
-        if ((not deepseek_key_available or ChatDeepSeek is None) and 
-            (not openai_key_available or ChatOpenAI is None)):
-            logger.warning("No working LLM providers available, falling back to MockLLM")
-            _llm_instance = MockLLM()
+    # Thread safety for LLM instance creation
+    with _llm_instance_lock:
+        # Double-check pattern: Return existing instance if available
+        if _llm_instance is not None:
+            logger.debug("Returning existing LLM instance")
             return _llm_instance
-        else:
-            raise AIServiceError(f"Failed to initialize any LLM despite API keys being available: {str(e)}")
+            
+        # Set retry count for robustness
+        max_retries = 2
+        retry_count = 0
+        last_error = None
+        
+        while retry_count <= max_retries:
+            try:
+                # Get environment and testing status
+                environment = getattr(settings, "ENVIRONMENT", "development")
+                testing = getattr(settings, "TESTING", False)
+                
+                # Check if API keys are available
+                openai_key_available = "OPENAI_API_KEY" in os.environ
+                deepseek_key_available = "DEEPSEEK_API_KEY" in os.environ
+                
+                # Log environment info for debugging
+                logger.info(f"Initializing LLM (attempt {retry_count+1}/{max_retries+1}) - Environment: {environment}, Testing: {testing}")
+                logger.info(f"API keys available - DeepSeek: {deepseek_key_available}, OpenAI: {openai_key_available}")
+                
+                # If no API keys are available, return None
+                if not deepseek_key_available and not openai_key_available:
+                    logger.warning("No LLM API keys available. AI functionality will be disabled.")
+                    return None
+                
+                # Set default provider
+                provider = None
+                
+                # Import optional dependencies - with improved error handling
+                try:
+                    from langchain_core.runnables import Runnable
+                    
+                    # Determine the provider - always prefer DeepSeek unless explicitly set to OpenAI
+                    provider_str = getattr(settings, "LLM_PROVIDER", "deepseek").lower()
+                    try:
+                        provider = LLMProvider(provider_str) if isinstance(provider_str, str) else LLMProvider.DEEPSEEK
+                        logger.info(f"Configured LLM provider: {provider}")
+                    except ValueError:
+                        logger.warning(f"Invalid LLM provider: {provider_str}, falling back to DeepSeek")
+                        provider = LLMProvider.DEEPSEEK
+                        
+                    # DEEPSEEK CONFIGURATION
+                    if provider == LLMProvider.DEEPSEEK:
+                        if not deepseek_key_available:
+                            logger.warning("DeepSeek model requested but API key not available, falling back to OpenAI")
+                            provider = LLMProvider.OPENAI
+                        elif ChatDeepSeek is None:
+                            logger.error("DeepSeek model requested but ChatDeepSeek class is not available, falling back to OpenAI")
+                            provider = LLMProvider.OPENAI
+                        else:
+                            try:
+                                # Get model name from settings
+                                model_name = getattr(settings, "LLM_MODEL", "deepseek-chat")
+                                
+                                # Use lower temperature for more deterministic responses
+                                # Use a fixed low temperature of 0.2 to ensure consistent outputs
+                                temperature = 0.2
+                                
+                                # Use lower max_tokens to speed up responses
+                                # Limit to 250 tokens which is sufficient for structured outputs
+                                max_tokens = 250
+                                
+                                logger.info(f"Initializing DeepSeek model: {model_name} with max_tokens={max_tokens}, temperature={temperature}")
+                                llm = ChatDeepSeek(
+                                    api_key=os.environ.get("DEEPSEEK_API_KEY"),
+                                    model_name=model_name,
+                                    temperature=temperature,
+                                    max_tokens=max_tokens,
+                                    request_timeout=10  # Reduced timeout to 10 seconds for faster failures
+                                )
+                                logger.info("DeepSeek model initialized successfully")
+                                _llm_instance = llm
+                                return _llm_instance
+                            except Exception as e:
+                                logger.warning(f"DeepSeek model initialization failed: {str(e)}. Trying OpenAI fallback.")
+                                logger.warning(traceback.format_exc())
+                                provider = LLMProvider.OPENAI
+                    
+                    # OPENAI CONFIGURATION
+                    if provider == LLMProvider.OPENAI:
+                        if not openai_key_available:
+                            logger.warning("OpenAI model requested but API key not available, AI functionality will be disabled")
+                            return None
+                        elif ChatOpenAI is None:
+                            logger.error("OpenAI model requested but ChatOpenAI class is not available, AI functionality will be disabled")
+                            return None
+                        else:
+                            try:
+                                # Get model name from settings
+                                model_name = getattr(settings, "OPENAI_MODEL", "gpt-3.5-turbo")
+                                
+                                # Use fixed low temperature for more deterministic responses
+                                temperature = 0.2
+                                
+                                # Use fixed lower max_tokens to speed up responses
+                                max_tokens = 250
+                                
+                                logger.info(f"Initializing OpenAI model: {model_name} with max_tokens={max_tokens}, temperature={temperature}")
+                                llm = ChatOpenAI(
+                                    api_key=os.environ.get("OPENAI_API_KEY"),
+                                    model_name=model_name,
+                                    temperature=temperature,
+                                    max_tokens=max_tokens,
+                                    request_timeout=10  # Reduced timeout to 10 seconds
+                                )
+                                logger.info("OpenAI model initialized successfully")
+                                _llm_instance = llm
+                                return _llm_instance
+                            except Exception as e:
+                                logger.warning(f"OpenAI model initialization failed: {str(e)}. AI functionality will be disabled.")
+                                logger.warning(traceback.format_exc())
+                                return None
+                except Exception as e:
+                    logger.error(f"Error during dependency imports: {str(e)}")
+                    logger.error(traceback.format_exc())
+                    return None
+                
+                # If we get here, we couldn't initialize any LLM
+                logger.warning("Failed to initialize any LLM. AI functionality will be disabled.")
+                return None
+                
+            except Exception as e:
+                last_error = e
+                logger.error(f"LLM initialization attempt {retry_count+1}/{max_retries+1} failed: {str(e)}")
+                logger.error(traceback.format_exc())
+                retry_count += 1
+                if retry_count <= max_retries:
+                    # Exponential backoff for retries (0.5s, 1s)
+                    retry_delay = 0.5 * (2 ** (retry_count - 1))
+                    logger.info(f"Retrying LLM initialization in {retry_delay:.1f} seconds...")
+                    time.sleep(retry_delay)
+        
+        # All retries failed
+        logger.error(f"All LLM initialization attempts failed: {str(last_error)}")
+        logger.error("AI functionality will be disabled.")
+        return None
 
 def reset_llm_instance() -> None:
     """Reset the language model instance."""
@@ -339,11 +348,6 @@ def test_llm_connection() -> bool:
             logger.error("Failed to initialize LLM instance")
             return False
             
-        # Check if we got a mock LLM (which always "works")
-        if isinstance(llm, MockLLM):
-            logger.warning("Using MockLLM - this always returns success in tests but not real analysis")
-            return True
-            
         # Log the model type we're testing with
         if hasattr(llm, 'model_name'):
             logger.info(f"Testing connection with model: {llm.model_name}")
@@ -379,11 +383,11 @@ def test_llm_connection() -> bool:
         logger.error(traceback.format_exc())
         return False
 
-def initialize_deepseek_llm() -> BaseChatModel:
+def initialize_deepseek_llm() -> Optional[BaseChatModel]:
     """Initialize DeepSeek LLM.
 
     Returns:
-        BaseChatModel: DeepSeek LLM instance
+        BaseChatModel: DeepSeek LLM instance or None if not available
     """
     try:
         from langchain_deepseek import ChatDeepSeek
@@ -391,10 +395,12 @@ def initialize_deepseek_llm() -> BaseChatModel:
         try:
             from langchain_community.chat_models import ChatDeepSeek
         except ImportError:
-            raise ImportError(
-                "Failed to import ChatDeepSeek. "
-                "Please install langchain-deepseek or ensure langchain-community is up to date."
-            )
+            logger.error("Failed to import ChatDeepSeek. Please install langchain-deepseek or ensure langchain-community is up to date.")
+            return None
+
+    if not settings.DEEPSEEK_API_KEY:
+        logger.error("Missing DEEPSEEK_API_KEY. DeepSeek LLM initialization failed.")
+        return None
 
     model_name = settings.LLM_MODEL if settings.LLM_MODEL else "deepseek-chat"
     try:

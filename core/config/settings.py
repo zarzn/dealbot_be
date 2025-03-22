@@ -233,7 +233,10 @@ class Settings(BaseSettings):
             "/api/v1/health",
             "/api/v1/metrics",
             "/api/v1/deals/public",
-            "/api/v1/deals/open-public"
+            "/api/v1/deals/open-public",
+            "/api/v1/deals/share/auth-debug",
+            "/api/v1/deals/share/test",
+            "/api/v1/deals/share/no-auth-test"
         ]
     )
 
@@ -265,7 +268,7 @@ class Settings(BaseSettings):
     # LLM settings
     DEEPSEEK_API_KEY: SecretStr = Field(default="test-deepseek-key")
     OPENAI_API_KEY: SecretStr = Field(default="test-openai-key")
-    LLM_PROVIDER: str = Field(default="openai", description="Default LLM provider to use (deepseek, openai)")
+    LLM_PROVIDER: str = Field(default="deepseek", description="Default LLM provider to use (deepseek, openai)")
     LLM_MODEL: str = Field(default="deepseek-chat", description="Default DeepSeek model to use")
     LLM_TEMPERATURE: float = Field(default=0.7, description="LLM temperature setting")
     LLM_MAX_TOKENS: int = Field(default=1000, description="Maximum tokens per LLM request")

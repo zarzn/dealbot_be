@@ -210,6 +210,10 @@ async def monitor_deals(self) -> Dict[str, Any]:
                     offset=offset
                 )
                 
+                # Check if active_goals is a coroutine and await it if needed
+                if hasattr(active_goals, '__await__'):
+                    active_goals = await active_goals
+                
                 if not active_goals:
                     break
                 
@@ -218,6 +222,10 @@ async def monitor_deals(self) -> Dict[str, Any]:
                     try:
                         # Get deals for goal
                         deals = await deal_service.get_deals_for_goal(goal)
+                        
+                        # Check if deals is a coroutine and await it if needed
+                        if hasattr(deals, '__await__'):
+                            deals = await deals
                         
                         # Analyze each deal
                         analysis_results = []
@@ -228,6 +236,10 @@ async def monitor_deals(self) -> Dict[str, Any]:
                                     deal['id'],
                                     days=7
                                 )
+                                
+                                # Check if price_history is a coroutine and await it if needed
+                                if hasattr(price_history, '__await__'):
+                                    price_history = await price_history
                                 
                                 # Calculate score
                                 result = calculate_deal_score(
@@ -256,17 +268,23 @@ async def monitor_deals(self) -> Dict[str, Any]:
                         # Store results in Redis
                         if analysis_results:
                             redis_key = f"scored_deals:{goal['id']}"
-                            await redis_client.set(
+                            redis_result = redis_client.set(
                                 redis_key,
                                 [result.__dict__ for result in analysis_results],
                                 ex=settings.DEAL_CACHE_TTL
                             )
+                            # Ensure we await Redis operations
+                            if hasattr(redis_result, '__await__'):
+                                await redis_result
                         
                         # Process top deals
-                        await deal_service.process_top_deals(
+                        process_result = deal_service.process_top_deals(
                             analysis_results,
                             goal
                         )
+                        # Ensure we await process_top_deals if it's a coroutine
+                        if hasattr(process_result, '__await__'):
+                            await process_result
                         
                         stats['goals_processed'] += 1
                         

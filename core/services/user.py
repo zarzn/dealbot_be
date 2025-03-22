@@ -203,3 +203,8 @@ class UserService:
         # Add your wallet address validation logic here
         # For example, check if it's a valid Ethereum or Solana address format
         return True  # Placeholder implementation
+
+# Dependency to get the user service
+async def get_user_service(db: AsyncSession) -> UserService:
+    """Get a user service instance."""
+    return UserService(db)

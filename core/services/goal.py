@@ -81,8 +81,15 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             redis_service: Optional Redis service for caching
         """
         super().__init__(session=session, redis_service=redis_service)
-        self.ai_service = AIService()
+        self._ai_service = None
         self.session = session
+        
+    async def get_ai_service(self):
+        """Get AIService singleton instance."""
+        if self._ai_service is None:
+            from core.services.ai import get_ai_service
+            self._ai_service = await get_ai_service()
+        return self._ai_service
         
     async def init_redis(self) -> None:
         """Initialize Redis connection with retry mechanism"""

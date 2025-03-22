@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional, Union
 from uuid import UUID
 from datetime import datetime, timedelta
 import logging
+from redis.asyncio import Redis
 
 from sqlalchemy import select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,9 @@ from core.models.market import Market
 from core.models.deal import Deal
 from core.exceptions.base_exceptions import NotFoundError, ValidationError
 from core.utils.logger import get_logger
+from core.services.redis import get_redis_service
+from core.database import get_db
+from fastapi import Depends
 
 logger = get_logger(__name__)
 
@@ -22,13 +26,15 @@ logger = get_logger(__name__)
 class PromotionService:
     """Service for managing special promotions in the system."""
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, redis_service: Optional[Redis] = None):
         """Initialize promotion service.
         
         Args:
             db: Database session
+            redis_service: Redis service for caching
         """
         self.db = db
+        self._redis = redis_service
     
     async def create_token_promotion(
         self,
@@ -131,7 +137,7 @@ class PromotionService:
                     metadata={
                         "promotion_title": title,
                         "promotion_description": description,
-                        **metadata if metadata else {}
+                        **(metadata or {})
                     }
                 )
                 
@@ -148,7 +154,7 @@ class PromotionService:
                         "promotion_type": "token_reward",
                         "token_amount": token_amount,
                         "transaction_id": str(transaction.id),
-                        **metadata if metadata else {}
+                        **(metadata or {})
                     }
                 )
                 
@@ -262,7 +268,7 @@ class PromotionService:
                         "discount_percentage": discount_percentage,
                         "promotion_start": promotion_start.isoformat(),
                         "promotion_end": promotion_end.isoformat(),
-                        **metadata if metadata else {}
+                        **(metadata or {})
                     },
                     action_url=f"/markets/{market_id}"
                 )
@@ -383,7 +389,7 @@ class PromotionService:
                         "market_id": str(deal.market_id),
                         "discount_percentage": discount_percentage,
                         "end_time": end_time.isoformat(),
-                        **metadata if metadata else {}
+                        **(metadata or {})
                     },
                     action_url=f"/deals/{deal_id}"
                 )
@@ -408,4 +414,82 @@ class PromotionService:
             "notified_users": notification_count,
             "created_at": datetime.utcnow(),
             "status": "active" if notification_count > 0 else "failed"
-        } 
+        }
+    
+    async def check_first_analysis_promotion(self, user_id: UUID) -> bool:
+        """Check if user is eligible for the 'first analysis free' promotion.
+        
+        This method checks if a user is eligible for their first free deal analysis
+        and marks the promotion as used if it was available.
+        
+        Args:
+            user_id: The ID of the user
+            
+        Returns:
+            True if the user is eligible for the free promotion, False otherwise
+        """
+        if not self._redis:
+            logger.warning("Redis not available, assuming user is not eligible for first analysis promotion")
+            return False
+            
+        try:
+            promotion_key = f"first_analysis_promotion:{user_id}"
+            
+            # Check if the user has already used their free analysis
+            promotion_used = await self._redis.exists(promotion_key)
+            
+            if not promotion_used:
+                # User hasn't used their free analysis yet
+                # Mark as used with a long expiry time (1 year)
+                await self._redis.setex(promotion_key, 60 * 60 * 24 * 365, "used")
+                logger.info(f"User {user_id} is eligible for first analysis promotion")
+                return True
+                
+            logger.info(f"User {user_id} has already used first analysis promotion")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking first analysis promotion: {str(e)}")
+            # In case of error, default to not eligible to avoid token fraud
+            return False
+    
+    async def reset_first_analysis_promotion(self, user_id: UUID) -> bool:
+        """Reset the first analysis promotion for a user.
+        
+        This method allows admins to reset a user's first analysis promotion,
+        allowing them to get another free analysis.
+        
+        Args:
+            user_id: The ID of the user
+            
+        Returns:
+            True if the promotion was reset, False otherwise
+        """
+        if not self._redis:
+            logger.warning("Redis not available, cannot reset first analysis promotion")
+            return False
+            
+        try:
+            promotion_key = f"first_analysis_promotion:{user_id}"
+            
+            # Delete the key to reset the promotion
+            result = await self._redis.delete(promotion_key)
+            
+            if result:
+                logger.info(f"First analysis promotion reset for user {user_id}")
+                return True
+                
+            logger.warning(f"Failed to reset first analysis promotion for user {user_id}")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error resetting first analysis promotion: {str(e)}")
+            return False
+
+# Add this function to provide a dependency for the promotion service
+async def get_promotion_service(
+    db: AsyncSession = Depends(get_db),
+    redis_service = Depends(get_redis_service)
+) -> PromotionService:
+    """Get a promotion service instance."""
+    return PromotionService(db, redis_service) 

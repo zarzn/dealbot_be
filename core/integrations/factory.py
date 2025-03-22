@@ -2,6 +2,7 @@ from typing import Dict, Optional
 from core.integrations.base import MarketBase
 from core.integrations.amazon import AmazonIntegration
 from core.integrations.walmart import WalmartIntegration
+from core.integrations.google_shopping import GoogleShoppingIntegration
 from core.models.enums import MarketType
 from core.exceptions import BaseError, ValidationError
 import logging
@@ -26,10 +27,7 @@ class MarketIntegrationFactory:
         elif market_type == MarketType.WALMART:
             return WalmartIntegration(credentials)
         elif market_type == MarketType.GOOGLE_SHOPPING:
-            # TODO: Implement GoogleShoppingIntegration class
-            # For now, return a placeholder implementation that will log warnings
-            logger.warning("GoogleShoppingIntegration not yet implemented, using WalmartIntegration as placeholder")
-            return WalmartIntegration(credentials)
+            return GoogleShoppingIntegration(credentials)
         else:
             raise ValidationError(f"Unsupported market type: {market_type}")
 

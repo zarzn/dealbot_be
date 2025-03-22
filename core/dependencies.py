@@ -201,7 +201,8 @@ async def get_optional_user(
         
     try:
         # Handle emergency token for test environment
-        if settings.TESTING and token == "test-environment-emergency-token":
+        is_testing = getattr(settings, "TESTING", False)
+        if is_testing and token == "test-environment-emergency-token":
             # Try to get the test user from the database first
             try:
                 stmt = select(User).where(User.email == "test@test.com")

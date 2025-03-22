@@ -5,7 +5,7 @@ from typing import Dict, Any, List, Optional
 import logging
 from datetime import datetime
 
-from core.services.ai import AIService
+from core.services.ai import AIService, get_ai_service
 from core.database import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.dependencies import get_current_user, get_current_user_optional
@@ -25,9 +25,8 @@ router = APIRouter(
 logger = logging.getLogger(__name__)
 
 # Helper function to get AI service
-async def get_ai_service() -> AIService:
-    """Get instance of AIService."""
-    return AIService()
+# Using the singleton implementation from core.services.ai
+# This is the dependency that will be used by the router endpoints
 
 @router.get("/test-connection", response_model=Dict[str, Any])
 async def test_ai_connection(
@@ -73,7 +72,8 @@ async def diagnose_ai_service(
     request: Request,
     test_data: Optional[Dict[str, Any]] = Body({}),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    ai_service: AIService = Depends(get_ai_service)
 ):
     """
     Run a comprehensive diagnostic on the AI service and its dependencies.
@@ -84,8 +84,7 @@ async def diagnose_ai_service(
     logger.info(f"Running AI service diagnostic by user {current_user.id}")
     
     try:
-        # Initialize services
-        ai_service = AIService()
+        # Initialize deal service
         deal_service = DealService(db)
         
         # Get a sample deal to test with

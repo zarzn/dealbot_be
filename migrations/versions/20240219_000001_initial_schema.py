@@ -1101,7 +1101,86 @@ def upgrade() -> None:
         """))
         logger.info("Updated_at trigger created for price_predictions")
 
-        logger.info("Initial schema migration completed successfully")
+        # Users - Create auto-completion view for username and email
+        logger.info("Creating user search_view...")
+        conn.execute(text("""
+        CREATE OR REPLACE VIEW user_search_view AS
+        SELECT id, name, email, status
+        FROM users
+        WHERE status = 'active';
+        """))
+        
+        # Create sharing related tables
+        logger.info("Creating sharing tables...")
+        
+        # First create enum types with DO blocks for conditional creation
+        conn.execute(text("""
+            DO $$ 
+            BEGIN
+                CREATE TYPE shareablecontenttype AS ENUM ('deal', 'search_results', 'collection');
+            EXCEPTION 
+                WHEN duplicate_object THEN NULL;
+            END $$;
+
+            DO $$ 
+            BEGIN
+                CREATE TYPE sharevisibility AS ENUM ('public', 'private');
+            EXCEPTION 
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        """))
+        
+        # Create shared contents table if it doesn't exist
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS shared_contents (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                share_id VARCHAR(16) NOT NULL UNIQUE,
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                content_type shareablecontenttype NOT NULL,
+                content_id UUID,
+                content_data JSONB NOT NULL,
+                visibility sharevisibility NOT NULL DEFAULT 'public',
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP WITH TIME ZONE,
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                view_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            
+            CREATE TABLE IF NOT EXISTS share_views (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                shared_content_id UUID NOT NULL REFERENCES shared_contents(id) ON DELETE CASCADE,
+                viewer_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                viewer_ip VARCHAR(45),
+                viewer_device VARCHAR(255),
+                viewed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                referrer VARCHAR(512)
+            );
+            
+            CREATE INDEX IF NOT EXISTS ix_shared_contents_user ON shared_contents(user_id);
+            CREATE INDEX IF NOT EXISTS ix_shared_contents_created ON shared_contents(created_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_shared_contents_share_id ON shared_contents(share_id);
+            CREATE INDEX IF NOT EXISTS ix_shared_contents_expires ON shared_contents(expires_at);
+            
+            CREATE INDEX IF NOT EXISTS ix_share_views_content ON share_views(shared_content_id);
+            CREATE INDEX IF NOT EXISTS ix_share_views_user ON share_views(viewer_id);
+            CREATE INDEX IF NOT EXISTS ix_share_views_timestamp ON share_views(viewed_at);
+            
+            -- Create update triggers for these tables
+            DO $$ 
+            BEGIN
+                CREATE TRIGGER update_shared_contents_updated_at
+                    BEFORE UPDATE ON shared_contents
+                    FOR EACH ROW
+                    EXECUTE FUNCTION update_updated_at_column();
+            EXCEPTION 
+                WHEN duplicate_object THEN NULL;
+            END $$;
+        """))
+
+        logger.info("Migration completed successfully")
         
     except Exception as e:
         logger.error(f"Error during migration: {str(e)}")
@@ -1151,7 +1230,7 @@ def downgrade() -> None:
         # Drop tables in reverse order
         logger.info("Dropping tables...")
         tables = [
-            'agents', 'chat_messages', 'chats', 'chat_contexts', 'user_preferences', 'price_histories',
+            'share_views', 'shared_contents', 'agents', 'chat_messages', 'chats', 'chat_contexts', 'user_preferences', 'price_histories',
             'token_pricing', 'token_balance_history', 'token_transactions',
             'token_balances', 'wallet_transactions', 'token_wallets', 'deal_scores', 'deal_interactions', 'tracked_deals', 'notifications', 
             'deal_tokens', 'deals', 'goals', 'markets', 'auth_tokens', 'users', 'price_trackers', 'price_predictions'
@@ -1165,6 +1244,8 @@ def downgrade() -> None:
         conn.execute(text("""
             DROP TYPE IF EXISTS agenttype CASCADE;
             DROP TYPE IF EXISTS agentstatus CASCADE;
+            DROP TYPE IF EXISTS shareablecontenttype CASCADE;
+            DROP TYPE IF EXISTS sharevisibility CASCADE;
         """))
         logger.info("Enum types dropped")
         

@@ -315,6 +315,7 @@ class User(Base):
     price_predictions = relationship("PricePrediction", back_populates="user", cascade="all, delete-orphan")
     markets = relationship("Market", back_populates="user")
     announcements = relationship("Announcement", back_populates="creator")
+    shared_contents = relationship("SharedContent", back_populates="user", cascade="all, delete-orphan")
     
     # Rename the relationship to avoid conflict with the JSONB column
     preferences_relation = relationship("UserPreferences", back_populates="user", uselist=False, cascade="all, delete-orphan", overlaps="user_preferences")

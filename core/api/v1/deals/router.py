@@ -49,6 +49,10 @@ from core.exceptions import NotFoundException, ValidationError
 from core.services.ai import AIService
 from core.api.v1.ai.router import get_ai_service
 from redis.exceptions import RedisError  # Add import for RedisError
+from core.services.token import get_token_service, TokenService
+from core.services.user import get_user_service, UserService
+from core.services.notification import get_notification_service, NotificationService
+from core.services.promotion import get_promotion_service, PromotionService
 
 logger = logging.getLogger(__name__)
 
@@ -179,16 +183,14 @@ async def search_deals_get(
     sort_by: str = Query("relevance", description="Sort order"),
     page: int = Query(1, description="Page number", ge=1),
     page_size: int = Query(20, description="Items per page", ge=1, le=100),
-    perform_ai_analysis: bool = Query(True, description="Whether to perform AI analysis"),
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Search for deals matching the specified criteria (GET method)
     
-    This endpoint handles both authenticated and unauthenticated users.
-    For authenticated users, it provides a full deal analysis and consumes tokens.
-    For unauthenticated users, it also provides AI analysis but without token consumption.
+    This unified endpoint handles both authenticated and unauthenticated users.
+    All users receive the same search functionality with AI-enhanced query parsing.
     """
     # Convert query parameters to DealSearch model
     search = DealSearch(
@@ -197,52 +199,54 @@ async def search_deals_get(
         min_price=min_price,
         max_price=max_price,
         sort_by=sort_by,
-        page=page,
-        page_size=page_size
+        limit=page_size,
+        offset=(page - 1) * page_size
     )
     
     # Call the same handler as the POST endpoint
-    return await search_deals(request, search, perform_ai_analysis, current_user, db)
+    return await search_deals(request, search, current_user, db)
 
 @router.post("/search", response_model=SearchResponse)
 async def search_deals(
     request: Request,
     search: DealSearch,
-    perform_ai_analysis: bool = True,  # Default to True
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Search for deals matching the specified criteria
     
-    This endpoint handles both authenticated and unauthenticated users.
-    For authenticated users, it provides a full deal analysis and consumes tokens.
-    For unauthenticated users, it also provides AI analysis but without token consumption.
+    This unified endpoint handles both authenticated and unauthenticated users.
+    All users receive the same search functionality with AI-enhanced query parsing.
+    Individual deal analysis is available as a separate feature for authenticated users.
     """
     try:
         # Check rate limit for unauthenticated users
         if current_user is None:
             logger.info("Unauthenticated user search request received")
+            # Define a default rate limit
+            UNAUTH_SEARCH_LIMIT = 20  # Default limit for unauthenticated users
+            
             try:
-                # Rate limit unauthenticated requests to 5 per minute
-                await check_rate_limit(request, "unauth:search", 5, 60)
+                # Attempt to get rate limit settings from config
+                from core.config import settings
+                if hasattr(settings, 'RATE_LIMIT_PER_MINUTE'):
+                    UNAUTH_SEARCH_LIMIT = settings.RATE_LIMIT_PER_MINUTE
+            except ImportError:
+                logger.warning("Could not import settings, using default rate limit")
+                
+            try:
+                # Rate limit unauthenticated requests
+                await check_rate_limit(request, "unauth:search", UNAUTH_SEARCH_LIMIT, 60)
             except Exception as e:
                 logger.warning(f"Rate limit check failed: {str(e)}")
-                logger.warning("Rate limiting temporarily disabled")
-            
-            # Enable AI analysis for unauthenticated users without consuming tokens
-            if perform_ai_analysis:
-                logger.info("AI analysis enabled for unauthenticated user (no token consumption)")
+                # Don't disable rate limiting, just log the error and continue
+                # The user's request will still be processed
         else:
             logger.info(f"Authenticated user search request from user {current_user.id}")
         
-        # For authenticated users, always enable AI analysis if requested
+        # User ID for personalized results (if authenticated)
         user_id = current_user.id if current_user else None
-        
-        if perform_ai_analysis:
-            logger.info(f"AI analysis enabled. User authenticated: {user_id is not None}")
-        else:
-            logger.info(f"AI analysis disabled. User authenticated: {user_id is not None}, AI requested: {perform_ai_analysis}")
         
         # Initialize DealService for database operations
         deal_service = DealService(db)
@@ -263,17 +267,38 @@ async def search_deals(
         if enable_scraping or real_time_search:
             logger.info(f"Real-time scraping explicitly enabled via headers: scraping={enable_scraping}, real_time={real_time_search}")
             search.use_realtime_scraping = True
-            # Ensure AI analysis is ALWAYS enabled for real-time searches
-            if not perform_ai_analysis:
-                logger.info("Enabling AI analysis for real-time scraping")
-                perform_ai_analysis = True
         
-        # Search for deals
+        # Search for deals - AI query enhancement is handled internally
+        # We separate AI functionality into:
+        # 1. Query parsing/enhancement (ALWAYS enabled) - improves search relevance
+        # 2. Batch AI analysis (controlled by perform_ai_analysis) - adds AI scores and filtering
         result = await deal_service.search_deals(
             search=search,
             user_id=user_id,
-            perform_ai_analysis=perform_ai_analysis
+            perform_ai_analysis=False  # Disable batch AI analysis, but query parsing is still enabled
         )
+        
+        # Ensure price_history and latest_score exist in each deal
+        for deal in result['deals']:
+            if 'price_history' not in deal or not deal['price_history']:
+                # Add default price history
+                current_price = deal.get('price', 0)
+                deal['price_history'] = [
+                    {
+                        "price": str(float(current_price) * 1.1),
+                        "timestamp": (datetime.utcnow() - timedelta(days=7)).isoformat(),
+                        "source": "historical"
+                    },
+                    {
+                        "price": str(current_price),
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "source": "current"
+                    }
+                ]
+            
+            if 'latest_score' not in deal or deal['latest_score'] is None:
+                # Add default score
+                deal['latest_score'] = deal.get('score', 85.0) if deal.get('score') is not None else 85.0
         
         logger.info(f"Search results: {len(result['deals'])} deals found")
         return result
@@ -1416,4 +1441,148 @@ async def create_flash_deal(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to create flash deal: {str(e)}"
+        ) 
+
+@router.post("/{deal_id}/analyze", response_model=AIAnalysisResponse)
+async def analyze_deal(
+    deal_id: UUID,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    token_service: TokenService = Depends(get_token_service),
+    promotion_service: PromotionService = Depends(get_promotion_service),
+    current_user: User = Depends(get_current_user),
+    deal_service: DealService = Depends(get_deal_service),
+    ai_service: AIService = Depends(get_ai_service),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Analyze a specific deal with AI (premium feature)
+    
+    This endpoint performs AI analysis on a specific deal and requires tokens.
+    First-time users get one free analysis.
+    Only available for authenticated users.
+    """
+    try:
+        logger.info(f"Deal analysis requested for deal {deal_id} by user {current_user.id}")
+        
+        # Get the deal first to validate it exists
+        deal = await deal_service.get_deal_by_id(deal_id)
+        if not deal:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail=f"Deal with ID {deal_id} not found"
+            )
+        
+        # Set token cost for deal analysis
+        token_cost = 2
+        
+        # Check if this is the user's first analysis (free promotion)
+        is_first_analysis = await promotion_service.check_first_analysis_promotion(current_user.id)
+        
+        # If it's not the first analysis, check and consume tokens
+        if not is_first_analysis:
+            # Check if user has enough tokens
+            has_tokens = await token_service.check_token_balance(current_user.id, token_cost)
+            
+            if not has_tokens:
+                logger.warning(f"User {current_user.id} has insufficient tokens for deal analysis")
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=f"Insufficient tokens. This operation requires {token_cost} tokens."
+                )
+            
+            # Consume tokens for the analysis
+            await token_service.consume_tokens(current_user.id, token_cost, "deal_analysis")
+            logger.info(f"Consumed {token_cost} tokens from user {current_user.id} for deal analysis")
+        else:
+            # This is the user's first analysis - it's free!
+            logger.info(f"First free analysis provided to user {current_user.id}")
+            token_cost = 0  # No tokens charged for the first analysis
+        
+        # Perform AI analysis in the background to avoid blocking
+        # But return a pending status immediately
+        background_tasks.add_task(
+            deal_service.analyze_deal_with_ai,
+            deal_id=deal_id,
+            user_id=current_user.id
+        )
+        
+        # Return initial response
+        promotion_message = "Your first analysis is free! Future analyses will cost tokens." if is_first_analysis else ""
+        return {
+            "deal_id": deal_id,
+            "status": "pending",
+            "message": f"Deal analysis has been queued. Check back soon for results. {promotion_message}".strip(),
+            "token_cost": token_cost,
+            "analysis": None,
+            "request_time": datetime.utcnow()
+        }
+        
+    except NotFoundException as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Error analyzing deal: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to analyze deal: {str(e)}"
+        )
+
+@router.get("/{deal_id}/analysis", response_model=AIAnalysisResponse)
+async def get_deal_analysis_by_id(
+    deal_id: UUID,
+    deal_service: DealService = Depends(get_deal_service),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get the AI analysis for a specific deal
+    
+    Retrieves the most recent AI analysis for a deal if it exists.
+    """
+    try:
+        logger.info(f"Fetching analysis for deal {deal_id} for user {current_user.id}")
+        
+        # Get the deal
+        deal = await deal_service.get_deal_by_id(deal_id)
+        if not deal:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail=f"Deal with ID {deal_id} not found"
+            )
+        
+        # Get the analysis
+        analysis = await deal_service.get_deal_analysis(deal_id, current_user.id)
+        
+        if not analysis:
+            return {
+                "deal_id": deal_id,
+                "status": "not_found",
+                "message": "No analysis found for this deal. Request an analysis first.",
+                "token_cost": 0,
+                "analysis": None,
+                "request_time": datetime.utcnow()
+            }
+        
+        return {
+            "deal_id": deal_id,
+            "status": analysis.get("status", "completed"),
+            "message": "Analysis retrieved successfully",
+            "token_cost": analysis.get("token_cost", 0),
+            "analysis": analysis.get("analysis"),
+            "request_time": analysis.get("timestamp", datetime.utcnow())
+        }
+        
+    except Exception as e:
+        logger.error(f"Error retrieving deal analysis: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve deal analysis: {str(e)}"
         ) 

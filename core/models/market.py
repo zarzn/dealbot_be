@@ -185,10 +185,11 @@ class Market(Base):
             if success:
                 self.last_successful_request = datetime.utcnow()
                 if response_time is not None:
-                    # Update moving average of response time
-                    self.avg_response_time = (
-                        (self.avg_response_time * (self.total_requests - 1) + response_time)
-                        / self.total_requests
+                    # Update moving average of response time and round to 2 decimal places
+                    self.avg_response_time = round(
+                        ((self.avg_response_time * (self.total_requests - 1) + response_time)
+                        / self.total_requests),
+                        2
                     )
             else:
                 self.error_count += 1
@@ -200,7 +201,15 @@ class Market(Base):
                     self.status = MarketStatus.ERROR.value
                     
             # Update success rate
-            self.success_rate = (self.total_requests - self.error_count) / self.total_requests
+            if self.total_requests > 0:
+                # Ensure error_count is not negative and not greater than total_requests
+                valid_error_count = max(0, min(self.error_count, self.total_requests))
+                success_rate_value = (self.total_requests - valid_error_count) / self.total_requests
+                # Ensure success_rate stays within 0-1 range and limit to 2 decimal places
+                self.success_rate = round(max(0.0, min(1.0, success_rate_value)), 2)
+            else:
+                # Default to 1.0 (perfect) if no requests yet
+                self.success_rate = 1.0
             
             # Check if rate limited
             if self.requests_today >= self.rate_limit:

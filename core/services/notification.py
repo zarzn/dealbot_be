@@ -33,7 +33,7 @@ from core.models.user_preferences import (
     UserPreferencesResponse
 )
 from core.models.user import User
-from core.utils.redis import RedisClient
+from core.services.redis import RedisService
 from core.utils.templates import render_template
 from core.services.email import email_service
 from core.exceptions import (
@@ -73,7 +73,7 @@ class NotificationService:
         """Initialize Redis client if not already initialized."""
         if not self._redis_client:
             try:
-                self._redis_client = await RedisClient()
+                self._redis_client = await RedisService.get_instance()
                 self._redis_enabled = True
             except Exception as e:
                 logger.warning(f"Redis not available, notifications will not be cached: {str(e)}")
@@ -654,3 +654,8 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Error sending magic link email: {str(e)}")
             raise NotificationError(f"Failed to send magic link email: {str(e)}")
+
+# Dependency to get the notification service
+async def get_notification_service(db: AsyncSession) -> NotificationService:
+    """Get a notification service instance."""
+    return NotificationService(db)

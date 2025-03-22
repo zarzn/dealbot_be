@@ -19,6 +19,8 @@ from .price_tracking.router import router as price_tracking_router
 from .price_prediction.router import router as price_prediction_router
 from .announcements.router import router as announcements_router
 from .admin.router import router as admin_router
+from .deals.share import router as deals_share_router
+from .shared import router as shared_router
 
 router = APIRouter()
 
@@ -27,6 +29,7 @@ router.include_router(auth_router, prefix="/auth", tags=["Authentication"])
 router.include_router(users_router, prefix="/users", tags=["Users"])
 router.include_router(goals_router, prefix="/goals", tags=["Goals"])
 router.include_router(deals_router, prefix="/deals", tags=["Deals"])
+router.include_router(deals_share_router, prefix="/deals", tags=["Deals Sharing"])
 router.include_router(markets_router, prefix="/markets", tags=["Markets"])
 router.include_router(chat_router, prefix="/chat", tags=["Chat"])
 router.include_router(token_router, prefix="/token", tags=["Token"])
@@ -35,6 +38,9 @@ router.include_router(price_tracking_router, prefix="/price-tracking", tags=["Pr
 router.include_router(price_prediction_router, prefix="/price-prediction", tags=["Price Prediction"])
 router.include_router(announcements_router, prefix="/announcements", tags=["Announcements"])
 router.include_router(admin_router, prefix="/admin", tags=["Admin"])
+
+# Public shared content routes
+router.include_router(shared_router, tags=["Shared Content"])
 
 # System routes
 router.include_router(health_router, prefix="/health", tags=["System"])

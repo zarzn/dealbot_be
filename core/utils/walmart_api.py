@@ -152,7 +152,7 @@ class WalmartAPI:
                         )
                     raise MarketConnectionError(
                         market="walmart",
-                        message=f"Walmart API request failed: {response.status}"
+                        reason=f"Walmart API request failed: {response.status}"
                     )
                 
                 return await response.json()
@@ -163,7 +163,7 @@ class WalmartAPI:
                 return await self._make_request(url, params, retry_count + 1)
             raise MarketConnectionError(
                 market="walmart",
-                message="Walmart API request timed out"
+                reason="Walmart API request timed out"
             )
 
         except Exception as e:
@@ -172,7 +172,7 @@ class WalmartAPI:
                 return await self._make_request(url, params, retry_count + 1)
             raise MarketConnectionError(
                 market="walmart",
-                message=str(e)
+                reason=str(e)
             )
 
     async def get_product(self, item_id: str) -> Dict[str, Any]:

@@ -6,7 +6,6 @@ from .notification import NotificationService
 from .auth import AuthService
 from .token import TokenService
 from .analytics import AnalyticsService
-from .deal_search import DealSearchService, get_deal_search_service
 
 __all__ = [
     'MarketSearchService',
@@ -15,7 +14,5 @@ __all__ = [
     'NotificationService',
     'AuthService',
     'TokenService',
-    'AnalyticsService',
-    'DealSearchService',
-    'get_deal_search_service'
+    'AnalyticsService'
 ]

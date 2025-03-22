@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 
 from core.database import get_session
 from core.models.deal import Deal
-from core.services.ai import AIService
+from core.services.ai import get_ai_service
 from core.services.deal import DealService
 from core.repositories.deal import DealRepository
 from core.services.redis import get_redis_service
@@ -126,8 +126,8 @@ async def process_deal_analysis_task(task_id: str) -> bool:
         deal_ids = task_data.get("deal_ids", [])
         user_id = UUID(task_data.get("user_id")) if task_data.get("user_id") else None
         
-        # Initialize AI service
-        ai_service = AIService()
+        # Initialize AI service using singleton pattern
+        ai_service = await get_ai_service()
         
         # Process each deal
         completed_deals = 0

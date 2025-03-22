@@ -2,10 +2,17 @@
 
 # Wait for PostgreSQL to be ready
 echo "Waiting for PostgreSQL to be ready..."
-while ! nc -z $POSTGRES_HOST $POSTGRES_PORT; do
-  sleep 0.1
+RETRIES=30
+until PGPASSWORD=$POSTGRES_PASSWORD psql -h $POSTGRES_HOST -p $POSTGRES_PORT -U $POSTGRES_USER -d $POSTGRES_DB -c "SELECT 1" > /dev/null 2>&1 || [ $RETRIES -eq 0 ]; do
+  echo "Waiting for PostgreSQL to be ready, $((RETRIES--)) remaining attempts..."
+  sleep 1
 done
-echo "PostgreSQL is ready"
+
+if [ $RETRIES -eq 0 ]; then
+  echo "PostgreSQL failed to become ready in time, but continuing anyway..."
+else
+  echo "PostgreSQL is ready"
+fi
 
 # Initialize the database
 echo "Initializing database..."

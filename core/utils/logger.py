@@ -37,11 +37,24 @@ class JSONFormatter(logging.Formatter):
 
         return json.dumps(log_data)
 
+# Dictionary to keep track of loggers that have been configured
+_configured_loggers = {}
+
 def get_logger(name: str) -> logging.Logger:
-    """Get configured logger instance."""
+    """Get configured logger instance.
+    
+    Returns a logger with consistent configuration. Ensures that
+    each named logger is only configured once to prevent duplicate handlers.
+    """
     logger = logging.getLogger(name)
     
-    if not logger.handlers:
+    # Only configure the logger once per name
+    if name not in _configured_loggers:
+        # Remove any existing handlers to prevent duplication
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+            
+        # Add our standardized handler
         handler = logging.StreamHandler(sys.stdout)
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -50,6 +63,14 @@ def get_logger(name: str) -> logging.Logger:
         logger.addHandler(handler)
         
         logger.setLevel(settings.LOG_LEVEL)
+        
+        # Set propagate to False to prevent duplicate logs
+        # This ensures logs are only handled by this logger's handlers,
+        # not propagated to parent loggers (which would cause duplication)
+        logger.propagate = False
+        
+        # Mark this logger as configured
+        _configured_loggers[name] = True
     
     return logger
 

@@ -148,13 +148,11 @@ class AIAnalysis(BaseModel):
 class AIAnalysisResponse(BaseModel):
     """API response model for AI analysis."""
     deal_id: UUID
-    score: float = Field(..., ge=0, le=1)
-    confidence: float = Field(..., ge=0, le=1)
-    price_analysis: Dict[str, Any] = Field(default_factory=dict)
-    market_analysis: Dict[str, Any] = Field(default_factory=dict)
-    recommendations: List[str] = Field(default_factory=list)
-    analysis_date: datetime
-    expiration_analysis: Optional[str] = None
+    status: str = Field(..., description="Status of the analysis (pending, completed, error)")
+    message: str = Field(..., description="Status message or error details")
+    token_cost: int = Field(..., description="Number of tokens consumed for this analysis")
+    analysis: Optional[Dict[str, Any]] = Field(None, description="The complete analysis data")
+    request_time: datetime = Field(..., description="When the analysis was requested or completed")
     
     class Config:
         from_attributes = True

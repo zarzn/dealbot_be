@@ -1466,35 +1466,23 @@ class MarketSearchService:
         self,
         query: str,
         market: str,
-        limit: int = 15
+        limit: int
     ) -> List[Dict[str, Any]]:
-        """Search using ScraperAPI directly when normal integrations fail.
-        
-        Args:
-            query: The search query
-            market: The market type (lowercase string: 'amazon', 'walmart', etc.)
-            limit: The maximum number of products to return
-            
-        Returns:
-            List of product dictionaries
-        """
+        """Search using ScraperAPI for a specific market."""
         try:
-            logger.info(f"Searching with ScraperAPI for '{query}' in {market}")
-            factory = self.get_scraper_api_factory()
+            scraper_client = await self.get_scraper_api_factory()
             
-            # Use the search_products method from ScraperAPIFactory
-            products = await factory.search_products(
-                market=market,
-                query=query,
-                page=1,
-                limit=limit
-            )
-            
-            logger.info(f"Found {len(products)} products from ScraperAPI search")
-            return products
-            
+            if market.lower() == "amazon":
+                return await scraper_client.search_amazon(query=query, limit=limit)
+            elif market.lower() == "walmart":
+                return await scraper_client.search_walmart_products(query=query, limit=limit)
+            elif market.lower() == "google_shopping" or market.lower() == "googleshopping":
+                return await scraper_client.search_google_shopping(query=query, limit=limit)
+            else:
+                logger.warning(f"Unsupported market for ScraperAPI search: {market}")
+                return []
         except Exception as e:
-            logger.error(f"ScraperAPI search failed: {str(e)}")
+            logger.error(f"Error in ScraperAPI search for {market}: {str(e)}")
             return []
 
     async def _fallback_to_scraper_api(

@@ -111,6 +111,9 @@ from core.api.v1.price_tracking import router as price_tracking_router
 from core.api.v1.price_prediction import router as price_prediction_router
 from core.api.v1.ai import router as ai_router
 from core.api.v1.analytics import router as analytics_router
+from core.api.v1.deals.share import router as deals_share_router
+from core.api.v1.deals.simple_share import router as simple_share_router
+from core.api.v1.shared import router as shared_content_router
 
 # Import websocket handlers
 from core.api.v1.notifications.websocket import handle_websocket
@@ -476,7 +479,29 @@ def create_app() -> FastAPI:
     # Setup other middleware
     @app.on_event("startup")
     async def startup_event():
+        # Set up middleware first
         await setup_middleware(app)
+        
+        # Initialize AIService at startup to avoid race conditions later
+        try:
+            logger.info("Initializing AI service during application startup...")
+            from core.services.ai import get_ai_service
+            
+            # Set a timeout to prevent hanging during startup
+            ai_init_task = asyncio.create_task(get_ai_service())
+            ai_service = await asyncio.wait_for(ai_init_task, timeout=10.0)
+            
+            if ai_service is not None and getattr(ai_service, 'is_initialized', False):
+                logger.info("AI service initialized successfully during startup")
+            else:
+                logger.warning("AI service initialization returned None or uninitialized instance")
+                
+        except asyncio.TimeoutError:
+            logger.error("AI service initialization timed out - continuing without AI service")
+        except Exception as e:
+            logger.error(f"Failed to initialize AI service during startup: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     # Add OPTIONS handler for all routes
     @app.options("/{full_path:path}")
@@ -503,6 +528,12 @@ def create_app() -> FastAPI:
     app.include_router(users_router, prefix=f"{settings.API_V1_PREFIX}/users", tags=["Users"])
     app.include_router(goals_router, prefix=f"{settings.API_V1_PREFIX}/goals", tags=["Goals"])
     app.include_router(deals_router, prefix=f"{settings.API_V1_PREFIX}/deals", tags=["Deals"])
+    app.include_router(deals_share_router, prefix=f"{settings.API_V1_PREFIX}/deals", tags=["Deals Sharing"])
+    app.include_router(simple_share_router, prefix=f"{settings.API_V1_PREFIX}", tags=["Simple Sharing"])
+
+    # Mount shared content router only at the API path
+    app.include_router(shared_content_router, prefix=f"{settings.API_V1_PREFIX}", tags=["Shared Content"])
+
     app.include_router(markets_router, prefix=f"{settings.API_V1_PREFIX}/markets", tags=["Markets"])
     app.include_router(chat_router, prefix=f"{settings.API_V1_PREFIX}/chat", tags=["Chat"])
     app.include_router(token_router, prefix=f"{settings.API_V1_PREFIX}/token", tags=["Token"])

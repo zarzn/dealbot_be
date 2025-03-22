@@ -135,6 +135,18 @@ from .chat import (
 # Deal interaction models
 from .deal_interaction import DealInteraction, InteractionType
 
+# Shared content models
+from .shared_content import (
+    SharedContent,
+    ShareView,
+    ShareContentRequest,
+    ShareContentResponse,
+    SharedContentDetail,
+    SharedContentMetrics,
+    ShareableContentType,
+    ShareVisibility
+)
+
 __all__ = [
     # Auth
     'AuthToken',
@@ -264,5 +276,15 @@ __all__ = [
 
     # Deal Interaction
     'DealInteraction',
-    'InteractionType'
+    'InteractionType',
+    
+    # Shared Content
+    'SharedContent',
+    'ShareView',
+    'ShareContentRequest',
+    'ShareContentResponse',
+    'SharedContentDetail',
+    'SharedContentMetrics',
+    'ShareableContentType',
+    'ShareVisibility',
 ]

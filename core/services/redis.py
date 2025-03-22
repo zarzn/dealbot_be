@@ -12,6 +12,7 @@ import asyncio
 from contextvars import ContextVar
 import inspect
 import traceback
+import time
 
 from core.config import settings
 from core.exceptions import RedisError
@@ -677,47 +678,51 @@ async def get_redis_client() -> Optional[Redis]:
     """
     global _redis_client, _redis_pool, _initialized
     
-    # Return existing client if already initialized
-    if _initialized and _redis_client is not None:
+    # Return existing client if already initialized, even if it's None
+    if _initialized:
         return _redis_client
     
-    # Check for recursion
-    if getattr(get_redis_client, "_in_get_redis_client_call", False):
-        logger.warning("Recursion detected in get_redis_client() call")
+    # Check for recursion to prevent infinite loops
+    if getattr(get_redis_client, "_in_progress", False):
+        logger.debug("Recursion detected in get_redis_client() call")
         return None
         
+    # Set recursion guard
+    get_redis_client._in_progress = True
+    
     try:
-        # Set recursion guard
-        get_redis_client._in_get_redis_client_call = True
-        
         # In testing mode, return None without trying to connect
-        if settings.TESTING:
-            logger.info("In testing mode - returning None for Redis client")
+        if getattr(settings, "TESTING", False):
+            logger.debug("In testing mode - returning None for Redis client")
             _initialized = True
             return None
         
-        try:
-            # Try to get Redis configuration
-            redis_host = settings.REDIS_HOST
-            redis_port = settings.REDIS_PORT
-            redis_db = settings.REDIS_DB
+        # Check if Redis is disabled in configuration
+        redis_disabled = getattr(settings, "REDIS_DISABLED", False)
+        if redis_disabled:
+            logger.debug("Redis is disabled in configuration - returning None")
+            _initialized = True
+            return None
             
-            # Get password, handling default values
-            password = getattr(settings, "REDIS_PASSWORD", None)
-            if password in ["your_redis_password", "your_production_redis_password", None, ""]:
-                # Use None for password if it's not set or is a default value
-                password = None
-                
-            # Check if Redis is disabled in configuration
-            redis_disabled = getattr(settings, "REDIS_DISABLED", False)
-            if redis_disabled:
-                logger.info("Redis is disabled in configuration - returning None")
-                _initialized = True
-                return None
-                
-            # Create a proper pool
-            logger.info(f"Creating Redis connection pool to {redis_host}:{redis_port}/{redis_db}")
-                
+        # Try to get Redis configuration
+        redis_host = getattr(settings, "REDIS_HOST", None)
+        redis_port = getattr(settings, "REDIS_PORT", 6379)
+        redis_db = getattr(settings, "REDIS_DB", 0)
+        
+        # If we don't have a host, we can't connect
+        if not redis_host:
+            logger.debug("No Redis host configured, Redis will be disabled")
+            _initialized = True
+            return None
+            
+        # Get password, handling default values
+        password = getattr(settings, "REDIS_PASSWORD", None)
+        if password in ["your_redis_password", "your_production_redis_password", None, ""]:
+            # Use None for password if it's not set or is a default value
+            password = None
+        
+        # Use the pool if it exists, otherwise create a new one
+        if _redis_pool is None:
             # Create connection pool with best practice configurations
             _redis_pool = ConnectionPool(
                 host=redis_host,
@@ -729,43 +734,54 @@ async def get_redis_client() -> Optional[Redis]:
                 socket_connect_timeout=getattr(settings, "REDIS_SOCKET_CONNECT_TIMEOUT", 5),
                 retry_on_timeout=getattr(settings, "REDIS_RETRY_ON_TIMEOUT", True),
                 health_check_interval=getattr(settings, "REDIS_HEALTH_CHECK_INTERVAL", 30),
-                decode_responses=True
+                decode_responses=True,
+                encoding="utf-8"
             )
-                
-            # Create client
-            _redis_client = Redis(connection_pool=_redis_pool)
-            _initialized = True
+        
+        # Create Redis client with the pool
+        _redis_client = Redis(connection_pool=_redis_pool)
+        
+        # Test the connection with a timeout to avoid hanging
+        try:
+            ping_result = await asyncio.wait_for(_redis_client.ping(), timeout=2.0)
+            if ping_result:
+                logger.info("Successfully connected to Redis")
+            else:
+                logger.warning("Redis ping returned False, connection may not be working properly")
+                _redis_client = None
+        except (asyncio.TimeoutError, ConnectionError) as e:
+            logger.warning(f"Redis connection failed: {str(e)}")
+            _redis_client = None
+        except Exception as e:
+            logger.warning(f"Error testing Redis connection: {str(e)}")
+            _redis_client = None
             
-            # Test connection quickly
-            try:
-                test_result = await asyncio.wait_for(_redis_client.ping(), timeout=2.0)
-                if test_result:
-                    logger.info("Redis connection test successful")
-                else:
-                    logger.warning("Redis ping returned False - connection may not be working properly")
-            except asyncio.TimeoutError:
-                logger.warning("Redis ping timed out - connection may be slow or unavailable")
-            except Exception as ping_error:
-                logger.warning(f"Redis ping failed: {str(ping_error)}")
-                
-            return _redis_client
+        # Mark as initialized even if connection failed, to avoid repeated attempts
+        _initialized = True
+        
+        # Only log this message once
+        if _redis_client is None and not hasattr(get_redis_client, "_warned_no_redis"):
+            logger.info("Continuing without Redis functionality")
+            get_redis_client._warned_no_redis = True
             
-        except Exception as config_error:
-            logger.error(f"Error configuring Redis client: {str(config_error)}")
-            logger.debug(traceback.format_exc())
-            # Mark as initialized to prevent retry loops, but return None
-            _initialized = True
-            return None
+        return _redis_client
             
+    except ImportError:
+        if not hasattr(get_redis_client, "_warned_import_error"):
+            logger.warning("Redis package not installed - Redis functionality will be disabled")
+            get_redis_client._warned_import_error = True
+        _initialized = True
+        return None
+        
     except Exception as e:
-        logger.error(f"Failed to create Redis client: {str(e)}")
-        logger.debug(traceback.format_exc())
-        # Mark as initialized to prevent retry loops
+        if not hasattr(get_redis_client, "_warned_general_error"):
+            logger.warning(f"Error initializing Redis client: {str(e)}")
+            get_redis_client._warned_general_error = True
         _initialized = True
         return None
     finally:
-        # Clear recursion guard
-        get_redis_client._in_get_redis_client_call = False
+        # Always reset recursion guard
+        get_redis_client._in_progress = False
 
 async def close_redis() -> None:
     """Close Redis connections."""
@@ -1068,40 +1084,77 @@ async def sismember(key: str, member: Any) -> bool:
 async def get_redis_service():
     """Get Redis service instance.
     
-    This function returns an initialized RedisService instance.
+    This function follows the singleton pattern to ensure only
+    one Redis service is created. It includes error handling,
+    logging, and fallback mechanisms.
     
     Returns:
-        RedisService: The initialized Redis service instance
+        RedisService: Configured Redis service instance
     """
+    # Static variables to track warning states and last attempt
+    if not hasattr(get_redis_service, "_warned_no_redis"):
+        get_redis_service._warned_no_redis = False
+        
+    if not hasattr(get_redis_service, "_last_init_attempt"):
+        get_redis_service._last_init_attempt = 0
+    
+    # Rate limit initialization attempts (once every 5 seconds max)
+    current_time = time.time()
+    if (current_time - get_redis_service._last_init_attempt) < 5:
+        # Return existing instance or minimal working instance silently
+        try:
+            service = await RedisService.get_instance()
+            return service
+        except Exception:
+            # If the instance retrieval fails, return a minimal working instance
+            service = RedisService()
+            service._initialized = True
+            service._client = None
+            return service
+    
+    # Record the attempt time
+    get_redis_service._last_init_attempt = current_time
+    
     try:
+        # Try to get a Redis client first to ensure connection is available
+        redis_client = await get_redis_client()
+        
         # Get or create the instance through the class method
         service = await RedisService.get_instance()
         
-        # Verify Redis is working
-        if service._client:
-            try:
-                ping_result = await asyncio.wait_for(service._client.ping(), timeout=1.0)
-                if not ping_result:
-                    logger.warning("Redis ping returned False, connection may not be working properly")
-            except Exception as e:
-                logger.warning(f"Redis ping test failed: {str(e)}")
-                logger.info("Continuing without Redis")
-        else:
-            logger.warning("Redis client not initialized")
-            logger.info("Continuing without Redis")
+        # Verify Redis is working, but only log a warning once
+        if service._client is None:
+            if not get_redis_service._warned_no_redis:
+                logger.warning("Redis client not initialized, some features may be limited")
+                get_redis_service._warned_no_redis = True
             
+            # Try to re-initialize with fresh client
+            if redis_client is not None:
+                try:
+                    await service.init(client=redis_client)
+                    logger.info("Successfully re-initialized Redis service")
+                    get_redis_service._warned_no_redis = False
+                except Exception as reinit_error:
+                    logger.warning(f"Failed to re-initialize Redis service: {str(reinit_error)}")
+        else:
+            # Successfully initialized with working client
+            if get_redis_service._warned_no_redis:
+                logger.info("Redis service is now working properly")
+                get_redis_service._warned_no_redis = False
+        
         return service
     except Exception as e:
-        # Log error but provide a minimal working instance
-        logger.error(f"Error getting Redis service: {str(e)}")
+        # Log error but provide a minimal working instance (only log once)
+        if not get_redis_service._warned_no_redis:
+            logger.warning(f"Error getting Redis service: {str(e)}")
+            get_redis_service._warned_no_redis = True
         
         # Create a minimal working instance
         service = RedisService()
         service._initialized = True
         service._client = None
-        service._pool = None
         
-        return service 
+        return service
 
 # Add a mock pipeline class for testing
 class MockRedisPipeline:

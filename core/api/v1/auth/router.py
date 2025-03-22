@@ -44,7 +44,7 @@ from core.services.auth import (
     verify_email_token,
     blacklist_token,
     oauth2_scheme,
-    verify_token
+    verify_token,
 )
 from core.services.email import send_reset_email, send_verification_email, send_magic_link_email
 from core.services.social import verify_social_token

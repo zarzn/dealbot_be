@@ -211,7 +211,7 @@ class AmazonAPI:
                         )
                     raise MarketConnectionError(
                         market="amazon",
-                        message=f"Amazon API request failed: {response.status}"
+                        reason=f"Amazon API request failed: {response.status}"
                     )
                 
                 return await response.json()
@@ -226,7 +226,7 @@ class AmazonAPI:
                 )
             raise MarketConnectionError(
                 market="amazon",
-                message="Amazon API request timed out"
+                reason="Amazon API request timed out"
             )
 
         except Exception as e:
@@ -239,7 +239,7 @@ class AmazonAPI:
                 )
             raise MarketConnectionError(
                 market="amazon",
-                message=str(e)
+                reason=str(e)
             )
 
     async def get_product(self, asin: str) -> Dict[str, Any]:
