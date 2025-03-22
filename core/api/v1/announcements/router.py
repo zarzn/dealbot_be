@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Path, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.db.session import get_db
+from core.database import get_db
 from core.models.announcement import (
     AnnouncementCreate,
     AnnouncementUpdate,
@@ -16,7 +16,7 @@ from core.models.announcement import (
 )
 from core.models.user import User
 from core.services.announcement import AnnouncementService
-from core.api.deps import get_current_user
+from core.api.v1.dependencies import get_current_user
 from core.exceptions.base_exceptions import NotFoundError, ValidationError
 
 router = APIRouter()

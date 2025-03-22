@@ -29,6 +29,14 @@ async def create_deal_from_dict(self, deal_data: Dict[str, Any]) -> Deal:
         DatabaseError: If database error occurs
     """
     try:
+        # Check for user_id and add fallback if missing
+        if not deal_data.get('user_id'):
+            # Get system admin user ID from settings
+            from core.config import settings
+            system_user_id = settings.SYSTEM_USER_ID
+            deal_data['user_id'] = UUID(system_user_id)
+            logger.info(f"No user ID provided for deal creation, using system admin user ID: {system_user_id}")
+
         # Check for existing deal with same URL and goal_id to prevent unique constraint violation
         if "url" in deal_data and "goal_id" in deal_data and deal_data["goal_id"] is not None:
             query = select(Deal).where(

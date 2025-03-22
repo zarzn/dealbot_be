@@ -187,6 +187,21 @@ class DealService(BaseService[Deal, Any, Any]):
         )
         self.scheduler.start()
 
+    async def _monitor_deals(self) -> None:
+        """Background task to monitor deals for changes and notify users.
+        
+        This method runs periodically to:
+        1. Check for price changes
+        2. Update expired deals
+        3. Refresh deal data from sources
+        4. Match new deals with user goals
+        """
+        from core.services.deal.search.monitoring import monitor_deals
+        try:
+            await monitor_deals(self)
+        except Exception as e:
+            logger.error(f"Error in deal monitoring: {str(e)}")
+
     def _setup_rate_limiting(self) -> None:
         """Initialize rate limiting configuration"""
         self.rate_limiter = {
@@ -240,16 +255,16 @@ class DealService(BaseService[Deal, Any, Any]):
     
     from .search import (
         search_deals,
-        _perform_realtime_scraping,
-        _filter_deals,
-        _create_deal_from_product,
-        _monitor_deals,
-        _fetch_deals_from_api,
-        _build_search_params,
-        _process_and_store_deals,
-        _is_valid_market_category,
+        perform_realtime_scraping,
+        filter_deals,
+        create_deal_from_product,
+        monitor_deals,
+        fetch_deals_from_api,
+        build_search_params,
+        process_and_store_deals,
+        is_valid_market_category,
         discover_deal,
-        _search_products
+        search_products
     )
     
     from .price import (

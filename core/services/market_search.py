@@ -48,6 +48,9 @@ from core.database import get_db, get_async_db_session
 
 # Import for ScraperAPI factory
 from core.integrations.market_factory import MarketIntegrationFactory as ScraperAPIFactory
+from core.services.ai import AIService
+from core.services.deal.search.query_formatter import get_optimized_query_for_marketplace
+from core.services.deal.search.post_scraping_filter import post_process_products
 
 logger = get_logger(__name__)
 
@@ -1248,28 +1251,241 @@ class MarketSearchService:
     ) -> Dict[str, Any]:
         """Execute search on a specific market with error handling."""
         try:
+            # Format the query for this specific marketplace
+            ai_service = getattr(self, 'ai_service', None)
+            marketplace = market_type.value.lower()
+            
+            # Optimize the query for this marketplace
+            try:
+                optimized_result = await get_optimized_query_for_marketplace(
+                    query, marketplace, ai_service
+                )
+                optimized_query = optimized_result['formatted_query']
+                parameters = optimized_result['parameters']
+                
+                logger.info(
+                    f"Optimized query for {marketplace}: '{query}' -> '{optimized_query}'"
+                )
+            except Exception as e:
+                logger.error(f"Error optimizing query: {str(e)}. Using original query.")
+                optimized_query = query
+                parameters = {}
+            
             # Build kwargs for search_products
             search_kwargs = {
-                "query": query,
+                "query": optimized_query,
                 "limit": limit
             }
             
             # Add optional parameters if they exist
             if category:
                 search_kwargs["category"] = category
-            if min_price is not None:
+            
+            # Use extracted price parameters if available and not explicitly provided
+            if min_price is None and parameters.get('min_price') is not None:
+                search_kwargs["min_price"] = parameters.get('min_price')
+            elif min_price is not None:
                 search_kwargs["min_price"] = min_price
-            if max_price is not None:
+            
+            if max_price is None and parameters.get('max_price') is not None:
+                search_kwargs["max_price"] = parameters.get('max_price')
+            elif max_price is not None:
                 search_kwargs["max_price"] = max_price
-                
+            
             # Call search_products with appropriate parameters
-            return await integration.search_products(**search_kwargs)
+            result = await integration.search_products(**search_kwargs)
+            
+            # Apply post-scraping filtering
+            if result and 'products' in result and result['products']:
+                original_products = result['products']
+                
+                # Extract parameters from the query if not explicitly provided
+                filtered_products = post_process_products(
+                    products=original_products,
+                    query=query,
+                    search_terms=parameters.get('keywords', None),
+                    min_price=min_price if min_price is not None else parameters.get('min_price'),
+                    max_price=max_price if max_price is not None else parameters.get('max_price'),
+                    brands=parameters.get('brands', None)
+                )
+                
+                logger.info(
+                    f"Post-scraping filter: {len(original_products)} products -> {len(filtered_products)} products for {marketplace}"
+                )
+                
+                # Update the result with filtered products
+                result['products'] = filtered_products
+                result['total_found'] = len(filtered_products)
+                
+            return result
         except Exception as e:
             logger.error(
                 f"Error searching {market_type}: {str(e)}",
                 exc_info=True
             )
             raise IntegrationError(f"Search failed for {market_type}: {str(e)}")
+
+    async def _search_with_scraper_api(
+        self,
+        query: str,
+        market: str,
+        limit: int,
+        min_price: Optional[float] = None,
+        max_price: Optional[float] = None
+    ) -> List[Dict[str, Any]]:
+        """Search using ScraperAPI for a specific market."""
+        try:
+            scraper_client = await self.get_scraper_api_factory()
+            
+            # Format the query for this specific marketplace
+            ai_service = getattr(self, 'ai_service', None)
+            marketplace = market.lower()
+            
+            # Optimize the query for this marketplace
+            try:
+                optimized_result = await get_optimized_query_for_marketplace(
+                    query, marketplace, ai_service
+                )
+                optimized_query = optimized_result['formatted_query']
+                parameters = optimized_result['parameters']
+                
+                logger.info(
+                    f"ScraperAPI optimized query for {marketplace}: '{query}' -> '{optimized_query}'"
+                )
+            except Exception as e:
+                logger.error(f"Error optimizing ScraperAPI query: {str(e)}. Using original query.")
+                optimized_query = query
+                parameters = {}
+            
+            # Perform the appropriate search based on market
+            results = []
+            if market.lower() == "amazon":
+                results = await scraper_client.search_amazon(query=optimized_query, limit=limit)
+            elif market.lower() == "walmart":
+                results = await scraper_client.search_walmart_products(query=optimized_query, limit=limit)
+            elif market.lower() == "google_shopping" or market.lower() == "googleshopping":
+                results = await scraper_client.search_google_shopping(query=optimized_query, limit=limit)
+            else:
+                logger.warning(f"Unsupported market for ScraperAPI search: {market}")
+                return []
+            
+            # Apply post-scraping filtering if we got results
+            if results:
+                # Extract parameters from the query if not explicitly provided
+                filtered_results = post_process_products(
+                    products=results,
+                    query=query,
+                    search_terms=parameters.get('keywords', None),
+                    min_price=min_price if min_price is not None else parameters.get('min_price'),
+                    max_price=max_price if max_price is not None else parameters.get('max_price'),
+                    brands=parameters.get('brands', None)
+                )
+                
+                logger.info(
+                    f"ScraperAPI post-scraping filter: {len(results)} products -> {len(filtered_results)} products for {marketplace}"
+                )
+                
+                return filtered_results
+            
+            return results
+        except Exception as e:
+            logger.error(f"Error in ScraperAPI search for {market}: {str(e)}")
+            return []
+
+    async def _fallback_to_scraper_api(
+        self,
+        query: str,
+        market_types: Optional[List[MarketType]],
+        category: Optional[str],
+        min_price: Optional[float],
+        max_price: Optional[float],
+        limit: int
+    ) -> SearchResult:
+        """Fallback to ScraperAPI when primary integrations fail or no products found.
+        
+        Args:
+            query: The search query
+            market_types: List of market types to search
+            category: Optional category filter
+            min_price: Optional minimum price filter
+            max_price: Optional maximum price filter
+            limit: Maximum number of results to return
+            
+        Returns:
+            SearchResult object containing products and metadata
+        """
+        start_time = datetime.utcnow()
+        all_products = []
+        successful_markets = []
+        failed_markets = []
+        
+        try:
+            # Determine which markets to search
+            markets_to_search = []
+            if market_types and len(market_types) > 0:
+                # Use the provided market types
+                markets_to_search = [mt.value.lower() for mt in market_types]
+            else:
+                # Default to the major markets
+                markets_to_search = ["amazon", "walmart"]
+            
+            logger.info(f"Trying ScraperAPI for markets: {markets_to_search}")
+            
+            # Create tasks for each market
+            tasks = []
+            for market in markets_to_search:
+                tasks.append(self._search_with_scraper_api(
+                    query=query, 
+                    market=market, 
+                    limit=limit,
+                    min_price=min_price,
+                    max_price=max_price
+                ))
+            
+            # Execute all tasks concurrently
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results
+            for i, result in enumerate(results):
+                market = markets_to_search[i] if i < len(markets_to_search) else "unknown"
+                if isinstance(result, Exception):
+                    failed_markets.append((market, str(result)))
+                    logger.error(f"ScraperAPI search failed for {market}: {str(result)}")
+                else:
+                    if result:  # Only add successful markets if we got products
+                        successful_markets.append(market)
+                        # Products are already filtered by the _search_with_scraper_api method
+                        # Just ensure market info is in each product
+                        for product in result:
+                            if "market" not in product:
+                                product["market"] = market
+                                
+                            all_products.append(product)
+            
+            # Calculate search time
+            search_time = (datetime.utcnow() - start_time).total_seconds()
+            
+            # Create and return result
+            return SearchResult(
+                products=all_products,
+                total_found=len(all_products),
+                successful_markets=successful_markets,
+                failed_markets=failed_markets,
+                search_time=search_time,
+                cache_hit=False
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in ScraperAPI fallback: {str(e)}")
+            search_time = (datetime.utcnow() - start_time).total_seconds()
+            return SearchResult(
+                products=[],
+                total_found=0,
+                successful_markets=[],
+                failed_markets=[("scraper_api", str(e))],
+                search_time=search_time,
+                cache_hit=False
+            )
 
     async def _sort_and_process_products(
         self,
@@ -1460,126 +1676,4 @@ class MarketSearchService:
             logger.error(f"Error searching market {market_id}: {str(e)}")
             if isinstance(e, (MarketError, ValidationError, RateLimitError)):
                 raise
-            raise MarketError(f"Failed to search market: {str(e)}")
-
-    async def _search_with_scraper_api(
-        self,
-        query: str,
-        market: str,
-        limit: int
-    ) -> List[Dict[str, Any]]:
-        """Search using ScraperAPI for a specific market."""
-        try:
-            scraper_client = await self.get_scraper_api_factory()
-            
-            if market.lower() == "amazon":
-                return await scraper_client.search_amazon(query=query, limit=limit)
-            elif market.lower() == "walmart":
-                return await scraper_client.search_walmart_products(query=query, limit=limit)
-            elif market.lower() == "google_shopping" or market.lower() == "googleshopping":
-                return await scraper_client.search_google_shopping(query=query, limit=limit)
-            else:
-                logger.warning(f"Unsupported market for ScraperAPI search: {market}")
-                return []
-        except Exception as e:
-            logger.error(f"Error in ScraperAPI search for {market}: {str(e)}")
-            return []
-
-    async def _fallback_to_scraper_api(
-        self,
-        query: str,
-        market_types: Optional[List[MarketType]],
-        category: Optional[str],
-        min_price: Optional[float],
-        max_price: Optional[float],
-        limit: int
-    ) -> SearchResult:
-        """Fallback to ScraperAPI when primary integrations fail or no products found.
-        
-        Args:
-            query: The search query
-            market_types: List of market types to search
-            category: Optional category filter
-            min_price: Optional minimum price filter
-            max_price: Optional maximum price filter
-            limit: Maximum number of results to return
-            
-        Returns:
-            SearchResult object containing products and metadata
-        """
-        start_time = datetime.utcnow()
-        all_products = []
-        successful_markets = []
-        failed_markets = []
-        
-        try:
-            # Determine which markets to search
-            markets_to_search = []
-            if market_types and len(market_types) > 0:
-                # Use the provided market types
-                markets_to_search = [mt.value.lower() for mt in market_types]
-            else:
-                # Default to the major markets
-                markets_to_search = ["amazon", "walmart"]
-            
-            logger.info(f"Trying ScraperAPI for markets: {markets_to_search}")
-            
-            # Create tasks for each market
-            tasks = []
-            for market in markets_to_search:
-                tasks.append(self._search_with_scraper_api(query, market, limit))
-            
-            # Execute all tasks concurrently
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Process results
-            for i, result in enumerate(results):
-                market = markets_to_search[i] if i < len(markets_to_search) else "unknown"
-                if isinstance(result, Exception):
-                    failed_markets.append(market)
-                    logger.error(f"ScraperAPI search failed for {market}: {str(result)}")
-                else:
-                    if result:  # Only add successful markets if we got products
-                        successful_markets.append(market)
-                        # Process and filter products
-                        for product in result:
-                            # Apply price filters
-                            price = product.get("price", 0)
-                            if min_price is not None and price < min_price:
-                                continue
-                            if max_price is not None and price > max_price:
-                                continue
-                            
-                            # Ensure market info is in the product
-                            if "market" not in product:
-                                product["market"] = market
-                                
-                            all_products.append(product)
-            
-            # Sort and apply limit
-            all_products = sorted(all_products, key=lambda p: p.get("price", 0))[:limit]
-            
-            # Calculate search time
-            search_time = (datetime.utcnow() - start_time).total_seconds()
-            
-            # Create and return result
-            return SearchResult(
-                products=all_products,
-                total_found=len(all_products),
-                successful_markets=successful_markets,
-                failed_markets=failed_markets,
-                search_time=search_time,
-                cache_hit=False
-            )
-            
-        except Exception as e:
-            logger.error(f"Error in _fallback_to_scraper_api: {str(e)}")
-            # Return empty result instead of raising an exception
-            return SearchResult(
-                products=[],
-                total_found=0,
-                successful_markets=[],
-                failed_markets=["all"],
-                search_time=(datetime.utcnow() - start_time).total_seconds(),
-                cache_hit=False
-            ) 
+            raise MarketError(f"Failed to search market: {str(e)}") 

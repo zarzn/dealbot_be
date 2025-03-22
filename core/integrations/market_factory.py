@@ -49,9 +49,9 @@ class MarketIntegrationFactory:
         """Search for products in the specified market.
         
         Args:
-            market: Market identifier (amazon, walmart, google_shopping)
+            market: Market identifier (amazon, walmart, google_shopping, ebay)
             query: Search query string
-            page: Result page number
+            page: Result page number (ignored in simplified API)
             limit: Maximum number of products to return (default: 15)
             
         Returns:
@@ -59,11 +59,13 @@ class MarketIntegrationFactory:
         """
         scraper_api = await self.get_scraper_api_service()
         if market.lower() == "amazon":
-            return await scraper_api.search_amazon(query, page, limit=limit)
+            return await scraper_api.search_amazon(query, limit=limit)
         elif market.lower() == "walmart":
-            return await scraper_api.search_walmart_products(query, page, limit=limit)
+            return await scraper_api.search_walmart(query, limit=limit)
         elif market.lower() == "google_shopping":
-            return await scraper_api.search_google_shopping(query, page, limit=limit)
+            return await scraper_api.search_google_shopping(query, limit=limit)
+        elif market.lower() == "ebay":
+            return await scraper_api.search_ebay(query, limit=limit)
         else:
             raise MarketIntegrationError(
                 market=market,
