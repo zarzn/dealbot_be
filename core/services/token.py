@@ -693,6 +693,42 @@ class SolanaTokenService(ITokenService):
                 balance=current_balance if 'current_balance' in locals() else Decimal("0.0")
             )
 
+    async def check_token_balance(self, user_id: str, required_amount: Decimal) -> bool:
+        """Check if user has sufficient token balance
+        
+        Args:
+            user_id: User ID to check balance for
+            required_amount: Required token amount
+            
+        Returns:
+            True if user has sufficient balance, False otherwise
+        """
+        try:
+            # Get current balance
+            current_balance = await self.check_balance(user_id)
+            
+            # Compare with required amount
+            return current_balance >= required_amount
+        except Exception as e:
+            logger.error(f"Error checking token balance for user {user_id}: {str(e)}")
+            return False
+
+    async def consume_tokens(self, user_id: str, amount: Decimal, reason: str) -> Dict[str, Any]:
+        """Consume tokens for a specific operation
+        
+        Args:
+            user_id: User ID to consume tokens from
+            amount: Amount of tokens to consume
+            reason: Reason for token consumption
+            
+        Returns:
+            Transaction details
+            
+        Raises:
+            TokenBalanceError: If user has insufficient balance
+        """
+        return await self.deduct_tokens(user_id, amount, reason)
+
 # Export SolanaTokenService as TokenService for backward compatibility
 TokenService = SolanaTokenService
 

@@ -428,10 +428,24 @@ class PromotionService:
         Returns:
             True if the user is eligible for the free promotion, False otherwise
         """
+        # If Redis is not available, we'll use an in-memory flag as a fallback
         if not self._redis:
-            logger.warning("Redis not available, assuming user is not eligible for first analysis promotion")
-            return False
+            logger.warning("Redis not available for promotion check, using fallback mechanism")
+            # Use a class-level static dictionary to track first-time users
+            if not hasattr(self.__class__, '_first_analysis_users'):
+                self.__class__._first_analysis_users = set()
+                
+            # Check if user has already used their free analysis in the current session
+            if user_id in self.__class__._first_analysis_users:
+                logger.info(f"User {user_id} has already used first analysis promotion (memory fallback)")
+                return False
+                
+            # Mark as used in memory
+            self.__class__._first_analysis_users.add(user_id)
+            logger.info(f"User {user_id} is eligible for first analysis promotion (memory fallback)")
+            return True
             
+        # If Redis is available, use it as normal    
         try:
             promotion_key = f"first_analysis_promotion:{user_id}"
             
@@ -441,17 +455,25 @@ class PromotionService:
             if not promotion_used:
                 # User hasn't used their free analysis yet
                 # Mark as used with a long expiry time (1 year)
-                await self._redis.setex(promotion_key, 60 * 60 * 24 * 365, "used")
-                logger.info(f"User {user_id} is eligible for first analysis promotion")
-                return True
+                try:
+                    await self._redis.setex(promotion_key, 60 * 60 * 24 * 365, "used")
+                    logger.info(f"User {user_id} is eligible for first analysis promotion")
+                    return True
+                except Exception as redis_error:
+                    # If we fail to mark the promotion as used, log and continue
+                    # We'll still return True this time, but note the error
+                    logger.error(f"Failed to mark promotion as used: {str(redis_error)}")
+                    return True
                 
             logger.info(f"User {user_id} has already used first analysis promotion")
             return False
             
         except Exception as e:
+            # For any other Redis issues, log the error but don't fail the operation
             logger.error(f"Error checking first analysis promotion: {str(e)}")
-            # In case of error, default to not eligible to avoid token fraud
-            return False
+            # In case of error, default to eligible (True) to provide better user experience
+            # This is a non-critical feature so prefer user satisfaction over strict enforcement
+            return True
     
     async def reset_first_analysis_promotion(self, user_id: UUID) -> bool:
         """Reset the first analysis promotion for a user.

@@ -366,14 +366,19 @@ async def create_deal_from_dict(self, deal_data: Dict[str, Any]) -> Optional[Dea
                     elif "ebay" in url.lower():
                         source = "ebay"
                     elif "google" in url.lower():
-                        source = "google_shopping"
+                        source = "google_shopping"  # Ensure underscore format
                     else:
-                        source = "api"
+                        source = "api"  # Default to API if no valid source can be determined
                 else:
                     source = "api"
                     
             logger.info(f"Adjusted invalid source to: {source}")
             deal_data["source"] = source
+        
+        # Ensure Google Shopping always uses underscore format
+        if source == "google shopping":
+            source = "google_shopping"
+            logger.info("Normalized 'google shopping' to 'google_shopping'")
         
         # Prepare defaults for get_or_create_deal
         market_id = deal_data.get("market_id")
@@ -486,11 +491,16 @@ async def get_or_create_deal(
                 elif "ebay" in url.lower():
                     source = "ebay"
                 elif "google" in url.lower():
-                    source = "google_shopping"
+                    source = "google_shopping"  # Ensure underscore format
                 else:
                     source = "api"  # Default to API if no valid source can be determined
             
             logger.warning(f"Invalid source '{defaults.get('source', 'None')}' provided, using derived source '{source}'")
+        
+        # Ensure Google Shopping always uses underscore format
+        if source == "google shopping":
+            source = "google_shopping"
+            logger.info("Normalized 'google shopping' to 'google_shopping'")
         
         # Ensure deal_metadata is initialized with external_id
         deal_metadata = defaults.get("deal_metadata", {}) or {}

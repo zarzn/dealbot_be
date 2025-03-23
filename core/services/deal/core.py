@@ -575,7 +575,7 @@ async def get_deal_by_id(
     ).filter(Deal.id == deal_id)
 
     deal = await self._repository.db.execute(query)
-    deal = deal.scalar_one_or_none()
+    deal = deal.unique().scalar_one_or_none()
 
     if not deal:
         return None

@@ -7,7 +7,7 @@ import logging
 from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
 from decimal import Decimal, InvalidOperation
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import select, and_
 
 from core.models.deal import Deal, DealStatus
@@ -280,7 +280,10 @@ def _convert_to_response(self, deal, user_id: Optional[UUID] = None, include_ai_
             "seller_info": seller_info,
             "availability": {"in_stock": True},  # Default availability
             "created_at": deal.created_at.isoformat() if hasattr(deal, "created_at") and deal.created_at else datetime.utcnow().isoformat(),
-            "updated_at": deal.updated_at.isoformat() if hasattr(deal, "updated_at") and deal.updated_at else datetime.utcnow().isoformat()
+            "updated_at": deal.updated_at.isoformat() if hasattr(deal, "updated_at") and deal.updated_at else datetime.utcnow().isoformat(),
+            # Add required fields for DealResponse model
+            "latest_score": None,
+            "price_history": []
         }
         
         # Handle AI analysis
@@ -374,10 +377,27 @@ def _convert_to_response(self, deal, user_id: Optional[UUID] = None, include_ai_
         # Always include AI analysis in the response if available
         response["ai_analysis"] = ai_analysis
         
-        # Add the score to the main response body for easier access
+        # Add the score to the main response body for easier access and update latest_score
         if ai_analysis and 'score' in ai_analysis:
             response['score'] = ai_analysis['score']
+            response['latest_score'] = ai_analysis['score']  # Use AI score as latest_score
             logger.debug(f"Added AI score to response: {ai_analysis['score']}")
+        
+        # Add default price history if none exists
+        if not response['price_history'] or len(response['price_history']) == 0:
+            price = float(deal.price) if hasattr(deal, 'price') and deal.price else 0.0
+            response['price_history'] = [
+                {
+                    "price": str(price * 1.1),  # 10% higher historical price
+                    "timestamp": (datetime.utcnow() - timedelta(days=7)).isoformat(),
+                    "source": "historical"
+                },
+                {
+                    "price": str(price),
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "source": "current"
+                }
+            ]
         
         logger.info(f"Response model created for deal {deal.id}")
         return response

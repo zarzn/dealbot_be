@@ -1842,9 +1842,9 @@ class ScraperAPIService:
                     'url': url,
                     'image_url': image_url,
                     'description': description,
-                    'source': 'google_shopping',
+                    'source': 'google_shopping',  # Ensure underscore format
                     'market_type': 'google_shopping',
-                    'market_name': 'Google Shopping',  # Ensure market_name is properly set
+                    'market_name': 'Google Shopping',  # Keep display name with space
                     'merchant': merchant,
                     'rating': rating,
                     'review_count': review_count,
@@ -1852,7 +1852,7 @@ class ScraperAPIService:
                     'is_available': True,  # Assume available if in search results
                     'category': category,
                     'metadata': {
-                        'source': 'google_shopping',
+                        'source': 'google_shopping',  # Ensure underscore format here too
                         'query': query,
                         'timestamp': datetime.utcnow().isoformat(),
                         'raw_fields': list(product.keys()),

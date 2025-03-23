@@ -253,6 +253,7 @@ async def search_deals(
         
         # Log search parameters for debugging
         logger.info(f"Search query: '{search.query}', Category: {search.category}, Price range: {search.min_price}-{search.max_price}")
+        logger.info(f"Sort parameters: sort_by={search.sort_by}, sort_order={search.sort_order}")
         
         # Always enable real-time scraping by default when querying with text
         # This ensures we'll get results even if nothing is in the database
@@ -1371,7 +1372,7 @@ class DealCreate(BaseModel):
     currency: str = Field("USD", min_length=3, max_length=3)
     source: str = Field("manual", min_length=3, max_length=50)
     url: Optional[str] = Field(None, max_length=2048)
-    image_url: Optional[str] = Field(None, max_length=2048)
+    image_url: Optional[str] = Field(None)
     category: Optional[str] = Field(None, max_length=100)
     seller_info: Optional[Dict[str, Any]] = Field(None)
     deal_metadata: Optional[Dict[str, Any]] = Field(None)
@@ -1390,7 +1391,7 @@ class FlashDealCreate(BaseModel):
     currency: str = Field("USD", min_length=3, max_length=3)
     source: str = Field("manual", min_length=3, max_length=50)
     url: Optional[str] = Field(None, max_length=2048)
-    image_url: Optional[str] = Field(None, max_length=2048)
+    image_url: Optional[str] = Field(None)
     category: Optional[str] = Field(None, max_length=100)
     goal_id: UUID
     market_id: UUID

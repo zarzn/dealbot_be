@@ -127,8 +127,6 @@ async def lifespan(app: FastAPI):
     and cleanup after it stops.
     """
     # Background tasks for monitoring
-    connection_monitor_task = None
-    connection_leak_detector_task = None
     
     # Setup
     try:
@@ -157,18 +155,10 @@ async def lifespan(app: FastAPI):
         # Start database connection monitoring
         try:
             logger.info("Starting database connection monitoring...")
-            from core.utils.connection_monitor import monitor_connections, detect_connection_leaks, cleanup_connections
+            from core.utils.connection_monitor import start_connection_monitor
             
-            # Clean up any existing connections
-            await cleanup_connections()
-            
-            # Start connection monitoring background task
-            connection_monitor_task = asyncio.create_task(monitor_connections(interval=30))
-            
-            # Start connection leak detection background task
-            connection_leak_detector_task = asyncio.create_task(
-                detect_connection_leaks(timeout=180, threshold=5, interval=60)
-            )
+            # Start connection monitoring
+            start_connection_monitor()
             
             logger.info("Database connection monitoring started")
         except Exception as e:
@@ -185,31 +175,7 @@ async def lifespan(app: FastAPI):
         # Shutdown
         logger.info("Shutting down application...")
         
-        # Cancel background tasks
-        if connection_monitor_task:
-            logger.info("Stopping connection monitoring...")
-            connection_monitor_task.cancel()
-            try:
-                await connection_monitor_task
-            except asyncio.CancelledError:
-                pass
-            
-        if connection_leak_detector_task:
-            logger.info("Stopping connection leak detection...")
-            connection_leak_detector_task.cancel()
-            try:
-                await connection_leak_detector_task
-            except asyncio.CancelledError:
-                pass
-        
-        # Clean up database connections
-        try:
-            logger.info("Cleaning up database connections...")
-            from core.utils.connection_monitor import cleanup_connections
-            await cleanup_connections()
-            logger.info("Database connections cleaned up")
-        except Exception as e:
-            logger.error(f"Error cleaning up database connections: {str(e)}")
+        # Clean up database connections - this will be handled by the engine.dispose() calls
         
         # Close Redis connections
         try:
@@ -248,9 +214,9 @@ async def lifespan(app: FastAPI):
                     
             logger.info("Database connections closed")
         except Exception as e:
-            logger.error(f"Exception closing database connections: {str(e)}")
+            logger.error(f"Error closing database connections: {str(e)}")
         
-        logger.info("Application shutdown completed")
+        logger.info("Application shutdown complete")
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""

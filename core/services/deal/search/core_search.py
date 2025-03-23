@@ -67,7 +67,8 @@ async def search_deals(
         max_price = getattr(search, 'max_price', None)
         start_date = getattr(search, 'start_date', None)
         end_date = getattr(search, 'end_date', None)
-        sort_by = getattr(search, 'sort', "relevance")
+        sort_by = getattr(search, 'sort_by', "relevance")
+        sort_order = getattr(search, 'sort_order', "desc")
         market_ids = getattr(search, 'market_ids', None)
         status = getattr(search, 'status', "active")
         include_expired = getattr(search, 'include_expired', False)
@@ -151,15 +152,22 @@ async def search_deals(
         if filters:
             query_obj = query_obj.where(and_(*filters))
                 
-        # Apply sorting
-        if sort_by == "price_asc":
-            query_obj = query_obj.order_by(Deal.price.asc())
-        elif sort_by == "price_desc":
-            query_obj = query_obj.order_by(Deal.price.desc())
-        elif sort_by == "date_desc":
-            query_obj = query_obj.order_by(Deal.found_at.desc())
-        elif sort_by == "date_asc":
-            query_obj = query_obj.order_by(Deal.found_at.asc())
+        # Apply sorting with improved mapping
+        logger.info(f"Applying sort: sort_by={sort_by}, sort_order={sort_order}")
+        
+        # Get the column to sort by
+        if sort_by == "price" or sort_by == "price_asc" or sort_by == "price_desc":
+            sort_column = Deal.price
+            logger.info(f"Sorting by price column")
+        elif sort_by == "created_at" or sort_by == "date":
+            sort_column = Deal.created_at
+            logger.info(f"Sorting by created_at column")
+        elif sort_by == "found_at":
+            sort_column = Deal.found_at
+            logger.info(f"Sorting by found_at column")
+        elif sort_by == "title":
+            sort_column = Deal.title
+            logger.info(f"Sorting by title column")
         elif sort_by == "discount":
             # Sort by calculated discount (original_price - price) / original_price
             # We need to handle cases where original_price is None
@@ -168,10 +176,37 @@ async def search_deals(
                  cast((Deal.original_price - Deal.price) / Deal.original_price * 100, Float)),
                 else_=0.0
             )
-            query_obj = query_obj.order_by(discount_expr.desc())
+            logger.info(f"Sorting by discount expression")
+            query_obj = query_obj.order_by(
+                discount_expr.desc() if sort_order.lower() == "desc" else discount_expr.asc()
+            )
+            # Skip the standard ordering logic for discount since we already applied it
+            sort_column = None
         else:
             # Default sort by relevance (found_at desc)
-            query_obj = query_obj.order_by(Deal.found_at.desc())
+            sort_column = Deal.found_at
+            logger.warning(f"Unknown sort_by value: {sort_by}, defaulting to found_at")
+        
+        # Apply sort direction if we have a column to sort by
+        if sort_column:
+            if sort_order and sort_order.lower() == "asc":
+                logger.info(f"Applying ASCENDING sort order")
+                query_obj = query_obj.order_by(sort_column.asc())
+            else:
+                logger.info(f"Applying DESCENDING sort order")
+                query_obj = query_obj.order_by(sort_column.desc())
+            
+            # Include sort info in response
+            response["sort_applied"] = sort_by
+            response["sort_order"] = sort_order
+        
+        # Add debugging output for the actual SQL query
+        from sqlalchemy.dialects import postgresql
+        sql_str = str(query_obj.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True}
+        ))
+        logger.debug(f"Generated SQL query: {sql_str}")
                 
         # Count total results using scalar count
         count_query = select(text("COUNT(*)")).select_from(query_obj.subquery())

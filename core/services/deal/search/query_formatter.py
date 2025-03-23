@@ -15,6 +15,98 @@ from core.services.ai import AIService
 
 logger = get_logger(__name__)
 
+async def format_search_queries_with_ai_batch(
+    query: str,
+    marketplaces: List[str],
+    ai_service: Optional[AIService] = None
+) -> Dict[str, str]:
+    """
+    Format a search query using AI for multiple marketplaces in a single request.
+    
+    Args:
+        query: The original user query
+        marketplaces: List of target marketplaces (amazon, walmart, google_shopping)
+        ai_service: Optional AIService instance
+        
+    Returns:
+        Dictionary mapping marketplace to formatted query string
+    """
+    if not ai_service or not ai_service.llm:
+        logger.warning("AI service not available, using fallback formatting")
+        return {marketplace: format_search_query_fallback(query, marketplace) for marketplace in marketplaces}
+    
+    try:
+        # Create system prompt for batch query formatting
+        system_prompt = (
+            "You are a search query optimization assistant that helps format user search queries for e-commerce marketplaces.\n"
+            "Your task is to transform natural language shopping queries into optimized search terms for MULTIPLE marketplaces simultaneously.\n\n"
+            "For each query, you should:\n"
+            "1. Extract the core product being searched for\n"
+            "2. Identify any price constraints (minimum/maximum)\n"
+            "3. Identify brand preferences\n"
+            "4. Identify key features or specifications\n"
+            "5. Output a formatted search query for EACH marketplace\n\n"
+            "The output MUST be in this EXACT format (including the exact marketplace names):\n"
+            "amazon: [formatted query for Amazon]\n"
+            "walmart: [formatted query for Walmart]\n"
+            "google_shopping: [formatted query for Google Shopping]\n\n"
+            "DO NOT include any additional text, explanations or markdown formatting."
+        )
+        
+        # Create user prompt with list of marketplaces
+        user_prompt = f"Format this search query for the following marketplaces: {', '.join(marketplaces)}:\n{query}"
+        
+        # Call the LLM
+        response = await ai_service.llm.ainvoke(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,  # Lower temperature for more deterministic response
+            max_tokens=150    # Increased token count for multiple marketplaces
+        )
+        
+        # Extract content from the response
+        if hasattr(response, 'content'):
+            formatted_response = response.content
+        elif isinstance(response, dict) and 'content' in response:
+            formatted_response = response['content']
+        else:
+            formatted_response = str(response)
+        
+        # Remove any markdown code blocks
+        formatted_response = re.sub(r'^```.*?\n|```$', '', formatted_response, flags=re.DOTALL)
+        
+        # Parse the response into a dictionary
+        result = {}
+        for line in formatted_response.strip().split('\n'):
+            if ':' in line:
+                marketplace, formatted_query = line.split(':', 1)
+                marketplace = marketplace.strip().lower()
+                formatted_query = formatted_query.strip()
+                
+                # Remove any quotes
+                formatted_query = re.sub(r'^["\'`]|["\'`]$', '', formatted_query)
+                
+                if marketplace in marketplaces and formatted_query:
+                    result[marketplace] = formatted_query
+        
+        # Apply fallback for any missing marketplaces
+        for marketplace in marketplaces:
+            if marketplace not in result or not result[marketplace]:
+                result[marketplace] = format_search_query_fallback(query, marketplace)
+                logger.warning(f"Using fallback formatting for {marketplace} due to missing or invalid AI response")
+        
+        # Log the formatted queries
+        for marketplace, formatted_query in result.items():
+            logger.info(f"AI formatted query: '{query}' -> '{formatted_query}' for {marketplace}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error formatting queries with AI: {e}")
+        return {marketplace: format_search_query_fallback(query, marketplace) for marketplace in marketplaces}
+
 async def format_search_query_with_ai(
     query: str,
     marketplace: str,
@@ -31,60 +123,9 @@ async def format_search_query_with_ai(
     Returns:
         Formatted query string
     """
-    if not ai_service or not ai_service.llm:
-        logger.warning("AI service not available, using fallback formatting")
-        return format_search_query_fallback(query, marketplace)
-    
-    try:
-        # Create system prompt for query formatting
-        system_prompt = (
-            "You are a search query optimization assistant that helps format user search queries for e-commerce marketplaces.\n"
-            "Your task is to transform natural language shopping queries into optimized search terms.\n\n"
-            "For each query, you should:\n"
-            "1. Extract the core product being searched for\n"
-            "2. Identify any price constraints (minimum/maximum)\n"
-            "3. Identify brand preferences\n"
-            "4. Identify key features or specifications\n"
-            "5. Output a formatted search query that respects the syntax of the target marketplace\n\n"
-            "The output should be a plain search query string without any explanation, formatted optimally for the specified marketplace."
-        )
-        
-        # Create user prompt
-        user_prompt = f"Format a search query for {marketplace}:\n{query}"
-        
-        # Call the LLM
-        response = await ai_service.llm.ainvoke(
-            [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.3,  # Lower temperature for more deterministic response
-            max_tokens=100    # Limit token count as we need a short response
-        )
-        
-        # Extract content from the response
-        if hasattr(response, 'content'):
-            formatted_query = response.content
-        elif isinstance(response, dict) and 'content' in response:
-            formatted_query = response['content']
-        else:
-            formatted_query = str(response)
-        
-        # Remove any quotes, explanation text, or markdown
-        formatted_query = re.sub(r'^["\'`]|["\'`]$', '', formatted_query)
-        formatted_query = re.sub(r'^```.*?\n|```$', '', formatted_query, flags=re.DOTALL)
-        
-        # If we got an empty result, fall back to the original query
-        if not formatted_query.strip():
-            logger.warning("AI returned empty formatting result, using fallback")
-            return format_search_query_fallback(query, marketplace)
-        
-        logger.info(f"AI formatted query: '{query}' -> '{formatted_query}' for {marketplace}")
-        return formatted_query
-        
-    except Exception as e:
-        logger.error(f"Error formatting query with AI: {e}")
-        return format_search_query_fallback(query, marketplace)
+    # Use the batch formatter for a single marketplace
+    result = await format_search_queries_with_ai_batch(query, [marketplace], ai_service)
+    return result.get(marketplace, format_search_query_fallback(query, marketplace))
 
 def extract_parameters_from_query(query: str) -> Dict[str, Any]:
     """
@@ -334,4 +375,39 @@ async def get_optimized_query_for_marketplace(
     return {
         'formatted_query': formatted_query,
         'parameters': parameters
-    } 
+    }
+
+async def get_optimized_queries_for_marketplaces(
+    query: str,
+    marketplaces: List[str],
+    ai_service: Optional[AIService] = None
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Get optimized search queries for multiple marketplaces in a single AI request.
+    
+    Args:
+        query: Original search query
+        marketplaces: List of target marketplaces
+        ai_service: Optional AIService instance
+        
+    Returns:
+        Dictionary mapping marketplace names to optimization results
+    """
+    # Format all queries with a single AI call
+    if ai_service and ai_service.llm:
+        formatted_queries = await format_search_queries_with_ai_batch(query, marketplaces, ai_service)
+    else:
+        formatted_queries = {marketplace: format_search_query_fallback(query, marketplace) for marketplace in marketplaces}
+    
+    # Extract parameters (same for all marketplaces)
+    parameters = extract_parameters_from_query(query)
+    
+    # Build result dictionary
+    result = {}
+    for marketplace in marketplaces:
+        result[marketplace] = {
+            'formatted_query': formatted_queries.get(marketplace, query),
+            'parameters': parameters
+        }
+    
+    return result 

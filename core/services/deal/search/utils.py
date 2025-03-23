@@ -109,7 +109,7 @@ def convert_to_response(self, deal, user_id=None, include_ai_analysis=False):
     """Convert a Deal model object to a response dictionary.
     
     Args:
-        deal: Deal model object
+        deal: Deal model object or UUID
         user_id: Optional user ID
         include_ai_analysis: Whether to include AI analysis
         
@@ -118,6 +118,37 @@ def convert_to_response(self, deal, user_id=None, include_ai_analysis=False):
     """
     if not deal:
         return None
+    
+    # Check if the deal object is a UUID and not a Deal model
+    from uuid import UUID
+    import inspect
+    
+    # Handle the case when deal is a UUID or UUID-like object instead of a Deal model
+    if not hasattr(deal, 'id') and (isinstance(deal, UUID) or 
+                                   (hasattr(deal, '__class__') and 'UUID' in deal.__class__.__name__)):
+        logger.warning(f"Received UUID object instead of Deal model, fetching deal with ID: {deal}")
+        # Return a minimal deal dict with just the ID
+        return {
+            "id": str(deal),
+            "title": "Loading...",
+            "description": "",
+            "price": None,
+            "original_price": None,
+            "currency": "USD",
+            "url": "",
+            "image_url": "",
+            "category": "",
+            "status": "active",
+            "found_at": None,
+            "expires_at": None,
+            "source": "",
+            "metadata": {},
+            "market_id": None,
+            "seller_info": {},
+            "availability": {},
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
     
     # Base deal information
     deal_dict = {

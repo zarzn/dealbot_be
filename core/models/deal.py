@@ -166,7 +166,7 @@ class DealBase(BaseModel):
     original_price: Optional[Decimal] = None
     currency: str = Field(default="USD", min_length=3, max_length=3)
     source: str = Field(..., min_length=1, max_length=50)
-    image_url: Optional[HttpUrl] = None
+    image_url: Optional[str] = None
     deal_metadata: Optional[Dict[str, Any]] = None
     price_metadata: Optional[Dict[str, Any]] = None
     expires_at: Optional[datetime] = None

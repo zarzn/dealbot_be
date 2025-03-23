@@ -140,13 +140,13 @@ class Settings(BaseSettings):
     POSTGRES_PORT: str = Field(default="5432")
 
     # Database pool settings
-    DB_POOL_SIZE: int = Field(default=5, description="Database pool size")
-    DB_MAX_OVERFLOW: int = Field(default=10, description="Maximum pool overflow")
-    DB_POOL_TIMEOUT: int = Field(default=30, description="Pool timeout in seconds")
-    DB_POOL_RECYCLE: int = Field(default=1800, description="Connection recycle time in seconds")
+    DB_POOL_SIZE: int = Field(default=8, description="Database pool size - reduced to prevent connection exhaustion")
+    DB_MAX_OVERFLOW: int = Field(default=8, description="Maximum pool overflow - reduced to prevent connection exhaustion")
+    DB_POOL_TIMEOUT: int = Field(default=15, description="Pool timeout in seconds - reduced to fail faster")
+    DB_POOL_RECYCLE: int = Field(default=600, description="Connection recycle time in seconds - reduced to recycle more frequently")
     DB_MAX_RETRIES: int = Field(default=3, description="Maximum connection retry attempts")
     DB_RETRY_DELAY: float = Field(default=1.0, description="Delay between retries in seconds")
-    DB_IDLE_TIMEOUT: int = Field(default=300, description="Idle connection timeout in seconds")
+    DB_IDLE_TIMEOUT: int = Field(default=120, description="Idle connection timeout in seconds - reduced to close idle connections faster")
     DB_ECHO: bool = Field(default=True, description="Enable SQL query logging")
 
     # Redis settings

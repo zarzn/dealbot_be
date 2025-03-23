@@ -24,9 +24,14 @@ from core.services.deal.search.post_scraping_filter import (
     extract_price_constraints,
     extract_brands_from_query
 )
-from core.services.deal.search.query_formatter import get_optimized_query_for_marketplace
+from core.services.deal.search.query_formatter import (
+    format_search_query_with_ai,
+    get_optimized_query_for_marketplace,
+    get_optimized_queries_for_marketplaces
+)
 from core.integrations.market_factory import MarketIntegrationFactory
 from core.utils.logger import get_logger
+from core.services.ai import get_ai_service
 
 logger = get_logger(__name__)
 
@@ -117,7 +122,6 @@ async def perform_realtime_scraping(
         # Get AI service for query formatting - start this early in parallel
         ai_service = None
         try:
-            from core.services.ai import get_ai_service
             ai_service_task = asyncio.create_task(get_ai_service())
         except Exception as e:
             logger.warning(f"Error setting up AI service task: {str(e)}")
@@ -172,6 +176,17 @@ async def perform_realtime_scraping(
             except Exception as e:
                 logger.error(f"Error processing market {market.name}: {str(e)}")
         
+        # Get optimized queries for all markets in a single AI request
+        market_types = [market_type for _, market_type, _ in search_markets]
+        try:
+            optimized_queries = await get_optimized_queries_for_marketplaces(
+                query, market_types, ai_service
+            )
+        except Exception as e:
+            logger.error(f"Error getting optimized queries in batch: {str(e)}")
+            # Create empty dict that will be filled with individual formatting in the market search loop
+            optimized_queries = {}
+        
         # Define function for market search with optimized queries and post-filtering
         async def process_market_search(market_info):
             market_name, market_type, market_id = market_info
@@ -184,21 +199,28 @@ async def perform_realtime_scraping(
             logger.info(f"Starting search for {market_name} with timeout of {market_timeout} seconds")
             
             try:
-                # Format the query for this specific marketplace
-                try:
-                    optimized_result = await get_optimized_query_for_marketplace(
-                        query, market_type, ai_service
-                    )
-                    optimized_query = optimized_result['formatted_query']
-                    parameters = optimized_result['parameters']
-                    
-                    logger.info(
-                        f"Optimized query for {market_name}: '{query}' -> '{optimized_query}'"
-                    )
-                except Exception as e:
-                    logger.error(f"Error optimizing query for {market_name}: {str(e)}. Using original query.")
-                    optimized_query = query
-                    parameters = {}
+                # Get the optimized query for this marketplace from the batch results
+                # or format it individually if the batch formatting failed
+                if market_type in optimized_queries:
+                    optimization_result = optimized_queries[market_type]
+                    optimized_query = optimization_result['formatted_query']
+                    parameters = optimization_result['parameters']
+                else:
+                    # Fallback to individual formatting if batch formatting failed
+                    try:
+                        optimization_result = await get_optimized_query_for_marketplace(
+                            query, market_type, ai_service
+                        )
+                        optimized_query = optimization_result['formatted_query']
+                        parameters = optimization_result['parameters']
+                    except Exception as e:
+                        logger.error(f"Error optimizing query for {market_name}: {str(e)}. Using original query.")
+                        optimized_query = query
+                        parameters = {}
+                
+                logger.info(
+                    f"Optimized query for {market_name}: '{query}' -> '{optimized_query}'"
+                )
                 
                 # Use the _search_products method with appropriate timeout based on market type
                 logger.debug(f"Initiating search for {market_name} with query: '{optimized_query}'")
@@ -312,7 +334,7 @@ async def perform_realtime_scraping(
                 elif "bestbuy" in market_url.lower():
                     source = "bestbuy"
                 elif "google" in market_url.lower():
-                    source = "google_shopping"
+                    source = "google_shopping"  # Use underscore format instead of space
                 
                 # If market_id is available, query the database to get the market name
                 market_id = product.get("market_id")
@@ -329,6 +351,9 @@ async def perform_realtime_scraping(
                         if market:
                             # Use market name in lowercase as source
                             source = market.name.lower()
+                            # Ensure Google Shopping uses correct format
+                            if source == "google shopping":
+                                source = "google_shopping"
                             logger.info(f"Using market name '{source}' as deal source")
                     except Exception as market_error:
                         logger.warning(f"Error getting market name: {str(market_error)}")
