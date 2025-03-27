@@ -41,9 +41,11 @@ class MarketCategory(str, Enum):
 
 class GoalPriority(str, Enum):
     """Goal priority levels."""
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
+    CRITICAL = "critical"  # 5
+    URGENT = "urgent"      # 4
+    HIGH = "high"          # 3
+    MEDIUM = "medium"      # 2
+    LOW = "low"            # 1
 
 class GoalStatus(str, Enum):
     """Goal status enum."""

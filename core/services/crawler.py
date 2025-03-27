@@ -21,11 +21,17 @@ class WebCrawler:
     """Web crawler for fallback scraping when APIs are unavailable"""
     
     def __init__(self):
-        self.redis = get_redis_client()
+        self.redis = None
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         self.timeout = httpx.Timeout(10.0, connect=5.0)
+        
+    async def _get_redis(self):
+        """Get Redis client lazily."""
+        if self.redis is None:
+            self.redis = await get_redis_client()
+        return self.redis
         
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def scrape_amazon(self, product_name: str) -> List[Dict]:

@@ -1,11 +1,12 @@
 """Service for managing special promotions."""
 
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, AsyncGenerator
 from uuid import UUID
 from datetime import datetime, timedelta
 import logging
 from redis.asyncio import Redis
-
+import json
+from fastapi import Depends, HTTPException
 from sqlalchemy import select, and_, or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -17,8 +18,7 @@ from core.models.deal import Deal
 from core.exceptions.base_exceptions import NotFoundError, ValidationError
 from core.utils.logger import get_logger
 from core.services.redis import get_redis_service
-from core.database import get_db
-from fastapi import Depends
+from core.database import get_async_db_context, get_async_db_session
 
 logger = get_logger(__name__)
 
@@ -430,18 +430,32 @@ class PromotionService:
         """
         # If Redis is not available, we'll use an in-memory flag as a fallback
         if not self._redis:
-            logger.warning("Redis not available for promotion check, using fallback mechanism")
+            try:
+                # Try to get Redis service dynamically - maybe it's now available
+                from core.services.redis import get_redis_service
+                redis_service = await get_redis_service()
+                if redis_service:
+                    self._redis = redis_service
+                    logger.info("Successfully reconnected to Redis for promotion check")
+                else:
+                    logger.warning("Redis still not available for promotion check, using fallback mechanism")
+            except Exception as e:
+                logger.warning(f"Error reconnecting to Redis: {str(e)}")
+            
+        # If Redis is still not available, use in-memory fallback
+        if not self._redis:
             # Use a class-level static dictionary to track first-time users
             if not hasattr(self.__class__, '_first_analysis_users'):
                 self.__class__._first_analysis_users = set()
                 
             # Check if user has already used their free analysis in the current session
-            if user_id in self.__class__._first_analysis_users:
+            user_id_str = str(user_id)
+            if user_id_str in self.__class__._first_analysis_users:
                 logger.info(f"User {user_id} has already used first analysis promotion (memory fallback)")
                 return False
                 
             # Mark as used in memory
-            self.__class__._first_analysis_users.add(user_id)
+            self.__class__._first_analysis_users.add(user_id_str)
             logger.info(f"User {user_id} is eligible for first analysis promotion (memory fallback)")
             return True
             
@@ -508,10 +522,17 @@ class PromotionService:
             logger.error(f"Error resetting first analysis promotion: {str(e)}")
             return False
 
-# Add this function to provide a dependency for the promotion service
 async def get_promotion_service(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db_session),
     redis_service = Depends(get_redis_service)
 ) -> PromotionService:
-    """Get a promotion service instance."""
+    """Get promotion service dependency.
+    
+    Args:
+        db: Database session
+        redis_service: Redis service
+        
+    Returns:
+        PromotionService instance
+    """
     return PromotionService(db, redis_service) 

@@ -27,6 +27,7 @@ from core.models.user_preferences import (
 )
 from core.services.notification import NotificationService
 from core.database import get_async_db_session as get_db
+from core.database import get_async_db_context
 from core.dependencies import get_current_user
 from core.models.user import User, UserInDB
 from core.api.v1.notifications.websocket import handle_websocket
@@ -49,6 +50,15 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["notifications"])
+
+# Helper dependency to get db session using the new context manager
+async def get_db_session() -> AsyncSession:
+    """Get a database session using the improved context manager.
+    
+    This dependency provides better connection management and prevents connection leaks.
+    """
+    async with get_async_db_context() as session:
+        yield session
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -119,7 +129,7 @@ async def get_notifications(
     unread_only: bool = Query(False),
     notification_type: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> List[NotificationResponse]:
     """Get user notifications with filtering."""
     try:
@@ -151,7 +161,7 @@ async def get_notifications(
 )
 async def get_unread_count(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> int:
     """Get count of unread notifications."""
     try:
@@ -178,7 +188,7 @@ async def get_unread_count(
 async def create_notification(
     notification: NotificationCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     background_tasks: BackgroundTasks = None
 ) -> NotificationResponse:
     """Create a new notification."""
@@ -217,7 +227,7 @@ async def create_notification(
 async def mark_notification_read(
     notification_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> NotificationResponse:
     """Mark a notification as read."""
     try:
@@ -255,7 +265,7 @@ async def mark_notification_read(
 async def mark_notifications_read(
     notification_ids: List[UUID],
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> List[NotificationResponse]:
     """Mark multiple notifications as read."""
     try:
@@ -285,7 +295,7 @@ async def mark_notifications_read(
 async def delete_notifications(
     notification_ids: List[UUID] = Query(...),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ):
     """Delete notifications."""
     try:
@@ -314,7 +324,7 @@ async def delete_notifications(
 )
 async def clear_all_notifications(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ):
     """Clear all notifications."""
     try:
@@ -340,7 +350,7 @@ async def clear_all_notifications(
 )
 async def get_notification_preferences(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> UserPreferencesResponse:
     """Get user notification preferences."""
     try:
@@ -368,7 +378,7 @@ async def get_notification_preferences(
 async def update_notification_preferences(
     preferences: UserPreferencesUpdate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> UserPreferencesResponse:
     """Update user notification preferences."""
     try:

@@ -41,7 +41,13 @@ logger = logging.getLogger(__name__)
 class DealRepository(BaseRepository[Deal]):
     def __init__(self, db: AsyncSession):
         super().__init__(db, Deal)
-        self.redis: Redis = get_redis_client()
+        self.redis = None
+
+    async def _get_redis(self):
+        """Get Redis client lazily."""
+        if self.redis is None:
+            self.redis = await get_redis_client()
+        return self.redis
 
     async def create(self, deal_data: Dict[str, Any]) -> Deal:
         """Create a new deal"""
@@ -559,7 +565,7 @@ class DealRepository(BaseRepository[Deal]):
             
             # Number of active deals
             active_count_query = select(func.count()).select_from(
-                select(Deal).where(Deal.is_active == True).subquery()
+                select(Deal).where(Deal.status == DealStatus.ACTIVE).subquery()
             )
             active_count = await self.db.scalar(active_count_query) or 0
             
@@ -605,6 +611,13 @@ class DealRepository(BaseRepository[Deal]):
                 return False
             
             deal.is_active = is_active
+            # Also update the status field to keep them in sync
+            if is_active:
+                deal.status = DealStatus.ACTIVE
+            else:
+                # Use INACTIVE status if the deal is deactivated
+                deal.status = DealStatus.EXPIRED
+                
             await self.db.commit()
             
             logger.info(f"Updated deal {deal_id} status to {is_active}")
@@ -1022,12 +1035,12 @@ class DealRepository(BaseRepository[Deal]):
             
             # Cache updated analysis in Redis if available
             try:
-                if self.redis:
+                if await self._get_redis():
                     cache_key = f"deal:{deal_id}:analysis"
-                    await self.redis.set(
+                    await (await self._get_redis()).set(
                         cache_key,
                         json.dumps(analysis_data),
-                        expire=3600  # 1 hour cache
+                        ex=3600  # Cache for 1 hour
                     )
             except Exception as e:
                 logger.warning(f"Failed to cache deal analysis: {str(e)}")
@@ -1085,12 +1098,12 @@ class DealRepository(BaseRepository[Deal]):
                 
             # Update cache if available
             try:
-                if self.redis:
+                if await self._get_redis():
                     cache_key = f"deal:{deal_id}:score"
-                    await self.redis.set(
+                    await (await self._get_redis()).set(
                         cache_key,
                         str(normalized_score),
-                        expire=3600  # 1 hour cache
+                        ex=3600  # Cache for 1 hour
                     )
             except Exception as e:
                 logger.warning(f"Failed to cache deal score: {str(e)}")

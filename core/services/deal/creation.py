@@ -230,21 +230,36 @@ def _convert_to_response(self, deal, user_id: Optional[UUID] = None, include_ai_
         market_name = "Unknown Market"
         # DON'T access deal.market directly - use market_id only to avoid lazy loading
         if hasattr(deal, 'market_id') and deal.market_id:
-            # Use generic name based on ID
-            market_name = f"Market {deal.market_id.hex[:8]}"
+            # Try to get the real market name from the Market table if possible
+            if 'market' in deal.__dict__ and deal.__dict__['market'] is not None:
+                market = deal.__dict__['market']
+                market_name = market.name
+                logger.debug(f"Using market name '{market_name}' from already loaded market")
+            else:
+                # Use generic name based on ID as fallback
+                market_name = f"Market {deal.market_id.hex[:8]}"
+                logger.debug(f"Using generic market name '{market_name}' based on ID")
             
         # Check if deal is tracked by user - carefully to avoid lazy loading
         is_tracked = False
-        # Only attempt this if tracked_by_users was eagerly loaded
-        if user_id and hasattr(deal, '_sa_instance_state'):
+        
+        if user_id:
             try:
-                # Check if tracked_by_users is already loaded
-                if hasattr(deal._sa_instance_state, 'loaded_attributes') and 'tracked_by_users' in deal._sa_instance_state.loaded_attributes:
+                # First check if we added the is_tracked_by_user attribute in the get_deal method
+                if hasattr(deal, 'is_tracked_by_user') and deal.is_tracked_by_user == user_id:
+                    is_tracked = True
+                    logger.debug(f"Deal tracking status for user {user_id} (from is_tracked_by_user attribute): {is_tracked}")
+                # Then try to use tracked_by_users relationship if it's already loaded
+                elif hasattr(deal, '_sa_instance_state') and hasattr(deal._sa_instance_state, 'loaded_attributes') and 'tracked_by_users' in deal._sa_instance_state.loaded_attributes:
                     tracking_entries = [t for t in deal.tracked_by_users if t.user_id == user_id]
                     is_tracked = len(tracking_entries) > 0
-                    logger.debug(f"Deal tracking status for user {user_id}: {is_tracked}")
+                    logger.debug(f"Deal tracking status for user {user_id} (from relationship): {is_tracked}")
+                # Since _convert_to_response isn't async, we can't use await here
+                # Instead we rely on the is_tracked_by_user attribute set in get_deal
             except Exception as e:
+                # If anything goes wrong, just log the error and assume not tracked
                 logger.warning(f"Error checking tracking status: {str(e)}")
+                is_tracked = False
         
         # Safely handle original price
         original_price = None

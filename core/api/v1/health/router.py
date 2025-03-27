@@ -9,7 +9,7 @@ import os
 import socket
 from urllib.parse import urlparse, urlunparse
 
-from core.database import get_async_db_session as get_db, check_db_connection
+from core.database import get_async_db_session as get_db, check_db_connection, get_async_db_context
 from core.services.redis import get_redis_service
 from core.exceptions.market_exceptions import MarketIntegrationError
 
@@ -17,6 +17,15 @@ from core.exceptions.market_exceptions import MarketIntegrationError
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Add the get_db_session dependency function
+async def get_db_session() -> AsyncSession:
+    """Get a database session using the improved context manager.
+    
+    This dependency provides better connection management and prevents connection leaks.
+    """
+    async with get_async_db_context() as session:
+        yield session
 
 # Track startup time to provide a grace period for database connections
 STARTUP_TIME = time.time()
@@ -35,7 +44,7 @@ def is_aws_environment() -> bool:
 @router.get("")
 async def health_check(
     response: Response,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ):
     """Health check endpoint.
     
@@ -383,7 +392,7 @@ async def check_database(response: Response):
         return result
 
 @router.get("/scraper-api/usage", response_model=Dict[str, int])
-async def get_scraper_api_usage(db: AsyncSession = Depends(get_db)):
+async def get_scraper_api_usage(db: AsyncSession = Depends(get_db_session)):
     """Get current ScraperAPI credit usage."""
     try:
         # Import here to avoid circular imports

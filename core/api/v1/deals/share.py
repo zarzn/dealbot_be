@@ -19,7 +19,7 @@ from core.models.shared_content import SharedContent, ShareContentRequest, Share
 from core.services.sharing import SharingService
 from core.exceptions.share_exceptions import ShareException
 from core.api.v1.dependencies import get_current_user, get_optional_user
-from core.database import get_async_db_session
+from core.database import get_async_db_context
 from core.utils.logger import get_logger
 from core.utils.json_utils import sanitize_for_json
 from core.config import settings
@@ -28,12 +28,18 @@ from core.utils.auth_utils import log_auth_info, get_authorization_token
 router = APIRouter(tags=["Deals Sharing"])
 logger = get_logger(__name__)
 
+# Create a dependency that uses the context manager approach
+async def get_db_session():
+    """Get database session using the new context manager pattern."""
+    async with get_async_db_context() as session:
+        yield session
+
 @router.post("/share", response_model=None)
 async def create_shareable_content(
     request: Request,
     data: Dict[str, Any],
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_db_session)
+    db: AsyncSession = Depends(get_db_session)
 ) -> JSONResponse:
     """Create a shareable link for a deal or search results."""
     # Log request info
@@ -89,7 +95,7 @@ async def get_shared_content(
     request: Request,
     share_id: str = Path(..., description="ID of the shared content"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_db_session)
+    db: AsyncSession = Depends(get_db_session)
 ) -> JSONResponse:
     """Get shared content by share ID (authenticated access)."""
     # Log request info
@@ -135,7 +141,7 @@ async def list_user_shares(
     limit: int = Query(20, description="Pagination limit"),
     content_type: Optional[str] = Query(None, description="Filter by content type"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_db_session)
+    db: AsyncSession = Depends(get_db_session)
 ) -> JSONResponse:
     """List all shared content created by the current user."""
     # Log request info
@@ -144,11 +150,16 @@ async def list_user_shares(
     try:
         sharing_service = SharingService(db)
         content_type_enum = ShareableContentType(content_type) if content_type else None
+        
+        # Get the base URL for generating shareable links
+        base_url = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+        
         result = await sharing_service.get_user_shared_content(
             user_id=current_user.id,
             offset=offset,
             limit=limit,
-            content_type=content_type_enum
+            content_type=content_type_enum,
+            base_url=base_url
         )
         # Sanitize items for JSON serialization
         sanitized_items = [sanitize_for_json(item.model_dump()) for item in result]
@@ -165,7 +176,7 @@ async def get_share_metrics(
     request: Request,
     share_id: str = Path(..., description="ID of the shared content"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_db_session)
+    db: AsyncSession = Depends(get_db_session)
 ) -> JSONResponse:
     """Get engagement metrics for a shared content item."""
     # Log request info
@@ -191,7 +202,7 @@ async def deactivate_share(
     request: Request,
     share_id: str = Path(..., description="ID of the shared content to deactivate"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_db_session)
+    db: AsyncSession = Depends(get_db_session)
 ) -> JSONResponse:
     """Deactivate a share link."""
     # Log request info
@@ -246,7 +257,7 @@ async def no_auth_test(
 async def auth_debug_endpoint(
     request: Request,
     current_user: Optional[User] = Depends(get_optional_user),
-    db: AsyncSession = Depends(get_async_db_session)
+    db: AsyncSession = Depends(get_db_session)
 ) -> JSONResponse:
     """Debug endpoint to check authentication status and headers.
     
@@ -312,68 +323,6 @@ async def auth_debug_endpoint(
         logger.info(f"Authenticated user: {current_user.email} ({current_user.id})")
     
     return JSONResponse(content=auth_info)
-
-@router.post("/share/test", response_model=None)
-async def create_test_share(
-    request: Request,
-    data: Dict[str, Any],
-    db: AsyncSession = Depends(get_async_db_session)
-) -> JSONResponse:
-    """Create a test share without requiring authentication.
-    For troubleshooting purposes only.
-    """
-    # Log request info
-    log_auth_info(request, logger)
-    
-    try:
-        # Use system user ID for test shares
-        from core.config import settings
-        system_user_id = UUID(settings.SYSTEM_USER_ID)
-        
-        # Sanitize input data
-        sanitized_data = sanitize_for_json(data)
-        
-        # Create share request
-        share_request = ShareContentRequest(
-            content_type=ShareableContentType(sanitized_data.get("content_type", "deal")),
-            content_id=sanitized_data.get("content_id"),
-            title=sanitized_data.get("title", "Test Share"),
-            description=sanitized_data.get("description", "This is a test share"),
-            visibility=ShareVisibility.PUBLIC,
-            include_personal_notes=False
-        )
-        
-        # Get base URL
-        base_url = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
-        
-        # Create shareable content
-        sharing_service = SharingService(db)
-        result = await sharing_service.create_shareable_content(
-            user_id=system_user_id,
-            share_request=share_request,
-            base_url=base_url
-        )
-        
-        # Sanitize and return result
-        sanitized_result = sanitize_for_json(result.model_dump())
-        return JSONResponse(
-            content={
-                "result": sanitized_result,
-                "message": "Test share created successfully",
-                "auth_header": request.headers.get("Authorization", "Not provided")
-            },
-            status_code=status.HTTP_201_CREATED
-        )
-    except Exception as e:
-        logger.error(f"Error creating test share: {str(e)}")
-        return JSONResponse(
-            content={
-                "error": str(e),
-                "message": "Failed to create test share",
-                "auth_header": request.headers.get("Authorization", "Not provided")
-            },
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
 
 @router.post("/share/api-test", response_model=None)
 async def api_test_endpoint(

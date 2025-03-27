@@ -51,7 +51,10 @@ async def websocket_endpoint(
     user_id = None
     if token:
         try:
-            payload = verify_token(token)
+            from core.models.enums import TokenType
+            
+            # Verify the token
+            payload = await verify_token(token, token_type=TokenType.ACCESS)
             user_id = payload.get("sub")
         except AuthenticationError as e:
             logger.warning(f"WebSocket authentication failed: {str(e)}")

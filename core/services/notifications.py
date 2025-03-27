@@ -12,7 +12,9 @@ import logging
 from sqlalchemy import select, update, and_, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 import aiohttp
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, Depends
+import httpx
+import weakref
 
 from core.models.notification import (
     Notification,
@@ -39,10 +41,12 @@ from core.exceptions import (
     InvalidNotificationTemplateError
 )
 from core.config import settings
-from core.database import get_async_db_session
-from core.logger import logger
+from core.database import get_async_db_session, get_async_db_context
+from core.utils.logger import get_logger
+from core.utils.email import EmailClient
+from sqlalchemy.sql import text
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # In-memory storage for notifications (temporary solution)
 notifications_store = {}
@@ -96,18 +100,25 @@ class NotificationService:
     async def __aenter__(self):
         """Async context manager enter."""
         if not self.db:
-            self.db = await get_async_db_session()
+            self.db = await get_async_db_context().__aenter__()
+            logger.debug("Created database session in NotificationService.__aenter__")
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
         if self.db:
-            await self.db.close()
+            try:
+                await get_async_db_context().__aexit__(exc_type, exc_val, exc_tb)
+                logger.debug("Database session closed successfully in NotificationService.__aexit__")
+            except Exception as e:
+                logger.error(f"Error closing database session in NotificationService.__aexit__: {str(e)}")
+            self.db = None
 
     async def get_db(self) -> AsyncSession:
         """Get database session."""
         if not self.db:
-            self.db = await get_async_db_session()
+            self.db = await get_async_db_context().__aenter__()
+            logger.debug("Created database session in NotificationService.get_db")
         return self.db
 
     def set_background_tasks(self, background_tasks: Optional[BackgroundTasks]) -> None:
@@ -231,66 +242,106 @@ class NotificationService:
         Raises:
             NotificationError: If notification creation fails
         """
+        session_created = False
+        own_session = None
+        
         try:
             # Get user preferences
-            preferences = await self.get_user_preferences(user_id)
-
-            # Create notification
-            notification = Notification(
-                user_id=user_id,
-                title=title,
-                message=message,
-                type=type,
-                priority=priority,
-                metadata=metadata,
-                status=NotificationStatus.PENDING
-            )
-
-            self.db.add(notification)
-            await self.db.commit()
-            await self.db.refresh(notification)
-
-            # Process notification delivery in background if tasks are available
-            if self._background_tasks is not None:
-                if metadata and metadata.get("schedule_for"):
-                    self.add_background_task(
-                        self._schedule_notification_delivery,
-                        notification,
-                        preferences
+            if not self.db:
+                # Use the context manager for better resource handling
+                async with get_async_db_context() as own_session:
+                    session_created = True
+                    preferences = await self._get_user_preferences_with_session(user_id, own_session)
+    
+                    # Create notification
+                    notification = Notification(
+                        user_id=user_id,
+                        title=title,
+                        message=message,
+                        type=type,
+                        priority=priority,
+                        metadata=metadata,
+                        status=NotificationStatus.PENDING
                     )
-                else:
-                    self.add_background_task(
-                        self._process_notification_delivery,
-                        notification,
-                        preferences
-                    )
+    
+                    own_session.add(notification)
+                    await own_session.commit()
+                    await own_session.refresh(notification)
+    
+                    # Process notification delivery in background if tasks are available
+                    if self._background_tasks is not None:
+                        if metadata and metadata.get("schedule_for"):
+                            self.add_background_task(
+                                self._schedule_notification_delivery,
+                                notification,
+                                preferences
+                            )
+                        else:
+                            self.add_background_task(
+                                self._process_notification_delivery,
+                                notification,
+                                preferences
+                            )
+                    
+                    # Convert to response model
+                    return NotificationResponse.from_orm(notification)
+            else:
+                # Use existing session
+                preferences = await self.get_user_preferences(user_id)
 
-            # Convert to response model
-            return NotificationResponse(
-                id=notification.id,
-                user_id=notification.user_id,
-                goal_id=notification.goal_id,
-                deal_id=notification.deal_id,
-                title=notification.title,
-                message=notification.message,
-                type=notification.type,
-                channels=notification.channels,
-                priority=notification.priority,
-                data=notification.data,
-                notification_metadata=notification.metadata,
-                action_url=notification.action_url,
-                status=notification.status,
-                created_at=notification.created_at,
-                schedule_for=notification.schedule_for,
-                sent_at=notification.sent_at,
-                delivered_at=notification.delivered_at,
-                read_at=notification.read_at,
-                error=notification.error
-            )
+                # Create notification
+                notification = Notification(
+                    user_id=user_id,
+                    title=title,
+                    message=message,
+                    type=type,
+                    priority=priority,
+                    metadata=metadata,
+                    status=NotificationStatus.PENDING
+                )
 
+                self.db.add(notification)
+                await self.db.commit()
+                await self.db.refresh(notification)
+
+                # Process notification delivery in background if tasks are available
+                if self._background_tasks is not None:
+                    if metadata and metadata.get("schedule_for"):
+                        self.add_background_task(
+                            self._schedule_notification_delivery,
+                            notification,
+                            preferences
+                        )
+                    else:
+                        self.add_background_task(
+                            self._process_notification_delivery,
+                            notification,
+                            preferences
+                        )
+                
+                # Convert to response model
+                return NotificationResponse.from_orm(notification)
+                
         except Exception as e:
-            logger.error(f"Failed to create notification: {str(e)}")
+            logger.error(f"Error creating notification: {str(e)}")
             raise NotificationError(f"Failed to create notification: {str(e)}")
+
+    async def _get_user_preferences_with_session(self, user_id: UUID, session: AsyncSession) -> NotificationPreferences:
+        """Get user's notification preferences using the provided session"""
+        query = select(NotificationPreferences).where(
+            NotificationPreferences.user_id == user_id
+        )
+        result = await session.execute(query)
+        preferences = result.scalar_one_or_none()
+
+        if not preferences:
+            # Create default preferences if none exist
+            preferences = NotificationPreferences(user_id=user_id)
+            session.add(preferences)
+            await session.commit()
+            await session.refresh(preferences)
+
+        return preferences
 
     async def _process_notification_delivery(
         self,
@@ -467,51 +518,49 @@ class NotificationService:
     ) -> List[NotificationResponse]:
         """Get user notifications with filtering options."""
         try:
-            # Ensure we have a database session
-            if not self.db:
-                self.db = await get_async_db_session()
+            # Use context manager to ensure proper cleanup
+            async with get_async_db_context() as db_session:
+                # Build base query
+                stmt = select(Notification).where(Notification.user_id == user_id)
 
-            # Build base query
-            stmt = select(Notification).where(Notification.user_id == user_id)
+                # Apply filters
+                if unread_only:
+                    stmt = stmt.where(Notification.read_at.is_(None))
+                if notification_type:
+                    stmt = stmt.where(Notification.type == notification_type)
 
-            # Apply filters
-            if unread_only:
-                stmt = stmt.where(Notification.read_at.is_(None))
-            if notification_type:
-                stmt = stmt.where(Notification.type == notification_type)
+                # Add ordering and pagination
+                stmt = stmt.order_by(desc(Notification.created_at))
+                stmt = stmt.offset(offset).limit(limit)
 
-            # Add ordering and pagination
-            stmt = stmt.order_by(desc(Notification.created_at))
-            stmt = stmt.offset(offset).limit(limit)
+                # Execute query
+                result = await db_session.execute(stmt)
+                notifications = result.scalars().all()
 
-            # Execute query
-            result = await self.db.execute(stmt)
-            notifications = result.scalars().all()
-
-            # Convert to response models
-            return [
-                NotificationResponse.model_validate({
-                    "id": n.id,
-                    "user_id": n.user_id,
-                    "goal_id": n.goal_id,
-                    "deal_id": n.deal_id,
-                    "title": n.title,
-                    "message": n.message,
-                    "type": n.type,
-                    "channels": n.channels,
-                    "priority": n.priority,
-                    "data": n.data,
-                    "notification_metadata": n.metadata,
-                    "action_url": n.action_url,
-                    "status": n.status,
-                    "created_at": n.created_at,
-                    "schedule_for": n.schedule_for,
-                    "sent_at": n.sent_at,
-                    "delivered_at": n.delivered_at,
-                    "read_at": n.read_at,
-                    "error": n.error
-                }) for n in notifications
-            ]
+                # Convert to response models
+                return [
+                    NotificationResponse.model_validate({
+                        "id": n.id,
+                        "user_id": n.user_id,
+                        "goal_id": n.goal_id,
+                        "deal_id": n.deal_id,
+                        "title": n.title,
+                        "message": n.message,
+                        "type": n.type,
+                        "channels": n.channels,
+                        "priority": n.priority,
+                        "data": n.data,
+                        "notification_metadata": n.metadata,
+                        "action_url": n.action_url,
+                        "status": n.status,
+                        "created_at": n.created_at,
+                        "schedule_for": n.schedule_for,
+                        "sent_at": n.sent_at,
+                        "delivered_at": n.delivered_at,
+                        "read_at": n.read_at,
+                        "error": n.error
+                    }) for n in notifications
+                ]
 
         except Exception as e:
             logger.error(f"Failed to get user notifications: {str(e)}")
@@ -520,15 +569,15 @@ class NotificationService:
     async def get_unread_count(self, user_id: UUID) -> int:
         """Get count of unread notifications"""
         try:
-            db = await self.get_db()
-            query = select(Notification).where(
-                and_(
-                    Notification.user_id == user_id,
-                    Notification.read_at.is_(None)
+            async with get_async_db_context() as db_session:
+                query = select(Notification).where(
+                    and_(
+                        Notification.user_id == user_id,
+                        Notification.read_at.is_(None)
+                    )
                 )
-            )
-            result = await db.execute(query)
-            return len(list(result.scalars().all()))
+                result = await db_session.execute(query)
+                return len(list(result.scalars().all()))
         except Exception as e:
             logger.error(f"Error getting unread count: {str(e)}")
             return 0
@@ -539,45 +588,48 @@ class NotificationService:
         user_id: UUID
     ) -> None:
         """Delete notifications"""
-        query = select(Notification).where(
-            Notification.id.in_(notification_ids),
-            Notification.user_id == user_id
-        )
-        result = await self.db.execute(query)
-        notifications = result.scalars().all()
-
-        for notification in notifications:
-            await self.db.delete(notification)
-
-        await self.db.commit()
-
-    async def clear_all_notifications(self, user_id: UUID) -> None:
-        """Clear all notifications for a user"""
-        query = select(Notification).where(Notification.user_id == user_id)
-        result = await self.db.execute(query)
-        notifications = result.scalars().all()
-
-        for notification in notifications:
-            await self.db.delete(notification)
-
-        await self.db.commit()
-
-    async def mark_as_read(self, notification_ids: List[str], user_id: str) -> List[Notification]:
-        """Mark notifications as read."""
-        try:
+        async with get_async_db_context() as db_session:
             query = select(Notification).where(
                 Notification.id.in_(notification_ids),
                 Notification.user_id == user_id
             )
-            result = await self.db.execute(query)
+            result = await db_session.execute(query)
             notifications = result.scalars().all()
 
             for notification in notifications:
-                notification.read_at = datetime.utcnow()
-                notification.status = NotificationStatus.READ
+                await db_session.delete(notification)
 
-            await self.db.commit()
-            return notifications
+            await db_session.commit()
+
+    async def clear_all_notifications(self, user_id: UUID) -> None:
+        """Clear all notifications for a user"""
+        async with get_async_db_context() as db_session:
+            query = select(Notification).where(Notification.user_id == user_id)
+            result = await db_session.execute(query)
+            notifications = result.scalars().all()
+
+            for notification in notifications:
+                await db_session.delete(notification)
+
+            await db_session.commit()
+
+    async def mark_as_read(self, notification_ids: List[str], user_id: str) -> List[Notification]:
+        """Mark notifications as read."""
+        try:
+            async with get_async_db_context() as db_session:
+                query = select(Notification).where(
+                    Notification.id.in_(notification_ids),
+                    Notification.user_id == user_id
+                )
+                result = await db_session.execute(query)
+                notifications = result.scalars().all()
+
+                for notification in notifications:
+                    notification.read_at = datetime.utcnow()
+                    notification.status = NotificationStatus.READ
+
+                await db_session.commit()
+                return notifications
 
         except Exception as e:
             logger.error(f"Error marking notifications as read: {str(e)}")

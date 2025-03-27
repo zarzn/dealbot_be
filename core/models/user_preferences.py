@@ -2,7 +2,7 @@
 
 from datetime import datetime, time, timedelta
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
@@ -291,7 +291,7 @@ class UserPreferencesUpdate(BaseModel):
     language: Optional[Language] = None
     timezone: Optional[str] = None
     enabled_channels: Optional[List[NotificationChannel]] = None
-    notification_frequency: Optional[Dict[NotificationType, NotificationFrequency]] = None
+    notification_frequency: Optional[Dict[str, Any]] = None
     time_windows: Optional[Dict[NotificationChannel, NotificationTimeWindow]] = None
     muted_until: Optional[time] = None
     do_not_disturb: Optional[bool] = None

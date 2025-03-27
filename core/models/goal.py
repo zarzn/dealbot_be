@@ -108,6 +108,12 @@ class GoalBase(BaseModel):
             except ValueError:
                 raise GoalConstraintError("auto_buy_threshold must be a number")
         
+        # Check for camelCase versions of price fields and normalize them
+        if 'maxPrice' in constraints and 'max_price' not in constraints:
+            constraints['max_price'] = constraints['maxPrice']
+        if 'minPrice' in constraints and 'min_price' not in constraints:
+            constraints['min_price'] = constraints['minPrice']
+                
         # Only validate certain fields if they exist
         if 'max_price' in constraints and 'min_price' in constraints:
             try:
@@ -156,16 +162,24 @@ class GoalBase(BaseModel):
 
     @field_validator('deadline')
     @classmethod
-    def validate_deadline(cls, v: Optional[datetime]) -> Optional[datetime]:
+    def validate_deadline(cls, v: Optional[datetime], info) -> Optional[datetime]:
         """Validate deadline is in the future and within limits."""
         if v is not None:
             now = datetime.now(timezone.utc)
             if not v.tzinfo:
                 raise ValueError("Deadline must be timezone-aware")
-            if v <= now:
+                
+            # Check if this is a validation for a new record or an existing one
+            data = info.data
+            is_existing_record = data.get('id') is not None
+            
+            # Only validate that deadline is in the future for new records
+            if not is_existing_record and v <= now:
                 raise GoalValidationError("Deadline must be in the future")
+                
+            # Still validate max deadline for all records
             max_deadline = now + timedelta(days=settings.MAX_GOAL_DEADLINE_DAYS)
-            if v > max_deadline:
+            if not is_existing_record and v > max_deadline:
                 raise GoalValidationError("Deadline cannot exceed {} days".format(settings.MAX_GOAL_DEADLINE_DAYS))
         return v
 
@@ -206,7 +220,19 @@ class GoalUpdate(BaseModel):
         # Only validate if we have constraints
         if constraints:  
             required_fields = ['max_price', 'min_price', 'brands', 'conditions', 'keywords']
-            missing_fields = [f for f in required_fields if f not in constraints]
+            
+            # Check for missing fields and try to find camelCase equivalents
+            missing_fields = []
+            for field in required_fields:
+                if field not in constraints:
+                    # Try to find camelCase version (e.g., convert min_price to minPrice)
+                    camel_field = ''.join([field.split('_')[0]] + [word.capitalize() for word in field.split('_')[1:]])
+                    if camel_field in constraints:
+                        # Found camelCase version, copy the value to snake_case
+                        constraints[field] = constraints[camel_field]
+                    else:
+                        missing_fields.append(field)
+            
             if missing_fields:
                 raise InvalidGoalConstraintsError(
                     f"Constraints missing required fields: {', '.join(missing_fields)}"
@@ -215,8 +241,13 @@ class GoalUpdate(BaseModel):
             # Validate price constraints
             if 'max_price' in constraints and 'min_price' in constraints:
                 try:
-                    max_price = float(constraints['max_price'])
-                    min_price = float(constraints['min_price'])
+                    # Check both camelCase and snake_case versions
+                    max_price = float(constraints.get('max_price', constraints.get('maxPrice', 0)))
+                    min_price = float(constraints.get('min_price', constraints.get('minPrice', 0)))
+                    
+                    # Ensure the snake_case versions exist in the constraints
+                    constraints['max_price'] = max_price
+                    constraints['min_price'] = min_price
                     
                     if max_price <= min_price:
                         raise InvalidGoalConstraintsError("max_price must be greater than min_price")
@@ -259,35 +290,30 @@ class GoalResponse(GoalBase):
     @model_validator(mode='before')
     @classmethod
     def convert_priority_and_metadata(cls, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert GoalPriority enum to integer and ensure metadata is a dict."""
+        """Convert priority string to enum and ensure metadata is a dict."""
         if isinstance(data, dict):
             # Handle priority conversion
             if 'priority' in data:
                 priority = data['priority']
-                # Handle GoalPriority enum instances
-                if isinstance(priority, GoalPriority):
-                    # Map priorities to integers: HIGH=3, MEDIUM=2, LOW=1
-                    priority_map = {
-                        GoalPriority.HIGH: 3,
-                        GoalPriority.MEDIUM: 2,
-                        GoalPriority.LOW: 1
-                    }
-                    data['priority'] = priority_map.get(priority, 2)  # Default to MEDIUM (2) if not found
-                # Handle string values from database
-                elif isinstance(priority, str):
+                
+                # Handle string priority values
+                if isinstance(priority, str):
+                    # Map priority strings to numbers
                     priority_str_map = {
+                        "critical": 5,
+                        "urgent": 4,
                         "high": 3,
                         "medium": 2,
                         "low": 1
                     }
-                    data['priority'] = priority_str_map.get(priority.lower(), 2)
+                    data['priority'] = priority_str_map.get(priority.lower(), 3)
                 # Make sure priority is an int if it's still not
                 if not isinstance(data['priority'], int):
                     try:
                         data['priority'] = int(data['priority'])
                     except (ValueError, TypeError):
-                        # Default to medium priority (2) if conversion fails
-                        data['priority'] = 2
+                        # Default to medium priority (3) if conversion fails
+                        data['priority'] = 3
             
             # Ensure metadata is a dict
             if 'metadata' in data:
@@ -296,15 +322,43 @@ class GoalResponse(GoalBase):
                 elif hasattr(data['metadata'], '__dict__'):
                     # Convert object to dict if it has __dict__ attribute
                     data['metadata'] = vars(data['metadata'])
+                elif hasattr(data['metadata'], 'to_dict'):
+                    # If the object has a to_dict method, use it
+                    data['metadata'] = data['metadata'].to_dict()
                 elif not isinstance(data['metadata'], dict):
-                    try:
-                        # Try to convert to dict
-                        data['metadata'] = dict(data['metadata'])
-                    except (ValueError, TypeError):
-                        # If not convertible, use empty dict
-                        data['metadata'] = {}
+                    # If it's neither dict nor has __dict__, create empty dict
+                    data['metadata'] = {}
+        # Handle SQLAlchemy model objects
+        elif hasattr(data, '__dict__') and hasattr(data, 'priority') and hasattr(data, 'metadata'):
+            # Create a new dictionary with the model's attributes
+            model_dict = {}
+            for key, value in vars(data).items():
+                if not key.startswith('_'):
+                    model_dict[key] = value
+            
+            # Apply the same conversions to the model_dict
+            return cls.convert_priority_and_metadata(model_dict)
         
         return data
+        
+    @model_validator(mode='after')
+    def handle_expired_deadline(self) -> 'GoalResponse':
+        """Mark goals with past deadlines as expired in metadata"""
+        if self.deadline and self.deadline.tzinfo:
+            now = datetime.now(timezone.utc)
+            if self.deadline <= now:
+                # Initialize metadata if it doesn't exist
+                if not hasattr(self, 'metadata') or self.metadata is None:
+                    self.metadata = {}
+                
+                # Add expired flag to metadata
+                self.metadata['expired'] = True
+                self.metadata['expired_at'] = self.deadline.isoformat()
+                
+                # Update status to expired if the current status is active
+                if self.status == GoalStatus.ACTIVE:
+                    self.status = GoalStatus.EXPIRED
+        return self
 
 class GoalAnalytics(BaseModel):
     """Model for goal analytics data"""
@@ -350,8 +404,18 @@ class GoalTemplateCreate(BaseModel):
         constraints = self.constraints
         required_fields = ['max_price', 'min_price', 'brands', 'conditions', 'keywords']
         
-        # Check for missing fields
-        missing_fields = [field for field in required_fields if field not in constraints]
+        # Check for missing fields and try to find camelCase equivalents
+        missing_fields = []
+        for field in required_fields:
+            if field not in constraints:
+                # Try to find camelCase version (e.g., convert min_price to minPrice)
+                camel_field = ''.join([field.split('_')[0]] + [word.capitalize() for word in field.split('_')[1:]])
+                if camel_field in constraints:
+                    # Found camelCase version, copy the value to snake_case
+                    constraints[field] = constraints[camel_field]
+                else:
+                    missing_fields.append(field)
+        
         if missing_fields:
             raise GoalConstraintError(
                 f"Missing required constraint fields: {', '.join(missing_fields)}"
@@ -359,8 +423,13 @@ class GoalTemplateCreate(BaseModel):
         
         # Validate price constraints
         try:
-            max_price = float(constraints['max_price'])
-            min_price = float(constraints['min_price'])
+            # Try both camelCase and snake_case versions, prioritizing snake_case
+            max_price = float(constraints.get('max_price', constraints.get('maxPrice', 0)))
+            min_price = float(constraints.get('min_price', constraints.get('minPrice', 0)))
+            
+            # Ensure the snake_case versions exist in the constraints
+            constraints['max_price'] = max_price
+            constraints['min_price'] = min_price
             
             if max_price <= min_price:
                 raise GoalConstraintError("max_price must be greater than min_price")
@@ -773,12 +842,16 @@ def validate_goal(mapper: Mapper, connection: Connection, target: Goal) -> None:
                     # No matching enum value found, use default
                     target.priority = GoalPriority.MEDIUM.value
             elif isinstance(target.priority, int):
-                # Convert int 1-3 to enum values
-                if target.priority == 1:
+                # Convert int 1-5 to enum values
+                if target.priority == 5:
+                    target.priority = GoalPriority.CRITICAL.value
+                elif target.priority == 4:
+                    target.priority = GoalPriority.URGENT.value
+                elif target.priority == 3:
                     target.priority = GoalPriority.HIGH.value
                 elif target.priority == 2:
                     target.priority = GoalPriority.MEDIUM.value
-                elif target.priority == 3:
+                elif target.priority == 1:
                     target.priority = GoalPriority.LOW.value
                 else:
                     # For invalid integer values, use default
@@ -821,23 +894,65 @@ def validate_goal(mapper: Mapper, connection: Connection, target: Goal) -> None:
     required_fields = {'min_price', 'max_price', 'keywords', 'brands', 'conditions'}
     missing_fields = required_fields - set(target.constraints.keys())
     if missing_fields:
-        raise GoalConstraintError(f"Missing required constraint fields: {', '.join(missing_fields)}")
-
-    # Validate price constraints
-    if not isinstance(target.constraints['min_price'], (int, float)) or target.constraints['min_price'] < 0:
-        raise GoalConstraintError("Minimum price must be a non-negative number")
-    if not isinstance(target.constraints['max_price'], (int, float)) or target.constraints['max_price'] <= 0:
-        raise GoalConstraintError("Maximum price must be a positive number")
-    if target.constraints['min_price'] >= target.constraints['max_price']:
-        raise GoalConstraintError("Min price must be less than max price")
+        # Check if missing fields might be present in camelCase format
+        camel_to_snake = {
+            'min_price': 'minPrice',
+            'max_price': 'maxPrice'
+        }
+        
+        # Copy to avoid modifying during iteration
+        fixed_missing_fields = list(missing_fields)
+        for field in list(missing_fields):
+            camel_field = camel_to_snake.get(field)
+            if camel_field and camel_field in target.constraints:
+                # Found camelCase version, add the snake_case version
+                target.constraints[field] = target.constraints[camel_field]
+                fixed_missing_fields.remove(field)
+        
+        # Check if we still have missing fields after normalization
+        if fixed_missing_fields:
+            raise GoalConstraintError(f"Missing required constraint fields: {', '.join(fixed_missing_fields)}")
+    
+    # Validate price constraints - check both snake_case and camelCase versions
+    min_price_key = 'min_price' if 'min_price' in target.constraints else 'minPrice'
+    max_price_key = 'max_price' if 'max_price' in target.constraints else 'maxPrice'
+    
+    # Validate min_price
+    if min_price_key in target.constraints:
+        min_price = target.constraints[min_price_key]
+        if not isinstance(min_price, (int, float)) or min_price < 0:
+            raise GoalConstraintError("Minimum price must be a non-negative number")
+        # Always store as snake_case for consistency
+        if min_price_key == 'minPrice':
+            target.constraints['min_price'] = min_price
+    
+    # Validate max_price
+    if max_price_key in target.constraints:
+        max_price = target.constraints[max_price_key]
+        if not isinstance(max_price, (int, float)) or max_price <= 0:
+            raise GoalConstraintError("Maximum price must be a positive number")
+        # Always store as snake_case for consistency
+        if max_price_key == 'maxPrice':
+            target.constraints['max_price'] = max_price
+    
+    # Check min_price < max_price
+    if 'min_price' in target.constraints and 'max_price' in target.constraints:
+        if target.constraints['min_price'] >= target.constraints['max_price']:
+            raise GoalConstraintError("Min price must be less than max price")
 
     # Validate list fields
     list_fields = ['keywords', 'brands', 'conditions']
     for field in list_fields:
         if not isinstance(target.constraints[field], list):
             raise GoalConstraintError(f"{field} must be a list")
-        if not target.constraints[field]:
+        
+        # Add default keywords if empty
+        if field == 'keywords' and not target.constraints[field]:
+            target.constraints['keywords'] = ['product', 'deal']
+        # Only check for empty lists for keywords and conditions, allow brands to be empty
+        elif field != 'brands' and not target.constraints[field]:
             raise GoalConstraintError(f"{field} list cannot be empty")
+            
         if not all(isinstance(item, str) for item in target.constraints[field]):
             raise GoalConstraintError(f"All {field} must be strings")
 

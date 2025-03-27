@@ -4,13 +4,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Any
 from uuid import uuid4, UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from redis.asyncio import Redis
 
-from core.database import get_db
+from core.database import get_db, get_async_db_context
 from core.services.auth import AuthService
 from core.services.redis import RedisService
 from core.models.user import UserCreate, UserResponse
@@ -67,10 +67,19 @@ logger = get_logger(__name__)
 
 router = APIRouter(tags=["auth"])
 
+# Create a dependency that uses the context manager approach
+async def get_db_session():
+    """Get database session using the new context manager pattern.
+    
+    This provides better connection management and prevents connection leaks.
+    """
+    async with get_async_db_context() as session:
+        yield session
+
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     user_data: RegisterRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> RegisterResponse:
     """Register a new user."""
     auth_service = AuthService(db)
@@ -139,7 +148,7 @@ async def register(
 @router.post("/login", response_model=Token)
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Token:
     """Login user and return access token."""
     auth_service = AuthService(db)
@@ -176,12 +185,13 @@ async def login(
 
 @router.post("/logout")
 async def logout(
-    token: str = Depends(AuthService.get_current_token),
-    db: AsyncSession = Depends(get_db)
+    request: Request,
+    db: AsyncSession = Depends(get_db_session)
 ) -> dict:
     """Logout user and blacklist token."""
     auth_service = AuthService(db)
     try:
+        token = await AuthService.get_current_token(request)
         await auth_service.blacklist_token(token)
         return {"message": "Successfully logged out"}
     except TokenError as e:
@@ -192,12 +202,13 @@ async def logout(
 
 @router.post("/refresh", response_model=Token)
 async def refresh_token(
-    token: str = Depends(AuthService.get_current_token),
-    db: AsyncSession = Depends(get_db)
+    request: Request,
+    db: AsyncSession = Depends(get_db_session)
 ) -> Token:
     """Refresh access token."""
     auth_service = AuthService(db)
     try:
+        token = await AuthService.get_current_token(request)
         tokens = await auth_service.refresh_tokens(token)
         return tokens
     except TokenRefreshError as e:
@@ -220,7 +231,7 @@ async def refresh_token(
 @router.post("/reset-password/request")
 async def request_password_reset(
     email: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> dict:
     """Request password reset."""
     auth_service = AuthService(db)
@@ -237,7 +248,7 @@ async def request_password_reset(
 async def confirm_password_reset(
     token: str,
     new_password: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> dict:
     """Reset password with token."""
     auth_service = AuthService(db)
@@ -253,7 +264,7 @@ async def confirm_password_reset(
 @router.post("/verify-email")
 async def verify_email(
     token: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> dict:
     """Verify email address."""
     auth_service = AuthService(db)
@@ -270,7 +281,7 @@ async def verify_email(
 async def request_magic_link(
     request: MagicLinkRequest,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Dict[str, str]:
     """Request magic link for passwordless login."""
     try:
@@ -302,7 +313,7 @@ async def request_magic_link(
 @router.post("/magic-link/verify", response_model=LoginResponse)
 async def verify_magic_link(
     token: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> LoginResponse:
     """Verify magic link and login user."""
     try:
@@ -343,7 +354,7 @@ async def verify_magic_link(
 @router.post("/social", response_model=LoginResponse)
 async def social_login(
     request: SocialLoginRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> LoginResponse:
     """Login or register user using social provider."""
     try:

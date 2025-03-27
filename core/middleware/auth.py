@@ -10,7 +10,8 @@ from starlette.types import ASGIApp
 
 from core.config import settings
 from core.services.auth import AuthService
-from core.database import get_async_db_session as get_db
+from core.models.enums import TokenType
+from core.database import get_async_db_session as get_db, get_async_db_context
 from core.exceptions import AuthenticationError
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # since db connection is required but should only be created per-request
         self.auth_service = auth_service
         self.exclude_paths = exclude_paths
+        logger.info(f"Auth middleware initialized with {len(exclude_paths)} excluded paths")
 
     async def dispatch(
         self,
@@ -61,12 +63,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         try:
             # Initialize auth_service if not provided in constructor
             if self.auth_service is None:
-                # Get a new db session
-                async for db in get_db():
+                # Use the context manager approach
+                async with get_async_db_context() as db:
                     # Create auth service with the db session
                     auth_service = AuthService(db=db)
                     # Verify token
-                    payload = await auth_service.verify_token(token)
+                    payload = await auth_service.verify_token(token, token_type=TokenType.ACCESS)
                     
                     # Store user data in request state
                     request.state.user_id = payload.get("sub")
@@ -78,7 +80,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     return response
             else:
                 # Use the existing auth_service
-                payload = await self.auth_service.verify_token(token)
+                payload = await self.auth_service.verify_token(token, token_type=TokenType.ACCESS)
                 
                 # Store user data in request state
                 request.state.user_id = payload.get("sub")

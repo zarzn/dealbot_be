@@ -1104,13 +1104,15 @@ async def get_redis_service():
         # Return existing instance or minimal working instance silently
         try:
             service = await RedisService.get_instance()
+            if service._client is None:
+                # Create a fallback service that handles None client gracefully
+                logger.debug("Creating fallback Redis service with null client handling")
+                service = create_null_safe_redis_service()
             return service
         except Exception:
             # If the instance retrieval fails, return a minimal working instance
-            service = RedisService()
-            service._initialized = True
-            service._client = None
-            return service
+            logger.debug("Instance retrieval failed, returning null-safe fallback")
+            return create_null_safe_redis_service()
     
     # Record the attempt time
     get_redis_service._last_init_attempt = current_time
@@ -1125,7 +1127,7 @@ async def get_redis_service():
         # Verify Redis is working, but only log a warning once
         if service._client is None:
             if not get_redis_service._warned_no_redis:
-                logger.warning("Redis client not initialized, some features may be limited")
+                logger.warning("Redis client not initialized, using fallback implementation with null handling")
                 get_redis_service._warned_no_redis = True
             
             # Try to re-initialize with fresh client
@@ -1134,8 +1136,13 @@ async def get_redis_service():
                     await service.init(client=redis_client)
                     logger.info("Successfully re-initialized Redis service")
                     get_redis_service._warned_no_redis = False
+                    return service
                 except Exception as reinit_error:
                     logger.warning(f"Failed to re-initialize Redis service: {str(reinit_error)}")
+            
+            # If still null after reinit attempt, return null-safe version
+            logger.debug("Creating fallback Redis service after failed initialization")
+            return create_null_safe_redis_service()
         else:
             # Successfully initialized with working client
             if get_redis_service._warned_no_redis:
@@ -1149,12 +1156,44 @@ async def get_redis_service():
             logger.warning(f"Error getting Redis service: {str(e)}")
             get_redis_service._warned_no_redis = True
         
-        # Create a minimal working instance
-        service = RedisService()
-        service._initialized = True
-        service._client = None
-        
-        return service
+        # Create and return a null-safe fallback service
+        logger.debug("Creating fallback Redis service after exception")
+        return create_null_safe_redis_service()
+
+def create_null_safe_redis_service():
+    """Create a minimal working Redis service instance that handles null client operations safely.
+    
+    This function creates a RedisService instance with proper null handling,
+    ensuring methods don't raise errors when Redis is not available.
+    
+    Returns:
+        RedisService: A null-safe Redis service instance
+    """
+    service = RedisService()
+    service._initialized = True
+    service._client = None
+    
+    # Override methods to handle null client safely
+    original_get = service.get
+    original_set = service.set
+    
+    async def safe_get(key, default=None):
+        if service._client is None:
+            logger.debug(f"Null-safe get for key {key} (Redis unavailable)")
+            return default
+        return await original_get(key, default)
+    
+    async def safe_set(key, value, ex=None, nx=False, xx=False):
+        if service._client is None:
+            logger.debug(f"Null-safe set for key {key} (Redis unavailable)")
+            return False
+        return await original_set(key, value, ex, nx, xx)
+    
+    # Replace with safe versions
+    service.get = safe_get
+    service.set = safe_set
+    
+    return service
 
 # Add a mock pipeline class for testing
 class MockRedisPipeline:

@@ -15,7 +15,7 @@ from core.models.price_prediction import PricePrediction
 from core.services.price_tracking import PriceTrackingService
 from core.services.price_prediction import PricePredictionService
 from core.utils.logger import get_logger
-from core.database import get_async_db_session
+from core.database import get_async_db_context
 
 logger = get_logger(__name__)
 
@@ -90,7 +90,8 @@ class PriceUpdateManager:
     ) -> None:
         """Send initial price and prediction data for a deal."""
         try:
-            async with get_async_db_session() as session:
+            # Use the new context manager for proper connection management
+            async with get_async_db_context() as session:
                 # Get recent price history
                 tracking_service = PriceTrackingService(session)
                 price_history = await tracking_service.get_price_history(deal_id)
@@ -189,7 +190,8 @@ class PriceUpdateManager:
         """Monitor for price updates in background."""
         while True:
             try:
-                async with get_async_db_session() as session:
+                # Use the new context manager for proper connection management
+                async with get_async_db_context() as session:
                     tracking_service = PriceTrackingService(session)
                     for user_id, connections in self.active_connections.items():
                         for websocket in connections:
@@ -214,7 +216,8 @@ class PriceUpdateManager:
         """Monitor for prediction updates in background."""
         while True:
             try:
-                async with get_async_db_session() as session:
+                # Use the new context manager for proper connection management
+                async with get_async_db_context() as session:
                     prediction_service = PricePredictionService(session)
                     for user_id, connections in self.active_connections.items():
                         for websocket in connections:
@@ -249,35 +252,50 @@ async def handle_websocket(
         
         while True:
             try:
-                # Receive and parse message
-                message = await websocket.receive_json()
+                data = await websocket.receive_json()
                 
-                # Handle different message types
-                if message['type'] == 'subscribe':
-                    deal_id = UUID(message['deal_id'])
-                    await price_update_manager.subscribe_to_deal(
-                        websocket,
-                        deal_id
-                    )
+                if data.get('type') == 'subscribe':
+                    deal_id = UUID(data.get('deal_id'))
+                    await price_update_manager.subscribe_to_deal(websocket, deal_id)
                     
-                elif message['type'] == 'unsubscribe':
-                    deal_id = UUID(message['deal_id'])
-                    await price_update_manager.unsubscribe_from_deal(
-                        websocket,
-                        deal_id
-                    )
+                elif data.get('type') == 'unsubscribe':
+                    deal_id = UUID(data.get('deal_id'))
+                    await price_update_manager.unsubscribe_from_deal(websocket, deal_id)
+                    
+                elif data.get('type') == 'ping':
+                    await websocket.send_json({
+                        'type': 'pong',
+                        'timestamp': datetime.utcnow().isoformat()
+                    })
+                    
+                else:
+                    await websocket.send_json({
+                        'type': 'error',
+                        'message': 'Unknown message type',
+                        'timestamp': datetime.utcnow().isoformat()
+                    })
                     
             except json.JSONDecodeError:
-                logger.error("Invalid message format")
-                continue
+                await websocket.send_json({
+                    'type': 'error',
+                    'message': 'Invalid JSON',
+                    'timestamp': datetime.utcnow().isoformat()
+                })
                 
             except Exception as e:
-                logger.error(f"Error handling message: {str(e)}")
-                continue
+                logger.error(f"Error processing message: {str(e)}")
+                await websocket.send_json({
+                    'type': 'error',
+                    'message': str(e),
+                    'timestamp': datetime.utcnow().isoformat()
+                })
                 
     except WebSocketDisconnect:
         await price_update_manager.disconnect(websocket, user_id)
         
     except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}")
-        await price_update_manager.handle_disconnection(websocket, user_id) 
+        logger.error(f"Error handling WebSocket: {str(e)}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass 

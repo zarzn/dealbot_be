@@ -73,6 +73,12 @@ class DatabaseMetrics:
                 'Total size of the connection pool'
             )
             
+            # Connection cleanup metrics
+            self.idle_connections_cleaned = Counter(
+                'db_idle_connections_cleaned_total',
+                'Total number of idle database connections cleaned up'
+            )
+            
             self._initialized = True
 
     def connection_checkout(self):

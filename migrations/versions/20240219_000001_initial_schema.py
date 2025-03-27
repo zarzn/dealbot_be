@@ -131,7 +131,7 @@ def upgrade() -> None:
 
             DO $$ 
             BEGIN
-                CREATE TYPE goalpriority AS ENUM ('high', 'medium', 'low');
+                CREATE TYPE goalpriority AS ENUM ('critical', 'urgent', 'high', 'medium', 'low');
             EXCEPTION 
                 WHEN duplicate_object THEN NULL;
             END $$;
@@ -1156,7 +1156,9 @@ def upgrade() -> None:
                 viewer_ip VARCHAR(45),
                 viewer_device VARCHAR(255),
                 viewed_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                referrer VARCHAR(512)
+                referrer VARCHAR(512),
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
             
             CREATE INDEX IF NOT EXISTS ix_shared_contents_user ON shared_contents(user_id);

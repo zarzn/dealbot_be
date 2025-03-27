@@ -5,8 +5,9 @@ authenticated and unauthenticated users.
 """
 
 import logging
-from typing import Optional
-
+from typing import Optional, List, Dict, Any
+import json
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Path, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.status import HTTP_404_NOT_FOUND, HTTP_403_FORBIDDEN, HTTP_410_GONE
@@ -18,20 +19,25 @@ from core.models.user import User
 from core.services.sharing import SharingService, get_sharing_service
 from core.exceptions.share_exceptions import ShareException
 from core.utils.json_utils import sanitize_for_json
-from core.database import get_async_db_session
+from core.database import get_async_db_session, get_async_db_context
 from core.utils.logger import get_logger
 
 # Use a standard router with no prefix - the main app will mount it correctly
 router = APIRouter(tags=["shared"])
 logger = get_logger(__name__)
 
+# Create a dependency that uses the context manager approach
+async def get_db_session():
+    """Get database session using the new context manager pattern."""
+    async with get_async_db_context() as session:
+        yield session
 
 @router.get("/shared-public/{share_id}", response_model=None)
 async def view_shared_content(
     request: Request,
     share_id: str = Path(..., description="ID of the shared content"),
     current_user: Optional[User] = Depends(get_optional_user),
-    db: AsyncSession = Depends(get_async_db_session)
+    db: AsyncSession = Depends(get_db_session)
 ) -> JSONResponse:
     """View shared content without requiring authentication.
     

@@ -6,7 +6,7 @@ from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timedelta
 
-from core.database import get_db
+from core.database import get_db, get_async_db_context
 from core.models.chat import (
     ChatMessage,
     ChatResponse,
@@ -27,6 +27,15 @@ from core.api.v1.dependencies import (
 from core.models.user import UserInDB
 
 router = APIRouter(tags=["chat"])
+
+# Helper dependency to get db session using the improved context manager
+async def get_db_session() -> AsyncSession:
+    """Get a database session using the improved context manager.
+    
+    This dependency provides better connection management and prevents connection leaks.
+    """
+    async with get_async_db_context() as session:
+        yield session
 
 async def validate_tokens(
     token_service: TokenService,

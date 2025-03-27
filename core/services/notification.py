@@ -444,9 +444,11 @@ class NotificationService:
         user_id: UUID
     ) -> List[NotificationResponse]:
         """Mark notifications as read."""
+        session_created = False
         try:
             if not self.session:
                 self.session = await get_async_db_session()
+                session_created = True
 
             # Get notifications that belong to the user
             notifications = await self.get_notifications_by_ids(notification_ids, user_id)
@@ -480,16 +482,28 @@ class NotificationService:
 
         except Exception as e:
             logger.error(f"Error marking notifications as read: {str(e)}\n{traceback.format_exc()}")
+            if self.session:
+                await self.session.rollback()
             raise NotificationError(f"Failed to mark notifications as read: {str(e)}")
+        finally:
+            # Close session if we created it in this method
+            if session_created and self.session:
+                try:
+                    await self.session.close()
+                    logger.debug("Database session closed successfully in mark_as_read")
+                except Exception as e:
+                    logger.error(f"Error closing database session in mark_as_read: {str(e)}")
 
     async def clear_all_notifications(
         self,
         user_id: UUID
     ) -> None:
         """Clear all notifications for a specific user."""
+        session_created = False
         try:
             if not self.session:
                 self.session = await get_async_db_session()
+                session_created = True
 
             # Delete all notifications for the user
             query = delete(Notification).where(Notification.user_id == user_id)
@@ -506,7 +520,17 @@ class NotificationService:
 
         except Exception as e:
             logger.error(f"Error clearing notifications: {str(e)}\n{traceback.format_exc()}")
+            if self.session:
+                await self.session.rollback()
             raise NotificationError(f"Failed to clear notifications: {str(e)}")
+        finally:
+            # Close session if we created it in this method
+            if session_created and self.session:
+                try:
+                    await self.session.close()
+                    logger.debug("Database session closed successfully in clear_all_notifications")
+                except Exception as e:
+                    logger.error(f"Error closing database session in clear_all_notifications: {str(e)}")
 
     async def _cache_notification(self, notification: Notification) -> None:
         """Cache notification in Redis."""
@@ -530,9 +554,11 @@ class NotificationService:
         user_id: UUID
     ) -> List[NotificationResponse]:
         """Get notifications by their IDs for a specific user."""
+        session_created = False
         try:
             if not self.session:
                 self.session = await get_async_db_session()
+                session_created = True
 
             query = select(Notification).where(
                 and_(
@@ -547,6 +573,14 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Error getting notifications by IDs: {str(e)}\n{traceback.format_exc()}")
             raise NotificationError(f"Failed to get notifications by IDs: {str(e)}")
+        finally:
+            # Close session if we created it in this method
+            if session_created and self.session:
+                try:
+                    await self.session.close()
+                    logger.debug("Database session closed successfully in get_notifications_by_ids")
+                except Exception as e:
+                    logger.error(f"Error closing database session in get_notifications_by_ids: {str(e)}")
 
     def set_background_tasks(self, background_tasks: BackgroundTasks) -> None:
         """Set background tasks for async operations."""

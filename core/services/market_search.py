@@ -44,7 +44,7 @@ from core.exceptions import (
     RateLimitError
 )
 from core.config import settings
-from core.database import get_db, get_async_db_session
+from core.database import get_db, get_async_db_session, get_async_db_context
 
 # Import for ScraperAPI factory
 from core.integrations.market_factory import MarketIntegrationFactory as ScraperAPIFactory
@@ -106,6 +106,7 @@ async def get_current_price(url: str) -> float:
         MarketError: If price retrieval fails
         ValidationError: If URL is invalid
     """
+    # Use the new async context manager to ensure proper cleanup
     try:
         # Extract market type and product ID from URL
         market_type = _extract_market_type(url)
@@ -117,20 +118,21 @@ async def get_current_price(url: str) -> float:
                 raise ValidationError("Invalid product URL")
             raise ValidationError("Invalid product URL")
         
-        # Create market search service
-        db_session = await get_async_db_session()
-        market_repository = MarketRepository(db_session)
-        market_search = MarketSearchService(market_repository)
-        
-        # Get product details
-        details = await market_search.get_product_details(
-            product_id, market_type, use_cache=True
-        )
-        
-        if not details or "price" not in details:
-            raise DataQualityError("Price information not available")
+        # Use the context manager for proper session lifecycle management
+        async with get_async_db_context() as db_session:
+            # Create market search service
+            market_repository = MarketRepository(db_session)
+            market_search = MarketSearchService(market_repository)
             
-        return float(details["price"])
+            # Get product details
+            details = await market_search.get_product_details(
+                product_id, market_type, use_cache=True
+            )
+            
+            if not details or "price" not in details:
+                raise DataQualityError("Price information not available")
+                
+            return float(details["price"])
     except ValidationError as e:
         logger.error(f"Error getting current price for {url}: {str(e)}")
         raise MarketError(f"Failed to get current price: {str(e)}")

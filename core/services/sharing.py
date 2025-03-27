@@ -8,10 +8,10 @@ import secrets
 import string
 import json
 from typing import Optional, Dict, Any, List, Union
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import select, func, or_, and_, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from fastapi import HTTPException, Depends
@@ -23,9 +23,11 @@ from core.models.shared_content import (
 from core.models.deal import Deal, DealResponse
 from core.models.user import User
 from core.exceptions.share_exceptions import ShareException
-from core.database import get_async_db_session
+from core.database import get_async_db_context
+from core.utils.json_utils import sanitize_for_json
+from core.utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DateTimeEncoder(json.JSONEncoder):
@@ -59,6 +61,29 @@ def sanitize_for_json(data):
     elif not isinstance(data, (str, int, float, bool, type(None))):
         return str(data)
     return data
+
+
+def normalize_datetime(dt_value):
+    """Normalize a datetime to be timezone-naive UTC.
+    
+    Args:
+        dt_value: The datetime to normalize
+        
+    Returns:
+        A timezone-naive datetime in UTC
+    """
+    if dt_value is None:
+        return None
+        
+    # If datetime has timezone info, convert to UTC and remove timezone info
+    if dt_value.tzinfo is not None:
+        logger.debug(f"Converting timezone-aware datetime to naive: {dt_value}")
+        return dt_value.astimezone(timezone.utc).replace(tzinfo=None)
+    
+    # Already naive, just return as is
+    return dt_value
+
+
 class SharingService:
     """Service for managing shared content."""
 
@@ -118,10 +143,13 @@ class SharingService:
         while not await self._ensure_unique_share_id(share_id):
             share_id = self._generate_share_id()
             
-        # Set up expiration if requested
+        # Set up expiration if requested - ensure timezone-naive datetime
         expires_at = None
         if share_request.expiration_days:
-            expires_at = datetime.utcnow() + timedelta(days=share_request.expiration_days)
+            # Create a timezone-naive datetime for consistency
+            current_time = datetime.utcnow()
+            expires_at = current_time + timedelta(days=share_request.expiration_days)
+            logger.info(f"Setting expiration date: {expires_at}, type: {type(expires_at)}, has tzinfo: {expires_at.tzinfo is not None}")
             
         # Determine title if not provided
         title = share_request.title or "Shared Deal" if share_request.content_type == ShareableContentType.DEAL else "Shared Search Results"
@@ -141,6 +169,9 @@ class SharingService:
                 
             # Convert to a response model to capture the presentation data
             try:
+                # Ensure expires_at is normalized if present
+                deal_expires_at = normalize_datetime(deal.expires_at) if deal.expires_at else None
+                
                 # Create a dictionary with the necessary fields for DealResponse
                 deal_dict = {
                     # Copy properties from the deal
@@ -159,12 +190,12 @@ class SharingService:
                     "seller_info": deal.seller_info,
                     "availability": deal.availability,
                     "found_at": deal.found_at,
-                    "expires_at": deal.expires_at,
+                    "expires_at": deal_expires_at,
                     "status": deal.status,
                     "deal_metadata": deal.deal_metadata,
                     "price_metadata": deal.price_metadata,
-                    "created_at": deal.created_at,
-                    "updated_at": deal.updated_at,
+                    "created_at": normalize_datetime(deal.created_at),
+                    "updated_at": normalize_datetime(deal.updated_at),
                     
                     # Add required fields that are missing
                     "latest_score": deal.score,  # Use the score from Deal as latest_score
@@ -247,11 +278,15 @@ class SharingService:
             logger.error(f"Error creating shareable content: {str(e)}")
             raise ShareException(f"Failed to create shareable content: {str(e)}")
         
-        # Construct the shareable link with the new API path structure
-        shareable_link = f"{base_url}/api/v1/shared-public/{share_id}"
+        # Construct the shareable link with the frontend path structure instead of API path
+        # Using frontend route instead of API endpoint for better user experience
+        shareable_link = f"{base_url}/shared-deal/{share_id}"
         
         # Log the generated link for debugging
         logger.info(f"Generated shareable link: {shareable_link} for content ID: {share_request.content_id}")
+        
+        # Use current_time for created_at to ensure timezone consistency
+        current_time = datetime.utcnow()
         
         return ShareContentResponse(
             share_id=share_id,
@@ -260,7 +295,7 @@ class SharingService:
             content_type=share_request.content_type,
             shareable_link=shareable_link,
             expiration_date=expires_at,
-            created_at=datetime.utcnow()
+            created_at=current_time
         )
 
     async def get_shared_content(
@@ -300,9 +335,20 @@ class SharingService:
             
         if not shared_content.is_active:
             raise ShareException("This shared content has been deactivated")
+        
+        # Fix timezone comparison - normalize all datetimes
+        current_time = datetime.utcnow()
+        expires_at = normalize_datetime(shared_content.expires_at)
+        
+        if expires_at is not None:
+            # Log the types for debugging
+            logger.info(f"Comparing datetimes - Current: {current_time} ({type(current_time)}), Expires: {expires_at} ({type(expires_at)})")
+            logger.info(f"Timezone info - Current: {current_time.tzinfo}, Expires: {expires_at.tzinfo}")
             
-        if shared_content.expires_at and shared_content.expires_at < datetime.utcnow():
-            raise ShareException("This shared link has expired")
+            # Compare normalized datetimes
+            if expires_at < current_time:
+                logger.info(f"Share expired: expires_at={expires_at}, current={current_time}")
+                raise ShareException("This shared link has expired")
             
         # For private content, require authentication
         if shared_content.visibility == ShareVisibility.PRIVATE.value and not viewer_id:
@@ -324,6 +370,9 @@ class SharingService:
         # Create the response
         creator_name = shared_content.user.name if shared_content.user else "Anonymous"
         
+        # Normalize datetime values for response
+        created_at = normalize_datetime(shared_content.created_at)
+        
         response = SharedContentDetail(
             share_id=shared_content.share_id,
             title=shared_content.title,
@@ -331,8 +380,8 @@ class SharingService:
             content_type=ShareableContentType(shared_content.content_type),
             content=shared_content.content_data,
             created_by=creator_name,
-            created_at=shared_content.created_at,
-            expires_at=shared_content.expires_at,
+            created_at=created_at,
+            expires_at=expires_at,
             view_count=shared_content.view_count,
             personal_notes=shared_content.content_data.get("personal_notes")
         )
@@ -378,7 +427,8 @@ class SharingService:
         user_id: UUID,
         offset: int = 0,
         limit: int = 20,
-        content_type: Optional[ShareableContentType] = None
+        content_type: Optional[ShareableContentType] = None,
+        base_url: str = None
     ) -> List[ShareContentResponse]:
         """Get all shared content created by a user.
         
@@ -387,6 +437,7 @@ class SharingService:
             offset: Number of items to skip
             limit: Maximum number of items to return
             content_type: Filter by content type
+            base_url: Base URL for creating shareable links
             
         Returns:
             A list of shared content items
@@ -405,15 +456,22 @@ class SharingService:
         result = await self._db.execute(query)
         shared_contents = result.scalars().all()
         
+        # Use current time for consistency
+        current_time = datetime.utcnow()
+        
+        # Create shareable link using the frontend route pattern
+        # If base_url is not provided, use a relative URL that frontend will resolve
+        link_base = base_url if base_url else ""
+        
         return [
             ShareContentResponse(
                 share_id=item.share_id,
                 title=item.title,
                 description=item.description,
                 content_type=ShareableContentType(item.content_type),
-                shareable_link=f"/api/v1/shared-public/{item.share_id}",  # Base URL will be added by frontend
-                expiration_date=item.expires_at,
-                created_at=item.created_at
+                shareable_link=f"{link_base}/shared-deal/{item.share_id}",  # Use the frontend route pattern
+                expiration_date=normalize_datetime(item.expires_at),
+                created_at=normalize_datetime(item.created_at) or current_time
             )
             for item in shared_contents
         ]
@@ -470,8 +528,12 @@ class SharingService:
             if view.viewer_device:
                 viewer_devices[view.viewer_device] = viewer_devices.get(view.viewer_device, 0) + 1
         
-        # Get last viewed time
-        last_viewed = max((view.viewed_at for view in views), default=None) if views else None
+        # Get last viewed time - normalize datetimes
+        if views:
+            view_datetimes = [normalize_datetime(view.viewed_at) for view in views if view.viewed_at]
+            last_viewed = max(view_datetimes) if view_datetimes else None
+        else:
+            last_viewed = None
         
         # Ensure serializable data
         try:
@@ -479,13 +541,16 @@ class SharingService:
             referring_sites = json.loads(json.dumps(referring_sites, cls=DateTimeEncoder))
             viewer_devices = json.loads(json.dumps(viewer_devices, cls=DateTimeEncoder))
             
+            # Normalize created_at
+            created_at = normalize_datetime(shared_content.created_at)
+            
             return SharedContentMetrics(
                 share_id=share_id,
                 view_count=shared_content.view_count,
                 unique_viewers=unique_viewers,
                 referring_sites=referring_sites,
                 viewer_devices=viewer_devices,
-                created_at=shared_content.created_at,
+                created_at=created_at,
                 last_viewed=last_viewed
             )
         except Exception as e:
@@ -497,7 +562,7 @@ class SharingService:
                 unique_viewers=unique_viewers,
                 referring_sites={},
                 viewer_devices={},
-                created_at=shared_content.created_at,
+                created_at=normalize_datetime(shared_content.created_at),
                 last_viewed=None
             )
         
@@ -532,8 +597,62 @@ class SharingService:
         
         return True
 
+    async def delete_expired_shares(self) -> Dict[str, Any]:
+        """
+        Delete all expired shares from the database.
+        
+        This method identifies all shares that have passed their expiration date
+        and removes them from the database to keep it clean and efficient.
+        
+        Returns:
+            Dict containing the number of removed shares and operation status
+        """
+        async with async_session_factory() as session:
+            try:
+                current_time = datetime.utcnow()
+                # Find expired shares
+                query = (
+                    select(models.ShareableContent)
+                    .where(
+                        and_(
+                            models.ShareableContent.expires_at.isnot(None),
+                            models.ShareableContent.expires_at < current_time
+                        )
+                    )
+                )
+                
+                result = await session.execute(query)
+                expired_shares = result.scalars().all()
+                expired_share_ids = [share.id for share in expired_shares]
+                
+                # Log the number of shares found for cleanup
+                logger.info(f"Found {len(expired_share_ids)} expired shares to clean up")
+                
+                if expired_share_ids:
+                    # Delete the shares
+                    delete_query = (
+                        delete(models.ShareableContent)
+                        .where(models.ShareableContent.id.in_(expired_share_ids))
+                    )
+                    delete_result = await session.execute(delete_query)
+                    await session.commit()
+                    
+                    # Log successful deletion
+                    removed_count = delete_result.rowcount
+                    logger.info(f"Successfully deleted {removed_count} expired shares")
+                    return {"status": "success", "removed_count": removed_count}
+                else:
+                    # No expired shares found
+                    logger.info("No expired shares found to clean up")
+                    return {"status": "success", "removed_count": 0}
+                    
+            except Exception as e:
+                await session.rollback()
+                logger.error(f"Error deleting expired shares: {str(e)}")
+                raise ServiceException(f"Failed to delete expired shares: {str(e)}")
 
-async def get_sharing_service(db: AsyncSession = Depends(get_async_db_session)) -> SharingService:
+
+async def get_sharing_service(db: AsyncSession = Depends(get_async_db_context)) -> SharingService:
     """Get an instance of the sharing service.
     
     This is a FastAPI dependency that provides an instance of the SharingService.

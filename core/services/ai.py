@@ -204,12 +204,12 @@ class AIService:
         """
         return getattr(self, '_initialized', False) and hasattr(self, 'llm')
 
-    async def analyze_deal(self, deal: Deal, no_token_consumption: bool = False) -> Optional[Dict[str, Any]]:
+    async def analyze_deal(self, deal: Union[Deal, Dict[str, Any]], no_token_consumption: bool = False) -> Optional[Dict[str, Any]]:
         """
         Analyze a deal using AI to provide insights and recommendations
         
         Args:
-            deal: The deal to analyze
+            deal: The deal to analyze (either a Deal object or a dictionary)
             no_token_consumption: If True, the analysis won't consume user tokens
             
         Returns:
@@ -218,13 +218,21 @@ class AIService:
         try:
             # Add more detailed logging
             logger.info(f"------------------- STARTING AI ANALYSIS -------------------")
-            logger.info(f"Starting AI analysis for deal {deal.id}, token consumption: {'disabled' if no_token_consumption else 'enabled'}")
-            logger.info(f"Deal title: {deal.title}")
-            logger.info(f"Deal description available: {bool(deal.description)}")
-            if deal.description:
-                logger.info(f"Description length: {len(deal.description)}")
-                logger.info(f"Description preview: {deal.description[:100]}...")
-            logger.info(f"Deal price: {deal.price}, original price: {deal.original_price}")
+            
+            # Handle both Deal objects and dictionaries
+            deal_id = deal.id if hasattr(deal, 'id') else deal.get('id', 'Unknown')
+            deal_title = deal.title if hasattr(deal, 'title') else deal.get('title', 'Unknown')
+            deal_description = deal.description if hasattr(deal, 'description') else deal.get('description')
+            deal_price = deal.price if hasattr(deal, 'price') else deal.get('price')
+            deal_original_price = deal.original_price if hasattr(deal, 'original_price') else deal.get('original_price')
+            
+            logger.info(f"Starting AI analysis for deal {deal_id}, token consumption: {'disabled' if no_token_consumption else 'enabled'}")
+            logger.info(f"Deal title: {deal_title}")
+            logger.info(f"Deal description available: {bool(deal_description)}")
+            if deal_description:
+                logger.info(f"Description length: {len(deal_description)}")
+                logger.info(f"Description preview: {deal_description[:100]}...")
+            logger.info(f"Deal price: {deal_price}, original price: {deal_original_price}")
             
             # Check if LLM is available
             if not self.llm:
@@ -243,7 +251,7 @@ class AIService:
                     [(point.price, point.timestamp) for point in deal.__dict__['price_points']],
                     key=lambda x: x[1] if x[1] else datetime.utcnow()
                 )
-                logger.info(f"Found {len(price_points)} price points for deal {deal.id}")
+                logger.info(f"Found {len(price_points)} price points for deal {deal_id}")
             
             # Extract price histories if available - avoid lazy loading in the same way
             if hasattr(deal, '__dict__') and 'price_histories' in deal.__dict__ and isinstance(deal.__dict__['price_histories'], list):
@@ -251,7 +259,7 @@ class AIService:
                     [(point.price, point.created_at) for point in deal.__dict__['price_histories']],
                     key=lambda x: x[1]
                 )
-                logger.info(f"Found {len(price_history)} price history points for deal {deal.id}")
+                logger.info(f"Found {len(price_history)} price history points for deal {deal_id}")
             
             # Use either price_points or price_history, whichever has more data
             price_data = price_points if len(price_points) > len(price_history) else price_history
@@ -259,9 +267,17 @@ class AIService:
             
             # Calculate original price discount if available
             discount_percentage = 0
-            if deal.original_price and deal.price:
-                discount_percentage = ((deal.original_price - deal.price) / deal.original_price) * 100
-                logger.info(f"Calculated discount: {discount_percentage:.2f}% (Original: {deal.original_price}, Current: {deal.price})")
+            if deal_original_price and deal_price:
+                try:
+                    # Convert prices to floats if they're strings
+                    original_price = float(deal_original_price) if isinstance(deal_original_price, str) else deal_original_price
+                    current_price = float(deal_price) if isinstance(deal_price, str) else deal_price
+                    
+                    discount_percentage = ((original_price - current_price) / original_price) * 100
+                    logger.info(f"Calculated discount: {discount_percentage:.2f}% (Original: {original_price}, Current: {current_price})")
+                except Exception as e:
+                    logger.error(f"Error calculating discount: {str(e)}")
+                    discount_percentage = 0
             else:
                 logger.info(f"No discount calculation possible - using 0% (Original price missing or invalid)")
             
@@ -310,7 +326,7 @@ class AIService:
                 confidence = 0.9
             elif len(price_data) > 2:
                 confidence = 0.8
-            elif deal.original_price:
+            elif deal_original_price:
                 confidence = 0.75
             else:
                 confidence = 0.6
@@ -323,8 +339,8 @@ class AIService:
             
             # Skip expensive LLM analysis for very low-value products
             # This is a quick optimization to avoid timeout on low-value items
-            if float(deal.price) < 10.0 and not getattr(settings, "ALWAYS_USE_LLM", False):
-                logger.info(f"Skipping LLM analysis for low-value product (${float(deal.price):.2f})")
+            if float(deal_price) < 10.0 and not getattr(settings, "ALWAYS_USE_LLM", False):
+                logger.info(f"Skipping LLM analysis for low-value product (${float(deal_price):.2f})")
                 
                 # Generate a simple analysis for low-value products
                 simple_score = 0.5 + (discount_percentage / 200)  # Higher discount gives higher score
@@ -334,10 +350,10 @@ class AIService:
                     "score": simple_score,
                     "value": "average",
                     "recommendations": [
-                        f"Consider if this ${float(deal.price):.2f} item is worth the purchase given its low price",
+                        f"Consider if this ${float(deal_price):.2f} item is worth the purchase given its low price",
                         f"Low-priced items often provide less long-term value; check alternatives"
                     ],
-                    "analysis": f"This is a low-priced item at ${float(deal.price):.2f} with a {discount_percentage:.0f}% discount. Simple automated analysis provided due to low price point.",
+                    "analysis": f"This is a low-priced item at ${float(deal_price):.2f} with a {discount_percentage:.0f}% discount. Simple automated analysis provided due to low price point.",
                     "price_trend": price_trend,
                     "generated_at": datetime.utcnow().isoformat(),
                     "confidence": confidence
@@ -351,10 +367,10 @@ class AIService:
                     
                     # Prepare prompt for LLM
                     product_info = {
-                        "title": deal.title,
-                        "description": deal.description or "No description available",
-                        "price": float(deal.price),
-                        "original_price": float(deal.original_price) if deal.original_price else None,
+                        "title": deal_title,
+                        "description": deal_description or "No description available",
+                        "price": float(deal_price),
+                        "original_price": float(deal_original_price) if deal_original_price else None,
                         "discount_percentage": discount_percentage,
                         "category": str(deal.category) if hasattr(deal, 'category') else "unknown",
                         "price_trend": price_trend,
@@ -362,10 +378,10 @@ class AIService:
                     }
                     
                     # Log description info specifically for debugging
-                    logger.info(f"Using description for LLM prompt: {bool(deal.description)}")
-                    if deal.description:
-                        logger.info(f"Description length for prompt: {len(deal.description)}")
-                        logger.info(f"Description preview for prompt: {deal.description[:100]}...")
+                    logger.info(f"Using description for LLM prompt: {bool(deal_description)}")
+                    if deal_description:
+                        logger.info(f"Description length for prompt: {len(deal_description)}")
+                        logger.info(f"Description preview for prompt: {deal_description[:100]}...")
                     else:
                         logger.warning("No real description available for LLM prompt, using fallback text")
                     
@@ -412,7 +428,7 @@ class AIService:
                     """
                     
                     # Call the LLM with the prompt
-                    logger.info(f"Sending prompt to LLM for deal {deal.id}")
+                    logger.info(f"Sending prompt to LLM for deal {deal_id}")
                     try:
                         # Log LLM details before invocation
                         logger.info(f"LLM type: {type(self.llm).__name__}")
@@ -428,9 +444,9 @@ class AIService:
                             # to accommodate more complex analysis tasks
                             llm_task = asyncio.create_task(self._invoke(prompt))
                             llm_response = await llm_task
-                            logger.info(f"LLM response received for deal {deal.id}")
+                            logger.info(f"LLM response received for deal {deal_id}")
                         except asyncio.TimeoutError:
-                            logger.warning(f"LLM call timed out for deal {deal.id}, using fallback analysis")
+                            logger.warning(f"LLM call timed out for deal {deal_id}, using fallback analysis")
                             return self._generate_fallback_analysis(deal, "LLM response timed out")
 
                         try:
@@ -478,7 +494,7 @@ class AIService:
                                 logger.warning("No recommendations found in LLM response")
                                 # Set fallback recommendations
                                 recommendations = [
-                                    f"Based on the {discount_percentage:.1f}% discount, this appears to be a reasonable deal if you need {deal.title}.",
+                                    f"Based on the {discount_percentage:.1f}% discount, this appears to be a reasonable deal if you need {deal_title}.",
                                     f"Compare with similar products in the {str(deal.category)} category to ensure you're getting the best value."
                                 ]
                                 logger.info("Using basic fallback recommendations")
@@ -500,7 +516,7 @@ class AIService:
                             logger.error(f"Raw response: {response_text}")
                             # Use fallback recommendations
                             recommendations = [
-                                f"Based on the {discount_percentage:.1f}% discount, this appears to be a reasonable deal if you need {deal.title}.",
+                                f"Based on the {discount_percentage:.1f}% discount, this appears to be a reasonable deal if you need {deal_title}.",
                                 f"Compare with similar products in the {str(deal.category)} category to ensure you're getting the best value."
                             ]
                             logger.info("Using basic fallback recommendations due to parsing error")
@@ -547,7 +563,7 @@ class AIService:
             
             # Create analysis dictionary in the format expected by _convert_to_response
             analysis = {
-                "deal_id": str(deal.id),
+                "deal_id": str(deal_id),
                 "score": base_score,
                 "confidence": confidence,
                 "price_analysis": {
@@ -555,8 +571,8 @@ class AIService:
                     "is_good_deal": base_score > 0.7,
                     "price_trend": price_trend,
                     "trend_details": price_trend_details,
-                    "original_price": float(deal.original_price) if deal.original_price else None,
-                    "current_price": float(deal.price)
+                    "original_price": float(deal_original_price) if deal_original_price else None,
+                    "current_price": float(deal_price)
                 },
                 "market_analysis": {
                     "competition": additional_market_analysis.get('competition', "Average"),
@@ -567,43 +583,63 @@ class AIService:
                 },
                 "recommendations": recommendations,
                 "analysis_date": datetime.utcnow().isoformat(),
-                "expiration_analysis": "Deal expires on " + deal.expires_at.isoformat() if deal.expires_at else "No expiration date available"
+                "expiration_analysis": "No expiration date available"
             }
             
-            logger.info(f"Completed AI analysis for deal {deal.id} with score {base_score:.2f}")
+            # Safely handle expires_at for both Deal objects and dictionaries
+            deal_expires_at = deal.expires_at if hasattr(deal, 'expires_at') else deal.get('expires_at')
+            if deal_expires_at:
+                analysis["expiration_analysis"] = "Deal expires on " + deal_expires_at.isoformat()
+            
+            logger.info(f"Completed AI analysis for deal {deal_id} with score {base_score:.2f}")
             logger.debug(f"Analysis result: {json.dumps(analysis)}")
             
             return analysis
 
         except Exception as e:
-            logger.error(f"Error analyzing deal {deal.id if deal else 'Unknown'}: {str(e)}")
+            logger.error(f"Error analyzing deal {deal_id if deal_id else 'Unknown'}: {str(e)}")
             logger.error(traceback.format_exc())
             return self._generate_fallback_analysis(deal, str(e))
             
-    def _generate_fallback_analysis(self, deal: Deal, error_message: str) -> Dict[str, Any]:
+    def _generate_fallback_analysis(self, deal: Union[Deal, Dict[str, Any]], error_message: str) -> Dict[str, Any]:
         """Generate a fallback analysis when normal analysis fails"""
-        logger.warning(f"Generating fallback analysis for deal {deal.id}: {error_message}")
+        # Handle both Deal objects and dictionaries
+        deal_id = deal.id if hasattr(deal, 'id') else deal.get('id', 'Unknown')
+        logger.warning(f"Generating fallback analysis for deal {deal_id}: {error_message}")
+        
+        # Get essential deal attributes handling both object and dict
+        deal_title = deal.title if hasattr(deal, 'title') else deal.get('title', '')
+        deal_description = deal.description if hasattr(deal, 'description') else deal.get('description', '')
+        deal_price = deal.price if hasattr(deal, 'price') else deal.get('price', 0)
+        deal_original_price = deal.original_price if hasattr(deal, 'original_price') else deal.get('original_price')
+        deal_expires_at = deal.expires_at if hasattr(deal, 'expires_at') else deal.get('expires_at')
+        deal_source = deal.source if hasattr(deal, 'source') else deal.get('source', 'Unknown')
         
         # Calculate basic discount if possible
         discount_percentage = 0
-        if deal and deal.original_price and deal.price:
+        if deal_original_price and deal_price:
             try:
-                discount_percentage = ((deal.original_price - deal.price) / deal.original_price) * 100
+                # Convert prices to floats if they're strings
+                original_price = float(deal_original_price) if isinstance(deal_original_price, str) else deal_original_price
+                current_price = float(deal_price) if isinstance(deal_price, str) else deal_price
+                
+                discount_percentage = ((original_price - current_price) / original_price) * 100
                 logger.info(f"Fallback analysis calculated discount: {discount_percentage:.2f}%")
             except Exception as e:
                 logger.error(f"Error calculating discount in fallback: {str(e)}")
+                discount_percentage = 0
         
         # Extract product name and details for more natural recommendations
         product_name = "this product"
-        if deal and deal.title:
+        if deal_title:
             # Get first 2-4 words of title as product name
-            title_words = deal.title.split(" ")
+            title_words = deal_title.split(" ")
             product_name = " ".join(title_words[:min(4, len(title_words))])
         
         # Use description if available
         product_description = None
-        if deal and deal.description and len(deal.description) > 20:
-            product_description = deal.description
+        if deal_description and len(deal_description) > 20:
+            product_description = deal_description
             logger.info(f"Using product description for fallback analysis: {product_description[:100]}...")
         
         # Create meaningful fallback recommendations
@@ -668,13 +704,13 @@ class AIService:
         
         # Get market information
         market_info = {
-            "name": deal.source.capitalize() if (deal and deal.source) else "Unknown Market",
-            "type": deal.source.lower() if (deal and deal.source) else "unknown"
+            "name": deal_source.capitalize() if deal_source else "Unknown Market",
+            "type": deal_source.lower() if deal_source else "unknown"
         }
         
         # Return simplified analysis
         return {
-            "deal_id": str(deal.id) if deal else "unknown",
+            "deal_id": str(deal_id) if deal_id and deal_id != 'Unknown' else "unknown",
             "score": 0.5,
             "confidence": 0.3,
             "price_analysis": {
@@ -682,8 +718,8 @@ class AIService:
                 "is_good_deal": discount_percentage > 20,
                 "price_trend": "unknown",
                 "trend_details": {},
-                "original_price": float(deal.original_price) if deal and deal.original_price else None,
-                "current_price": float(deal.price) if deal and deal.price else 0.0
+                "original_price": float(deal_original_price) if deal_original_price else None,
+                "current_price": float(deal_price) if deal_price else 0.0
             },
             "market_analysis": {
                 "competition": "Average",
@@ -692,11 +728,11 @@ class AIService:
                 "price_position": "Mid-range",
                 "popularity": "Unknown"
             },
-            "recommendations": recommendations,
+            "recommendations": recommendations if recommendations else ["No specific recommendations available."],
             "analysis_date": datetime.utcnow().isoformat(),
-            "expiration_analysis": "Deal expires on " + deal.expires_at.isoformat() if (deal and deal.expires_at) else "No expiration date available"
+            "expiration_analysis": "Deal expires on " + deal_expires_at.isoformat() if deal_expires_at else "No expiration date available"
         }
-        
+
     async def test_llm_connection(self) -> Dict[str, Any]:
         """
         Test the LLM connection and return detailed diagnostics
@@ -1062,24 +1098,41 @@ class AIService:
             "recommended_actions": ["search", "monitor"]
         }
 
-    def _generate_basic_analysis(self, deal: Deal) -> Dict[str, Any]:
+    def _generate_basic_analysis(self, deal: Union[Deal, Dict[str, Any]]) -> Dict[str, Any]:
         """Generate a basic analysis without AI when LLM is not available"""
-        logger.info(f"Generating basic analysis for deal {deal.id} (AI functionality disabled)")
+        # Handle both Deal objects and dictionaries
+        deal_id = deal.id if hasattr(deal, 'id') else deal.get('id', 'Unknown')
+        logger.info(f"Generating basic analysis for deal {deal_id} (AI functionality disabled)")
+        
+        # Get essential deal attributes handling both object and dict
+        deal_title = deal.title if hasattr(deal, 'title') else deal.get('title', '')
+        deal_description = deal.description if hasattr(deal, 'description') else deal.get('description', '')
+        deal_price = deal.price if hasattr(deal, 'price') else deal.get('price', 0)
+        deal_original_price = deal.original_price if hasattr(deal, 'original_price') else deal.get('original_price')
+        deal_expires_at = deal.expires_at if hasattr(deal, 'expires_at') else deal.get('expires_at')
+        deal_source = deal.source if hasattr(deal, 'source') else deal.get('source', 'Unknown')
         
         # Calculate basic discount if possible
         discount_percentage = 0
-        if deal and deal.original_price and deal.price:
+        if deal_original_price and deal_price:
             try:
-                discount_percentage = ((deal.original_price - deal.price) / deal.original_price) * 100
-                logger.info(f"Basic analysis calculated discount: {discount_percentage:.2f}%")
+                # Convert prices to floats if they're strings
+                original_price = float(deal_original_price) if isinstance(deal_original_price, str) else deal_original_price
+                current_price = float(deal_price) if isinstance(deal_price, str) else deal_price
+                
+                discount_percentage = ((original_price - current_price) / original_price) * 100
+                logger.info(f"Calculated discount: {discount_percentage:.2f}% (Original: {original_price}, Current: {current_price})")
             except Exception as e:
                 logger.error(f"Error calculating discount: {str(e)}")
+                discount_percentage = 0
+        else:
+            logger.info(f"No discount calculation possible - using 0% (Original price missing or invalid)")
         
         # Extract product name
         product_name = "this product"
-        if deal and deal.title:
+        if deal_title:
             # Get first 2-4 words of title as product name
-            title_words = deal.title.split(" ")
+            title_words = deal_title.split(" ")
             product_name = " ".join(title_words[:min(4, len(title_words))])
         
         # Set a basic value score based on discount
@@ -1091,13 +1144,13 @@ class AIService:
 
         # Get market information
         market_info = {
-            "name": deal.source.capitalize() if (deal and deal.source) else "Unknown Market",
-            "type": deal.source.lower() if (deal and deal.source) else "unknown"
+            "name": deal_source.capitalize() if deal_source else "Unknown Market",
+            "type": deal_source.lower() if deal_source else "unknown"
         }
         
         # Return simplified analysis
         return {
-            "deal_id": str(deal.id) if deal else "unknown",
+            "deal_id": str(deal_id) if deal_id and deal_id != 'Unknown' else "unknown",
             "score": value_score,
             "confidence": 0.3,
             "price_analysis": {
@@ -1105,8 +1158,8 @@ class AIService:
                 "is_good_deal": discount_percentage > 20,
                 "price_trend": "unknown",
                 "trend_details": {},
-                "original_price": float(deal.original_price) if deal and deal.original_price else None,
-                "current_price": float(deal.price) if deal and deal.price else 0.0
+                "original_price": float(deal_original_price) if deal_original_price else None,
+                "current_price": float(deal_price) if deal_price else 0.0
             },
             "market_analysis": {
                 "competition": "Unknown",

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update
 
-from core.database import get_db
+from core.database import get_async_db_context
 from core.models.database import Goal
 from core.models.goal_types import GoalStatus
 from core.celery import celery_app
@@ -22,12 +22,20 @@ async def update_goal_status_task(
     db: Optional[AsyncSession] = None
 ) -> None:
     """Background task to update goal status based on conditions"""
-    db_to_close: Optional[AsyncSession] = None
     try:
         if db is None:
-            db_to_close = await get_db()
-            db = db_to_close
-            
+            # Use the context manager to ensure proper session cleanup
+            async with get_async_db_context() as db:
+                await _update_goal_status(goal_id, user_id, db)
+        else:
+            # If session is provided, use it directly
+            await _update_goal_status(goal_id, user_id, db)
+    except Exception as e:
+        logger.error(f"Error updating goal status: {str(e)}")
+
+async def _update_goal_status(goal_id: UUID, user_id: UUID, db: AsyncSession) -> None:
+    """Internal function to update goal status logic"""
+    try:
         # Get the goal directly from database
         result = await db.execute(
             select(Goal)
@@ -50,11 +58,9 @@ async def update_goal_status_task(
             await db.commit()
             logger.info(f"Goal {goal_id} marked as expired")
             return
-            
     except Exception as e:
-        logger.error(f"Error updating goal status: {str(e)}")
+        logger.error(f"Error in _update_goal_status: {str(e)}")
         if db:
             await db.rollback()
-    finally:
-        if db_to_close:
-            await db_to_close.close() 
+        # Re-raise to allow the outer function to handle it
+        raise 

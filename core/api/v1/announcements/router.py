@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Path, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db
+from core.database import get_db, get_async_db_context
 from core.models.announcement import (
     AnnouncementCreate,
     AnnouncementUpdate,
@@ -21,11 +21,20 @@ from core.exceptions.base_exceptions import NotFoundError, ValidationError
 
 router = APIRouter()
 
+# Helper dependency to get db session using the improved context manager
+async def get_db_session() -> AsyncSession:
+    """Get a database session using the improved context manager.
+    
+    This dependency provides better connection management and prevents connection leaks.
+    """
+    async with get_async_db_context() as session:
+        yield session
+
 
 @router.post("/", response_model=AnnouncementResponse)
 async def create_announcement(
     announcement: AnnouncementCreate,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user)
 ):
     """Create a new announcement.
@@ -59,7 +68,7 @@ async def get_announcements(
     limit: int = Query(100, ge=1, le=500),
     status: Optional[AnnouncementStatus] = None,
     type: Optional[AnnouncementType] = None,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user)
 ):
     """Get a list of announcements.
@@ -106,7 +115,7 @@ async def get_announcements(
 @router.get("/{announcement_id}", response_model=AnnouncementResponse)
 async def get_announcement(
     announcement_id: UUID = Path(..., title="The ID of the announcement to get"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user)
 ):
     """Get a specific announcement by ID.
@@ -143,7 +152,7 @@ async def get_announcement(
 async def update_announcement(
     announcement: AnnouncementUpdate,
     announcement_id: UUID = Path(..., title="The ID of the announcement to update"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user)
 ):
     """Update an announcement.
@@ -180,7 +189,7 @@ async def update_announcement(
 @router.delete("/{announcement_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_announcement(
     announcement_id: UUID = Path(..., title="The ID of the announcement to delete"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user)
 ):
     """Delete an announcement.
@@ -213,7 +222,7 @@ async def delete_announcement(
 @router.post("/{announcement_id}/publish", response_model=AnnouncementResponse)
 async def publish_announcement(
     announcement_id: UUID = Path(..., title="The ID of the announcement to publish"),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user)
 ):
     """Publish an announcement.

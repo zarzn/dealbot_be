@@ -12,6 +12,8 @@ import json
 from sqlalchemy.orm import joinedload
 from redis.asyncio import Redis
 from enum import Enum
+from decimal import Decimal
+from dateutil import parser
 
 from core.models.goal import (
     GoalCreate, 
@@ -93,6 +95,11 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         
     async def init_redis(self) -> None:
         """Initialize Redis connection with retry mechanism"""
+        # If Redis is already initialized via constructor, don't re-initialize
+        if self._redis is not None:
+            logger.debug("Redis connection already initialized, skipping initialization")
+            return
+            
         max_retries = 3
         retry_delay = 1.0
         
@@ -317,11 +324,24 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             result = await self.session.execute(query)
             goals = result.scalars().all()
             
-            # Convert to response models
-            goal_responses = [GoalResponse.model_validate(goal) for goal in goals]
+            # Convert to response models with error handling for each goal
+            goal_responses = []
+            for goal in goals:
+                try:
+                    # Try to convert the goal to a response model
+                    goal_response = GoalResponse.model_validate(goal)
+                    goal_responses.append(goal_response)
+                except Exception as validation_error:
+                    # Log the error and continue with the next goal
+                    logger.warning(
+                        f"Skipping goal {goal.id} due to validation error: {str(validation_error)}",
+                        extra={"goal_id": goal.id, "user_id": user_id}
+                    )
+                    continue
             
-            # Cache the results
-            await self._cache_goals(user_id, goals)
+            # Only cache valid goals
+            if goal_responses:
+                await self._cache_goals(user_id, [g for g in goals if any(gr.id == g.id for gr in goal_responses)])
             
             logger.debug(
                 f"Retrieved {len(goal_responses)} goals from database for user {user_id}",
@@ -450,11 +470,60 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             # Cache the result
             await self._cache_goal(goal)
             
-            logger.debug(
-                f"Retrieved goal {goal_id} from database for user {user_id}",
-                extra={"goal_id": goal_id, "user_id": user_id}
-            )
-            return await self._to_response(goal)
+            try:
+                # Convert to response model with validation error handling
+                goal_response = await self._to_response(goal)
+                logger.debug(
+                    f"Retrieved goal {goal_id} from database for user {user_id}",
+                    extra={"goal_id": goal_id, "user_id": user_id}
+                )
+                return goal_response
+            except Exception as validation_error:
+                # If we have validation errors (like past deadline), handle them gracefully
+                logger.warning(
+                    f"Goal {goal_id} has validation issues: {str(validation_error)}, attempting direct conversion",
+                    extra={"goal_id": goal_id, "user_id": user_id}
+                )
+                
+                # Create a manual response with expired status for past deadlines
+                goal_dict = {
+                    "id": goal.id,
+                    "user_id": goal.user_id,
+                    "title": goal.title,
+                    "description": goal.description,
+                    "status": "expired" if goal.status == "active" and goal.deadline and goal.deadline < datetime.now(timezone.utc) else goal.status,
+                    "priority": goal.priority,
+                    "item_category": goal.item_category,
+                    "constraints": goal.constraints,
+                    "deadline": goal.deadline,
+                    "max_matches": goal.max_matches,
+                    "max_tokens": goal.max_tokens,
+                    "notification_threshold": goal.notification_threshold,
+                    "auto_buy_threshold": goal.auto_buy_threshold,
+                    "matches_found": goal.matches_found,
+                    "deals_processed": goal.deals_processed,
+                    "tokens_spent": goal.tokens_spent,
+                    "rewards_earned": goal.rewards_earned,
+                    "created_at": goal.created_at,
+                    "updated_at": goal.updated_at,
+                    "last_checked_at": goal.last_checked_at,
+                    "last_processed_at": goal.last_processed_at,
+                    "processing_stats": goal.processing_stats or {},
+                    "best_match_score": goal.best_match_score,
+                    "average_match_score": goal.average_match_score,
+                    "active_deals_count": goal.active_deals_count,
+                    "success_rate": goal.success_rate,
+                    "metadata": goal.metadata or {}
+                }
+                
+                # Add expired flag to metadata if deadline is in the past
+                if goal.deadline and goal.deadline < datetime.now(timezone.utc):
+                    if not goal_dict["metadata"]:
+                        goal_dict["metadata"] = {}
+                    goal_dict["metadata"]["expired"] = True
+                    goal_dict["metadata"]["expired_at"] = goal.deadline.isoformat()
+                
+                return GoalResponse.model_validate(goal_dict)
         except Exception as e:
             logger.error(
                 f"Failed to get goal {goal_id}: {str(e)}",
@@ -597,6 +666,14 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             goal: The goal to cache
         """
         try:
+            # Check if Redis client is available
+            if self._redis is None:
+                logger.warning(
+                    f"Failed to cache goal {goal.id}: Redis client is not initialized",
+                    extra={"goal_id": str(goal.id)}
+                )
+                return
+                
             cache_key = GoalCacheKey(user_id=goal.user_id, goal_id=goal.id)
             
             # Create a clean dictionary with only serializable data
@@ -693,6 +770,14 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             goals: List of goals to cache
         """
         try:
+            # Check if Redis client is available
+            if self._redis is None:
+                logger.warning(
+                    f"Failed to cache goals for user {user_id}: Redis client is not initialized",
+                    extra={"user_id": user_id}
+                )
+                return
+                
             cache_key = f"goal_cache:{user_id}:all"
             
             # Create a list of clean dictionaries with only serializable data
@@ -789,15 +874,18 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
     async def _get_cached_goal(self, user_id: UUID, goal_id: UUID) -> Optional[GoalResponse]:
         """Get a cached goal by ID"""
         try:
-            if self._redis:
-                cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
-                cached_data = await self._redis.get(cache_key.json())
-                if cached_data:
-                    # Handle both dict and string responses from Redis
-                    if isinstance(cached_data, dict):
-                        return GoalResponse.model_validate(cached_data)
-                    else:
-                        return GoalResponse.parse_raw(cached_data)
+            if not self._redis:
+                logger.debug(f"Redis client not available for goal: {goal_id}")
+                return None
+                
+            cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
+            cached_data = await self._redis.get(cache_key.json())
+            if cached_data:
+                # Handle both dict and string responses from Redis
+                if isinstance(cached_data, dict):
+                    return GoalResponse.model_validate(cached_data)
+                else:
+                    return GoalResponse.parse_raw(cached_data)
             return None
         except Exception as e:
             logger.warning(
@@ -805,24 +893,28 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
                 exc_info=True,
                 extra={"goal_id": goal_id}
             )
-            raise APIServiceUnavailableError("Failed to get cached goal") from e
+            # Return None instead of raising an error to gracefully fallback to database
+            return None
             
     async def _get_cached_goals(self, user_id: UUID) -> Optional[List[GoalResponse]]:
         """Get cached goals for a user"""
         try:
-            if self._redis:
-                # Use a string directly for the all goals cache key to avoid UUID validation
-                all_goals_key = f"goal_cache:{user_id}:all"
-                cached_data = await self._redis.get(all_goals_key)
-                if cached_data:
-                    result = []
-                    for item in cached_data:
-                        # Handle both dict and string responses from Redis
-                        if isinstance(item, dict):
-                            result.append(GoalResponse.model_validate(item))
-                        else:
-                            result.append(GoalResponse.parse_raw(item))
-                    return result
+            if not self._redis:
+                logger.debug(f"Redis client not available for user: {user_id}")
+                return None
+                
+            # Use a string directly for the all goals cache key to avoid UUID validation
+            all_goals_key = f"goal_cache:{user_id}:all"
+            cached_data = await self._redis.get(all_goals_key)
+            if cached_data:
+                result = []
+                for item in cached_data:
+                    # Handle both dict and string responses from Redis
+                    if isinstance(item, dict):
+                        result.append(GoalResponse.model_validate(item))
+                    else:
+                        result.append(GoalResponse.parse_raw(item))
+                return result
             return None
         except Exception as e:
             logger.warning(
@@ -830,27 +922,32 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
                 exc_info=True,
                 extra={"user_id": user_id}
             )
-            raise APIServiceUnavailableError("Failed to get cached goals") from e
+            # Return None instead of raising an error to gracefully fallback to database
+            return None
             
     async def _invalidate_goal_cache(self, user_id: UUID, goal_id: UUID) -> None:
         """Invalidate cache for a goal"""
         try:
-            if self._redis:
-                # Invalidate individual goal cache
-                individual_cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
-                await self._redis.delete(individual_cache_key.json())
+            if not self._redis:
+                logger.debug(f"Redis client not available for invalidating goal cache: {goal_id}")
+                return
                 
-                # Invalidate user's goals list cache
-                # Use a string directly for the all goals cache key to avoid UUID validation
-                all_goals_key = f"goal_cache:{user_id}:all"
-                await self._redis.delete(all_goals_key)
+            # Invalidate individual goal cache
+            individual_cache_key = GoalCacheKey(user_id=user_id, goal_id=goal_id)
+            await self._redis.delete(individual_cache_key.json())
+            
+            # Invalidate user's goals list cache
+            # Use a string directly for the all goals cache key to avoid UUID validation
+            all_goals_key = f"goal_cache:{user_id}:all"
+            await self._redis.delete(all_goals_key)
         except Exception as e:
             logger.warning(
                 f"Failed to invalidate cache for goal {goal_id}: {str(e)}",
                 exc_info=True,
                 extra={"goal_id": goal_id}
             )
-            raise APIServiceUnavailableError("Failed to invalidate cache") from e
+            # Log error but don't raise exception to avoid affecting main flow
+            logger.error(f"Cache invalidation failed, but operation will continue")
 
     async def get_goal_analytics(self, goal_id: UUID, user_id: UUID) -> GoalAnalytics:
         """Get analytics for a goal."""
@@ -875,8 +972,17 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         notification_threshold = goal.notification_threshold or 0.8  # Default threshold if None
         active_matches = sum(1 for match in matched_deals if match.match_score >= notification_threshold)
         scores = [match.match_score for match in matched_deals]
-        best_score = max(scores) if scores else None
-        avg_score = sum(scores) / len(scores) if scores else None
+        
+        # Calculate scores with defaults to avoid None/null values
+        best_score = max(scores) if scores else 0.0
+        avg_score = sum(scores) / len(scores) if scores else 0.0
+        
+        # Calculate success rate based on matched deals and notification threshold
+        success_rate = 0.0
+        if matched_deals:
+            # Success rate is the percentage of matches that meet or exceed the notification threshold
+            high_quality_matches = sum(1 for match in matched_deals if match.match_score >= notification_threshold)
+            success_rate = high_quality_matches / len(matched_deals) if len(matched_deals) > 0 else 0.0
         
         # Set the time period for analytics
         current_time = datetime.utcnow()
@@ -891,9 +997,9 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             deals_processed=len(matched_deals),
             tokens_spent=0.0,  # Default value, would need actual token tracking
             rewards_earned=0.0,  # Default value, would need actual rewards tracking
-            success_rate=0.0,  # Default value, would need to calculate
-            best_match_score=best_score,
-            average_match_score=avg_score,
+            success_rate=success_rate,  # Now properly calculated based on matched deals
+            best_match_score=best_score,  # Now uses 0.0 as default
+            average_match_score=avg_score,  # Now uses 0.0 as default
             active_deals_count=active_matches,
             price_trends={},  # Default empty dict
             market_analysis={},  # Default empty dict
@@ -928,8 +1034,8 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
                 tokens_spent=0.0,
                 rewards_earned=0.0,
                 success_rate=0.0,
-                best_match_score=None,
-                average_match_score=None,
+                best_match_score=0.0,  # Use 0.0 instead of None
+                average_match_score=0.0,  # Use 0.0 instead of None
                 active_deals_count=0,
                 price_trends={},
                 market_analysis={},
@@ -962,6 +1068,207 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             analytics=analytics
         )
 
+    async def calculate_goal_cost(
+        self, 
+        operation: str, 
+        goal_data: Dict[str, Any] = None,
+        original_goal: Dict[str, Any] = None,
+        updated_goal: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """Calculate the token cost for a goal operation
+        
+        Args:
+            operation: The operation type (create, update, etc.)
+            goal_data: The goal data for creation operations
+            original_goal: The original goal data (for updates)
+            updated_goal: The updated goal data (for updates)
+            
+        Returns:
+            Dict with cost information including base_cost, multiplier, and final_cost
+        """
+        # Base costs for different operations
+        base_costs = {
+            "goal_creation": Decimal('10.0'),
+            "update_goal": Decimal('5.0'),
+            "extend_goal_deadline": Decimal('8.0'),
+            "delete_goal": Decimal('2.0'),
+            "share_goal": Decimal('3.0')
+        }
+        
+        # Get base cost for the operation
+        base_cost = base_costs.get(operation, Decimal('5.0'))
+        cost_multiplier = Decimal('1.0')
+        cost_description = f"Base cost for {operation}"
+        
+        # Calculate cost based on operation and goal attributes
+        if operation == "goal_creation" and goal_data:
+            # Consider complexity factors
+            if goal_data.get("constraints", {}).get("keywords", []):
+                keyword_count = len(goal_data["constraints"]["keywords"])
+                if keyword_count > 5:
+                    # More keywords means more complex processing
+                    cost_multiplier += Decimal('0.1') * Decimal(str(min(keyword_count - 5, 10)))
+                    cost_description += f", {keyword_count} keywords"
+            
+            # Consider deadline
+            if goal_data.get("deadline"):
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc)  # Make now timezone-aware with UTC
+                deadline = goal_data["deadline"]
+                
+                if isinstance(deadline, str):
+                    deadline = datetime.fromisoformat(deadline.replace('Z', '+00:00'))
+                
+                days_duration = (deadline - now).days
+                if days_duration > 30:
+                    # Longer goals cost more as they require monitoring for longer
+                    long_duration_factor = Decimal('0.05') * Decimal(str(min(days_duration - 30, 60) // 10))
+                    cost_multiplier += long_duration_factor
+                    cost_description += f", {days_duration} days duration"
+        
+        elif operation == "update_goal" and original_goal and updated_goal:
+            # Calculate based on differences between original and updated goal
+            
+            # Check for deadline extension
+            if (original_goal.get("deadline") and updated_goal.get("deadline") and 
+                updated_goal["deadline"] > original_goal["deadline"]):
+                # Calculate days extended
+                original_date = original_goal["deadline"]
+                new_date = updated_goal["deadline"]
+                
+                if isinstance(original_date, str):
+                    from datetime import datetime
+                    original_date = datetime.fromisoformat(original_date.replace('Z', '+00:00'))
+                
+                if isinstance(new_date, str):
+                    from datetime import datetime
+                    new_date = datetime.fromisoformat(new_date.replace('Z', '+00:00'))
+                
+                days_extended = (new_date - original_date).days
+                if days_extended > 0:
+                    # Charge more for longer extensions
+                    extension_multiplier = Decimal('0.1') * Decimal(str(days_extended // 5))
+                    cost_multiplier += min(extension_multiplier, Decimal('2.0'))  # Cap at 3x base cost
+                    cost_description += f", deadline extended by {days_extended} days"
+            
+            # Check for constraint changes
+            if original_goal.get("constraints") != updated_goal.get("constraints"):
+                # More significant change - requires reprocessing
+                cost_multiplier += Decimal('0.5')
+                cost_description += ", constraints modified"
+                
+                # Check if keywords were added
+                original_keywords = original_goal.get("constraints", {}).get("keywords", [])
+                updated_keywords = updated_goal.get("constraints", {}).get("keywords", [])
+                
+                if len(updated_keywords) > len(original_keywords):
+                    # New keywords require additional processing
+                    new_keywords = len(updated_keywords) - len(original_keywords)
+                    cost_multiplier += Decimal('0.1') * Decimal(str(new_keywords))
+                    cost_description += f", {new_keywords} new keywords"
+            
+            # Check for priority changes
+            if original_goal.get("priority") != updated_goal.get("priority"):
+                # Small change
+                cost_multiplier += Decimal('0.1')
+                cost_description += ", priority changed"
+        
+        # Calculate final cost
+        final_cost = base_cost * cost_multiplier
+        
+        # Round to reasonable precision
+        final_cost = final_cost.quantize(Decimal('0.00000001'))
+        
+        return {
+            "base_cost": base_cost,
+            "multiplier": cost_multiplier,
+            "final_cost": final_cost,
+            "description": cost_description
+        }
+
+    async def get_pricing_factors(self, operation: str = None) -> List[Dict[str, str]]:
+        """Get the factors that influence goal operation pricing
+        
+        Args:
+            operation: Optional specific operation to get factors for
+            
+        Returns:
+            List of dictionaries with factor name and description
+        """
+        # Base pricing factors for all operations
+        base_factors = [
+            {
+                "name": "Operation Type",
+                "description": "Different operations have different base costs. Creation is more expensive than updates."
+            },
+            {
+                "name": "Goal Complexity", 
+                "description": "Goals with more constraints and keywords require more processing power."
+            }
+        ]
+        
+        # Operation-specific factors
+        operation_factors = {
+            "goal_creation": [
+                {
+                    "name": "Keyword Count",
+                    "description": "Goals with more than 5 keywords have an additional cost multiplier."
+                },
+                {
+                    "name": "Goal Duration",
+                    "description": "Goals with deadlines extending beyond 30 days cost more due to longer monitoring."
+                },
+                {
+                    "name": "Constraint Complexity",
+                    "description": "More complex constraints (price ranges, brands, conditions) require more processing."
+                }
+            ],
+            "update_goal": [
+                {
+                    "name": "Deadline Extension",
+                    "description": "Extending a goal's deadline results in additional costs proportional to the extension."
+                },
+                {
+                    "name": "Constraint Changes",
+                    "description": "Changing constraints requires reprocessing, adding to the cost."
+                },
+                {
+                    "name": "New Keywords",
+                    "description": "Adding new keywords increases costs due to expanded search criteria."
+                },
+                {
+                    "name": "Priority Changes",
+                    "description": "Changing priority level has a small cost impact."
+                }
+            ],
+            "delete_goal": [
+                {
+                    "name": "Deletion Cleanup",
+                    "description": "Deleting goals requires cleanup operations."
+                }
+            ],
+            "share_goal": [
+                {
+                    "name": "Sharing Operations",
+                    "description": "Sharing goals requires permission updates and notification processing."
+                }
+            ]
+        }
+        
+        # If a specific operation is requested, return base + operation-specific factors
+        if operation and operation in operation_factors:
+            return base_factors + operation_factors[operation]
+            
+        # If no specific operation or not found, return all factors
+        all_factors = base_factors.copy()
+        for op_factors in operation_factors.values():
+            for factor in op_factors:
+                # Avoid duplicates
+                if factor not in all_factors:
+                    all_factors.append(factor)
+                    
+        return all_factors
+
     async def validate_goal_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and normalize goal data
         
@@ -974,6 +1281,9 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         Raises:
             ValidationError: If validation fails
         """
+        # Debug input data
+        logger.info(f"VALIDATE_GOAL_DATA INPUT: {data}")
+        
         valid_data = {}
         
         # Validate constraints if present
@@ -983,6 +1293,8 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         # Validate and convert priority if present
         if "priority" in data:
             priority = data["priority"]
+            logger.info(f"VALIDATING PRIORITY: {priority}, TYPE: {type(priority).__name__}")
+            
             if priority is not None:
                 # If priority is an integer, validate and convert to enum value
                 if isinstance(priority, int):
@@ -992,22 +1304,98 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
                     
                     # Map priority integer to GoalPriority enum
                     priority_map = {
-                        1: GoalPriority.LOW.value,
-                        2: GoalPriority.MEDIUM.value,
-                        3: GoalPriority.HIGH.value,
-                        4: GoalPriority.URGENT.value,
-                        5: GoalPriority.CRITICAL.value
+                        1: "low",  # Changed to string value instead of enum
+                        2: "medium",
+                        3: "high",
+                        4: "urgent",
+                        5: "critical"
                     }
                     
                     # Get enum value
                     priority = priority_map.get(priority)
+                    logger.info(f"Converted int priority {data['priority']} to string: {priority}")
                 elif isinstance(priority, str):
-                    # Validate string priority values
-                    valid_priorities = [e.value.lower() for e in GoalPriority]
-                    if priority.lower() not in valid_priorities:
-                        raise ValidationError(f"Invalid priority value: {priority}. Must be one of {valid_priorities}.")
+                    # Handle string priority values (both enum names and values)
+                    priority_lower = priority.lower()
+                    
+                    # Map string priority names to enum values
+                    string_priority_map = {
+                        "critical": "critical",
+                        "urgent": "urgent",
+                        "high": "high",
+                        "medium": "medium",
+                        "low": "low"
+                    }
+                    
+                    if priority_lower in string_priority_map:
+                        # It's a valid string priority like "high"
+                        priority = string_priority_map[priority_lower]
+                        logger.info(f"Using valid string priority: {priority}")
+                    else:
+                        # Check if it's a numeric string like "3"
+                        try:
+                            priority_int = int(priority)
+                            if 1 <= priority_int <= 5:
+                                # Map numeric string to enum value
+                                priority_map = {
+                                    1: "low",  # Changed to string value instead of enum
+                                    2: "medium",
+                                    3: "high",
+                                    4: "urgent",
+                                    5: "critical"
+                                }
+                                priority = priority_map.get(priority_int)
+                                logger.info(f"Converted numeric string priority {data['priority']} to string: {priority}")
+                            else:
+                                raise ValueError("Out of range")
+                        except (ValueError, TypeError):
+                            # If not a recognized value, show valid options
+                            valid_options = list(string_priority_map.keys()) + ["1", "2", "3", "4", "5"]
+                            raise ValidationError(f"Invalid priority value: {priority}. Must be one of {valid_options}.")
                 
                 valid_data["priority"] = priority
+                logger.info(f"FINAL PRIORITY VALUE: {priority}, TYPE: {type(priority).__name__}")
+                
+        # Validate deadline if present - Convert ISO string to datetime
+        if "deadline" in data and data["deadline"]:
+            deadline = data["deadline"]
+            logger.info(f"VALIDATING DEADLINE: {deadline}, TYPE: {type(deadline).__name__}")
+            
+            if isinstance(deadline, str):
+                try:
+                    # Import dateutil parser for more robust date parsing
+                    from dateutil import parser
+                    
+                    # Parse the datetime string
+                    deadline = parser.parse(deadline)
+                    logger.info(f"Converted deadline string to datetime: {deadline}")
+                except Exception as e:
+                    logger.error(f"Failed to parse deadline: {deadline}, error: {str(e)}")
+                    raise ValidationError(f"Invalid deadline format: {deadline}. Must be ISO format datetime.")
+            
+            valid_data["deadline"] = deadline
+        
+        # Also handle due_date field if present (frontend may use either name)
+        if "due_date" in data and data["due_date"]:
+            due_date = data["due_date"]
+            logger.info(f"VALIDATING DUE_DATE: {due_date}, TYPE: {type(due_date).__name__}")
+            
+            if isinstance(due_date, str):
+                try:
+                    # Import dateutil parser for more robust date parsing
+                    from dateutil import parser
+                    
+                    # Parse the datetime string
+                    due_date = parser.parse(due_date)
+                    logger.info(f"Converted due_date string to datetime: {due_date}")
+                except Exception as e:
+                    logger.error(f"Failed to parse due_date: {due_date}, error: {str(e)}")
+                    raise ValidationError(f"Invalid due_date format: {due_date}. Must be ISO format datetime.")
+            
+            # For backward compatibility, also set deadline if not set
+            if "deadline" not in valid_data:
+                valid_data["deadline"] = due_date
+                logger.info(f"Using due_date as deadline: {due_date}")
                 
         # Validate status if present
         if "status" in data:
@@ -1039,74 +1427,85 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         
         # Copy all other fields
         for key, value in data.items():
-            if key not in ["constraints", "priority", "metadata", "status"]:
+            if key not in ["constraints", "priority", "metadata", "status", "deadline", "due_date"]:
                 valid_data[key] = value
-                
+        
+        # Debug output data
+        logger.info(f"VALIDATE_GOAL_DATA OUTPUT: {valid_data}")        
         return valid_data
 
     async def validate_constraints(self, constraints: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate goal constraints according to business rules.
-        
+        """Validate and process goal constraints.
+
         Args:
-            constraints: Dictionary containing constraint values
-            
+            constraints: Dictionary of goal constraints.
+
         Returns:
-            Dict[str, Any]: Validated constraints
-            
+            Validated constraints dict.
+
         Raises:
-            ValidationError: If constraints are invalid
+            ValidationError: If constraints are invalid.
         """
-        try:
-            required_fields = ['min_price', 'max_price', 'keywords']
-            
-            # Handle the constraints format used in tests (with price_range)
-            if 'price_range' in constraints:
-                # Extract min_price and max_price from price_range
-                if 'min' in constraints['price_range']:
-                    constraints['min_price'] = constraints['price_range']['min']
-                if 'max' in constraints['price_range']:
-                    constraints['max_price'] = constraints['price_range']['max']
-            
-            # Check for missing fields
-            missing_fields = [field for field in required_fields if field not in constraints]
-            if missing_fields:
-                error_msg = f"Missing required constraint fields: {', '.join(missing_fields)}"
-                logger.error(f"Constraints validation failed: {error_msg}", extra={"constraints": constraints})
-                raise ValidationError(error_msg)
-            
-            # Validate price constraints
-            max_price = float(constraints['max_price'])
-            min_price = float(constraints['min_price'])
-            
-            if max_price <= min_price:
-                error_msg = "max_price must be greater than min_price"
-                logger.error(f"Price validation failed: {error_msg}")
-                raise ValidationError(error_msg)
-            
-            # Validate keywords
-            if 'keywords' not in constraints or not constraints['keywords']:
-                error_msg = "keywords cannot be empty"
-                logger.error(f"Keywords validation failed: {error_msg}")
-                raise ValidationError(error_msg)
-            
-            return constraints
-        except ValidationError as e:
-            # Re-raise validation errors with the same message
-            raise
-        except Exception as e:
-            # Log and wrap other exceptions
-            logger.error(f"Constraints validation failed: {str(e)}", extra={"constraints": constraints})
-            raise ValidationError(f"Invalid constraints: {str(e)}")
+        if not constraints:
+            raise ValidationError("Goal constraints cannot be empty")
+
+        logger.info(f"Validating constraints: {constraints}")
+        
+        # Convert camelCase to snake_case for price fields
+        if 'minPrice' in constraints and 'min_price' not in constraints:
+            constraints['min_price'] = constraints.pop('minPrice')
+            logger.info(f"Converted minPrice to min_price: {constraints['min_price']}")
+        
+        if 'maxPrice' in constraints and 'max_price' not in constraints:
+            constraints['max_price'] = constraints.pop('maxPrice')
+            logger.info(f"Converted maxPrice to max_price: {constraints['max_price']}")
+
+        # Check for required fields
+        required_fields = ["min_price", "max_price", "keywords"]
+        for field in required_fields:
+            if field not in constraints:
+                raise ValidationError(f"Missing required field: {field}")
+
+        # Ensure keywords field is not empty
+        if "keywords" not in constraints or not constraints["keywords"]:
+            logger.info("Adding default keywords as keywords field is empty")
+            constraints["keywords"] = ["product", "deal"]
+
+        # Ensure brands field exists and is a list
+        if "brands" not in constraints:
+            logger.info("Added empty brands array to constraints")
+            constraints["brands"] = []
+        elif not isinstance(constraints["brands"], list):
+            raise ValidationError("brands must be a list")
+
+        # Ensure conditions field exists
+        if "conditions" not in constraints:
+            logger.info("Added default conditions to constraints")
+            constraints["conditions"] = ["new"]
+        elif not constraints["conditions"]:
+            constraints["conditions"] = ["new"]
+
+        # Validate price constraints
+        if not isinstance(constraints["min_price"], (int, float)) or constraints["min_price"] < 0:
+            raise ValidationError("min_price must be a non-negative number")
+        if not isinstance(constraints["max_price"], (int, float)) or constraints["max_price"] <= 0:
+            raise ValidationError("max_price must be a positive number")
+        if constraints["min_price"] >= constraints["max_price"]:
+            raise ValidationError("min_price must be less than max_price")
+
+        return constraints
 
     async def update_goal(
         self, 
         goal_id: UUID,
+        user_id: UUID = None,
         **update_data
     ) -> GoalResponse:
         """Update a goal with cache invalidation
         
         Args:
             goal_id: Goal ID to update
+            user_id: Optional user ID (needed for some operations)
             **update_data: Goal fields to update as keyword arguments
             
         Returns:
@@ -1117,9 +1516,10 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
             GoalNotFoundError: If goal not found
         """
         try:
-            # Get the goal to verify it exists and get its user_id
-            goal = await self.get_goal(goal_id)
-            user_id = goal.user_id
+            # If user_id wasn't provided, get the goal to verify it exists and get its user_id
+            if user_id is None:
+                goal = await self.get_goal(goal_id)
+                user_id = goal.user_id
             
             # Validate the goal data
             validated_data = await self.validate_goal_data(update_data)
@@ -1131,15 +1531,35 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
                 # Remove original_priority from validated_data as it's not a database field
                 del validated_data["original_priority"]
             
-            # Create a copy of validated data for the database update
-            database_update = validated_data.copy()
+            # Create a completely clean update values dict with no ID fields
+            clean_update_values = {}
             
-            # Update goal
-            await self.session.execute(
-                update(GoalModel)
-                .where(GoalModel.id == goal_id)
-                .values(**database_update, updated_at=datetime.utcnow())
-            )
+            # Whitelist of fields that are safe to update
+            allowed_fields = [
+                'title', 'description', 'status', 'priority', 
+                'constraints', 'deadline', 'item_category',
+                'max_matches', 'max_tokens', 'notification_threshold', 
+                'auto_buy_threshold', 'processing_stats'
+            ]
+            
+            # Only include allowed fields that are present in validated_data
+            for field in allowed_fields:
+                if field in validated_data:
+                    clean_update_values[field] = validated_data[field]
+            
+            # Always add updated_at timestamp
+            clean_update_values['updated_at'] = datetime.utcnow()
+            
+            # If we have no values to update, just return the current goal
+            if not clean_update_values:
+                return await self.get_goal(goal_id)
+            
+            # Build the update statement with explicit values
+            from sqlalchemy import update
+            stmt = update(GoalModel).where(GoalModel.id == goal_id).values(**clean_update_values)
+            
+            # Execute the update statement
+            await self.session.execute(stmt)
             await self.session.commit()
             
             # Invalidate cache

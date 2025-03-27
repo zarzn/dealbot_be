@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 from core.services.ai import AIService, get_ai_service
-from core.database import get_db
+from core.database import get_db, get_async_db_context
 from sqlalchemy.ext.asyncio import AsyncSession
 from core.dependencies import get_current_user, get_current_user_optional
 from core.models.user import User, UserInDB
@@ -23,6 +23,15 @@ router = APIRouter(
 )
 
 logger = logging.getLogger(__name__)
+
+# Helper dependency to get db session using the improved context manager
+async def get_db_session() -> AsyncSession:
+    """Get a database session using the improved context manager.
+    
+    This dependency provides better connection management and prevents connection leaks.
+    """
+    async with get_async_db_context() as session:
+        yield session
 
 # Helper function to get AI service
 # Using the singleton implementation from core.services.ai
@@ -72,7 +81,7 @@ async def diagnose_ai_service(
     request: Request,
     test_data: Optional[Dict[str, Any]] = Body({}),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     ai_service: AIService = Depends(get_ai_service)
 ):
     """

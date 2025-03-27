@@ -4,18 +4,22 @@ This module provides database connection setup, session management, and connecti
 for the AI Agentic Deals System. It includes retry logic and monitoring capabilities.
 """
 
+from __future__ import annotations
+import inspect
+import logging
+import os
+import time
+import traceback
+import weakref
+import asyncio
+from contextlib import contextmanager, asynccontextmanager
+from typing import Any, Dict, Generator, List, Optional, Tuple, Union, AsyncGenerator
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from sqlalchemy import create_engine
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy import event, text
-from typing import AsyncGenerator, Generator, Optional, Dict, Any
-import asyncio
-import logging
-import time
-from contextlib import asynccontextmanager, contextmanager
-import os
 
 from core.config import settings
 from core.metrics.database import DatabaseMetrics
@@ -59,10 +63,10 @@ elif is_test:
     echo_pool = False  # Disable pool logging in tests
 else:
     # Development environment - optimized to prevent connection exhaustion
-    pool_size = 10  # Reduced from 20 to prevent connection exhaustion
-    max_overflow = 15  # Reduced from 30 to prevent connection exhaustion
-    pool_timeout = 60  # Increased from 30 to give more time for connection acquisition
-    pool_recycle = 300  # Reduced from 900 to recycle connections more frequently
+    pool_size = 30  # Increased from 20 to prevent connection exhaustion
+    max_overflow = 50  # Increased from 30 to prevent connection exhaustion
+    pool_timeout = 90  # Increased from 60 to give more time for connection acquisition
+    pool_recycle = 240  # Reduced from 300 to recycle connections more frequently
     pool_pre_ping = True
     echo = settings.DEBUG  # Use debug setting for SQL logging
     echo_pool = False  # Disable pool logging to reduce noise
@@ -319,23 +323,97 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def get_async_db_session() -> AsyncSession:
     """Get async database session.
     
-    Note: The caller is responsible for closing this session when done.
-    It's recommended to use get_db() or AsyncDatabaseSession instead
-    for automatic session management.
+    WARNING: This function is maintained for backward compatibility.
+    New code should use get_async_db_context() instead for proper session management.
+    
+    This version wraps the context manager to ensure sessions are properly tracked and closed.
     
     Returns:
-        AsyncSession: Database session that must be manually closed
+        AsyncSession: Database session with enhanced tracking and cleanup
     """
+    # Log a warning about using the deprecated function
+    current_frame = inspect.currentframe()
+    caller_frame = inspect.getouterframes(current_frame, 2)
+    caller_info = f"{caller_frame[1][1]}:{caller_frame[1][2]} in {caller_frame[1][3]}"
+    logger.warning(f"Deprecated get_async_db_session() called from {caller_info}. Use get_async_db_context() instead.")
+    
+    # Create a session with enhanced tracking
     session = AsyncSessionLocal()
+    
+    # Register a cleanup function to be called when the session is garbage collected
+    # This provides a safety net for sessions that aren't properly closed
+    async def cleanup_session(session_ref):
+        session = session_ref()
+        if session:
+            try:
+                logger.warning(f"Cleaning up unclosed session from {caller_info} during garbage collection")
+                if not session.is_active:
+                    await session.close()
+            except Exception as e:
+                logger.error(f"Error during session cleanup: {str(e)}")
+    
+    # Use weakref to avoid circular references
+    session_ref = weakref.ref(session)
+    asyncio.create_task(cleanup_session(session_ref))
+    
+    return session
+
+# Create the improved version as a context manager to ensure proper cleanup
+@asynccontextmanager
+async def get_async_db_context() -> AsyncGenerator[AsyncSession, None]:
+    """Get an async database session as a context manager.
+    
+    This function provides a context manager for database sessions, ensuring proper cleanup.
+    It should be used with async with:
+    
+    async with get_async_db_context() as session:
+        # Use session here
+    
+    Yields:
+        AsyncSession: Database session that will be automatically closed
+    """
+    session = None
     try:
-        # Just create and return the session
-        # The caller is responsible for closing it
-        return session
+        # Get the current stack frame for better debugging of connection leaks
+        current_frame = inspect.currentframe()
+        caller_frame = inspect.getouterframes(current_frame, 2)
+        caller_info = f"{caller_frame[1][1]}:{caller_frame[1][2]} in {caller_frame[1][3]}"
+        
+        # Create a new session
+        session = AsyncSessionLocal()
+        logger.debug(f"Database session created by {caller_info}")
+        
+        # Track metrics
+        metrics.connection_checkouts.inc()
+        
+        yield session
+        
+        # Commit changes if no exception occurred
+        await session.commit()
+        logger.debug(f"Database session committed by {caller_info}")
+        
+    except SQLAlchemyError as db_error:
+        # Catch database-specific errors
+        if session:
+            await session.rollback()
+        logger.error(f"Database error in session from {caller_info}: {str(db_error)}")
+        metrics.connection_failures.inc()
+        raise
     except Exception as e:
-        # Close the session if there's an error during creation
-        await session.close()
-        logger.error(f"Error creating database session: {str(e)}")
-        raise e
+        # Catch all other errors
+        if session:
+            await session.rollback()
+        logger.error(f"Unexpected error in database session from {caller_info}: {str(e)}")
+        raise
+    finally:
+        # Always make sure the session is closed
+        if session:
+            try:
+                await session.close()
+                logger.debug(f"Database session closed successfully from {caller_info}")
+                metrics.connection_checkins.inc()
+            except Exception as close_error:
+                logger.error(f"Error closing database session from {caller_info}: {str(close_error)}")
 
 @contextmanager
 def get_sync_db_session() -> Generator[Session, None, None]:
@@ -424,4 +502,77 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
         finally:
             await session.close()
 
-__all__ = ['Base', 'async_engine', 'get_session']
+async def cleanup_idle_connections() -> int:
+    """
+    Identify and clean up idle database connections.
+    
+    This function is designed to be called periodically to prevent connection pool exhaustion.
+    It identifies connections that have been idle for too long and closes them.
+    
+    Returns:
+        int: Number of connections cleaned up
+    """
+    session = None
+    try:
+        # For PostgreSQL, we can use pg_stat_activity to find idle connections
+        if 'postgresql' in str(settings.DATABASE_URL).lower():
+            session = AsyncSessionLocal()
+            # Query to find idle connections for our application
+            # This looks for connections that have been idle for more than 10 minutes (600 seconds)
+            query = text("""
+                SELECT pid, application_name, state, usename, 
+                       EXTRACT(EPOCH FROM (now() - state_change)) as idle_seconds
+                FROM pg_stat_activity 
+                WHERE application_name LIKE 'ai-agentic-deals%'
+                  AND state = 'idle'
+                  AND EXTRACT(EPOCH FROM (now() - state_change)) > 600
+            """)
+            
+            result = await session.execute(query)
+            idle_connections = result.all()
+            
+            # Log which connections will be terminated
+            logger.info(f"Found {len(idle_connections)} idle connections to clean up")
+            
+            count = 0
+            # Terminate each idle connection
+            for conn in idle_connections:
+                try:
+                    # Use pg_terminate_backend to safely terminate the connection
+                    terminate_query = text(f"SELECT pg_terminate_backend({conn.pid})")
+                    await session.execute(terminate_query)
+                    logger.info(f"Terminated idle connection: pid={conn.pid}, user={conn.usename}, " 
+                                f"idle_time={conn.idle_seconds:.1f}s")
+                    count += 1
+                except Exception as e:
+                    logger.error(f"Failed to terminate connection {conn.pid}: {str(e)}")
+            
+            # Commit the changes
+            await session.commit()
+            
+            # Record metrics
+            metrics.idle_connections_cleaned.inc(count)
+            return count
+        else:
+            # For other database types, we currently don't have a specific cleanup mechanism
+            logger.debug("Connection cleanup is only supported for PostgreSQL databases")
+            return 0
+    
+    except Exception as e:
+        logger.error(f"Failed to clean up idle connections: {str(e)}")
+        if session:
+            try:
+                await session.rollback()
+            except Exception as rollback_error:
+                logger.error(f"Error rolling back session in cleanup_idle_connections: {str(rollback_error)}")
+        return 0
+    finally:
+        # Always close the session
+        if session:
+            try:
+                await session.close()
+                logger.debug("Database session closed successfully in cleanup_idle_connections")
+            except Exception as close_error:
+                logger.error(f"Error closing session in cleanup_idle_connections: {str(close_error)}")
+
+__all__ = ['Base', 'async_engine', 'get_session', 'cleanup_idle_connections']

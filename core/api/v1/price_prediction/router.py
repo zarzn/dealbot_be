@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_async_db_session as get_db
+from core.database import get_async_db_session as get_db, get_async_db_context
 from core.models.price_prediction import (
     PricePrediction,
     PricePredictionCreate,
@@ -16,12 +16,24 @@ from core.exceptions import (
     PriceTrackingError,
     ValidationError,
     NotFoundError,
-    DatabaseError
+    DatabaseError,
+    PricePredictionError,
+    InsufficientDataError,
+    ModelError
 )
 from core.dependencies import get_current_user
 from core.models.user import User
 
 router = APIRouter(prefix="/price-prediction", tags=["price-prediction"])
+
+# Helper dependency to get db session using the new context manager
+async def get_db_session() -> AsyncSession:
+    """Get a database session using the improved context manager.
+    
+    This dependency provides better connection management and prevents connection leaks.
+    """
+    async with get_async_db_context() as session:
+        yield session
 
 @router.post(
     "/predictions",
@@ -31,7 +43,7 @@ router = APIRouter(prefix="/price-prediction", tags=["price-prediction"])
 async def create_prediction(
     prediction: PricePredictionCreate,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db)
+    session: AsyncSession = Depends(get_db_session)
 ) -> PricePredictionResponse:
     """Create a new price prediction."""
     try:
@@ -55,7 +67,7 @@ async def create_prediction(
 async def get_prediction(
     prediction_id: int,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db)
+    session: AsyncSession = Depends(get_db_session)
 ) -> PricePredictionResponse:
     """Get a price prediction by ID."""
     try:
@@ -79,7 +91,7 @@ async def get_prediction(
 )
 async def list_predictions(
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db_session),
     skip: int = 0,
     limit: int = 100
 ) -> List[PricePredictionResponse]:
@@ -100,7 +112,7 @@ async def list_predictions(
 async def get_deal_predictions(
     deal_id: UUID,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db_session),
     days_ahead: int = 30
 ) -> List[PricePredictionResponse]:
     """Get price predictions for a deal."""
@@ -131,7 +143,7 @@ async def get_deal_predictions(
 async def analyze_deal_price(
     deal_id: UUID,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db)
+    session: AsyncSession = Depends(get_db_session)
 ) -> Dict:
     """Get detailed price analysis for a deal."""
     try:
@@ -161,7 +173,7 @@ async def analyze_deal_price(
 async def get_price_trends(
     deal_id: UUID,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db_session),
     timeframe: str = "1m"
 ) -> Dict:
     """Get price trends for a deal."""
@@ -191,7 +203,7 @@ async def get_price_trends(
 )
 async def get_model_performance(
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db)
+    session: AsyncSession = Depends(get_db_session)
 ) -> Dict:
     """Get performance metrics for prediction models."""
     try:

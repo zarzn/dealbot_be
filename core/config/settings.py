@@ -235,7 +235,6 @@ class Settings(BaseSettings):
             "/api/v1/deals/public",
             "/api/v1/deals/open-public",
             "/api/v1/deals/share/auth-debug",
-            "/api/v1/deals/share/test",
             "/api/v1/deals/share/no-auth-test"
         ]
     )

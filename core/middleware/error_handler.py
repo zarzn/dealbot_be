@@ -205,7 +205,7 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
         try:
             # Import here to avoid circular imports
             from core.notifications import TemplatedNotificationService
-            from core.database import get_db
+            from core.database import get_db, get_async_db_context
             from core.services.auth import get_current_user
             from core.models.enums import NotificationPriority
             
@@ -246,35 +246,34 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
             # Log the full error context for debugging
             logger.error(f"API Error: {error_id}", extra=error_context)
             
-            # Get database session
-            db = next(get_db())
-            
-            # Initialize notification service
-            notification_service = TemplatedNotificationService(db)
-            
-            # Only send to system admin - in production, you would get admin users from the database
-            # For now, we'll send to a predefined admin user ID if available
-            from core.config import settings
-            admin_user_id = getattr(settings, 'ADMIN_USER_ID', None)
-            
-            if admin_user_id:
-                # Send notification to admin
-                await notification_service.send_notification(
-                    template_id="api_error",
-                    user_id=admin_user_id,
-                    template_params={
-                        "error_type": error_type,
-                        "error_message": str(exception),
-                        "endpoint": url,
-                        "method": method,
-                        "error_id": error_id
-                    },
-                    override_priority=NotificationPriority.HIGH,
-                    metadata=error_context,
-                    action_url="/admin/errors"
-                )
+            # Get database session using the context manager
+            async with get_async_db_context() as db:
+                # Initialize notification service
+                notification_service = TemplatedNotificationService(db)
                 
-                logger.info(f"Sent API error notification to admin: {error_id}")
+                # Only send to system admin - in production, you would get admin users from the database
+                # For now, we'll send to a predefined admin user ID if available
+                from core.config import settings
+                admin_user_id = getattr(settings, 'ADMIN_USER_ID', None)
+                
+                if admin_user_id:
+                    # Send notification to admin
+                    await notification_service.send_notification(
+                        template_id="api_error",
+                        user_id=admin_user_id,
+                        template_params={
+                            "error_type": error_type,
+                            "error_message": str(exception),
+                            "endpoint": url,
+                            "method": method,
+                            "error_id": error_id
+                        },
+                        override_priority=NotificationPriority.HIGH,
+                        metadata=error_context,
+                        action_url="/admin/errors"
+                    )
+                    
+                    logger.info(f"Sent API error notification to admin: {error_id}")
                 
         except Exception as notification_error:
             # Log but don't re-raise to prevent cascading errors

@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.database import get_db
+from core.database import get_db, get_async_db_context
 from core.models.price_tracking import (
     PricePointBase,
     PricePointCreate,
@@ -23,6 +23,15 @@ from core.models.user import User
 
 router = APIRouter(prefix="/price-tracking", tags=["price-tracking"])
 
+# Helper dependency to get db session using the improved context manager
+async def get_db_session() -> AsyncSession:
+    """Get a database session using the improved context manager.
+    
+    This dependency provides better connection management and prevents connection leaks.
+    """
+    async with get_async_db_context() as session:
+        yield session
+
 @router.post(
     "/trackers",
     response_model=PriceTrackerResponse,
@@ -31,7 +40,7 @@ router = APIRouter(prefix="/price-tracking", tags=["price-tracking"])
 async def create_price_tracker(
     tracker: PriceTrackerCreate,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db)
+    session: AsyncSession = Depends(get_db_session)
 ) -> PriceTrackerResponse:
     """Create a new price tracker."""
     try:
@@ -50,7 +59,7 @@ async def create_price_tracker(
 async def get_price_tracker(
     tracker_id: int,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db)
+    session: AsyncSession = Depends(get_db_session)
 ) -> PriceTrackerResponse:
     """Get price tracker details."""
     try:
@@ -74,7 +83,7 @@ async def get_price_tracker(
 )
 async def list_price_trackers(
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db_session),
     skip: int = 0,
     limit: int = 100
 ) -> List[PriceTrackerResponse]:
@@ -96,7 +105,7 @@ async def update_price_tracker(
     tracker_id: int,
     update_data: PriceTrackerCreate,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db)
+    session: AsyncSession = Depends(get_db_session)
 ) -> PriceTrackerResponse:
     """Update price tracker settings."""
     try:
@@ -121,7 +130,7 @@ async def update_price_tracker(
 async def delete_price_tracker(
     tracker_id: int,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db)
+    session: AsyncSession = Depends(get_db_session)
 ):
     """Delete a price tracker."""
     try:
@@ -145,7 +154,7 @@ async def delete_price_tracker(
 async def get_price_history(
     tracker_id: int,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db_session),
     limit: int = 100
 ) -> List[PricePointResponse]:
     """Get price history for a tracker."""
@@ -178,7 +187,7 @@ async def add_price_point(
     tracker_id: int,
     price_point: PricePointCreate,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db)
+    session: AsyncSession = Depends(get_db_session)
 ) -> PricePointResponse:
     """Add a new price point for a tracker."""
     try:
@@ -194,7 +203,7 @@ async def add_price_point(
 async def get_price_stats(
     tracker_id: int,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db)
+    session: AsyncSession = Depends(get_db_session)
 ):
     """Get price statistics for a tracker."""
     try:
@@ -221,7 +230,7 @@ async def get_price_stats(
 async def get_deal_price_history(
     deal_id: UUID,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db_session),
     days: int = 30
 ):
     """Get price history for a deal."""

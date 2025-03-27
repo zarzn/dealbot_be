@@ -145,6 +145,24 @@ from .market_exceptions import (
     MarketIntegrationError
 )
 
+# Import price exceptions
+from .price import (
+    PriceTrackingError,
+    PricePredictionError,
+    InsufficientDataError,
+    ModelError,
+    DealScoreError,
+    PriceValidationError,
+    TrackerNotFoundError,
+    PredictionNotFoundError,
+    InvalidTimeframeError,
+    ModelTrainingError,
+    PredictionTimeoutError,
+    DataSyncError,
+    ThresholdValidationError,
+    AnalysisError
+)
+
 # Import notification exceptions
 from .notification_exceptions import (
     NotificationError,
@@ -308,10 +326,6 @@ from .recommendation_exceptions import (
 )
 
 # New exceptions
-class PriceTrackingError(BaseError):
-    """Price tracking error."""
-    pass
-
 class WebSocketError(BaseError):
     """WebSocket error."""
     pass

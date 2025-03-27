@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 
 from core.database import get_async_db_session as get_db
+from core.database import get_async_db_context
 from core.models.market import (
     MarketCreate,
     MarketUpdate,
@@ -49,6 +50,15 @@ router = APIRouter(tags=["markets"])
 MARKET_ANALYSIS_COST = 5
 MARKET_COMPARISON_COST = 10
 MARKET_HISTORY_COST = 3
+
+# Helper dependency to get db session using the new context manager
+async def get_db_session() -> AsyncSession:
+    """Get a database session using the improved context manager.
+    
+    This dependency provides better connection management and prevents connection leaks.
+    """
+    async with get_async_db_context() as session:
+        yield session
 
 @router.post("", response_model=MarketResponse, status_code=status.HTTP_201_CREATED)
 async def create_market(

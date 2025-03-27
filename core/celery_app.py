@@ -27,6 +27,7 @@ celery_app = Celery(
     backend=settings.celery_result_backend,
     include=[
         "core.tasks.deal_tasks",
+        "core.tasks.background_tasks",
         "core.tasks.notification_tasks",
         "core.tasks.token_tasks"
     ]
@@ -100,6 +101,16 @@ celery_app.conf.update(
             }
         },
         
+        # Shared content tasks
+        "cleanup_expired_shared_content": {
+            "task": "core.tasks.background_tasks.cleanup_expired_shared_content",
+            "schedule": crontab(hour=3, minute=0),  # Daily at 3 AM
+            "options": {
+                "expires": 3600,  # 1 hour
+                "retry": True
+            }
+        },
+        
         # Notification tasks
         "cleanup_old_notifications": {
             "task": "core.tasks.notification_tasks.cleanup_old_notifications",
@@ -143,7 +154,14 @@ celery_app.conf.update(
                 "retry": True,
                 "rate_limit": "50/m"
             }
-        }
+        },
+        
+        # Cleanup expired shares every day at midnight
+        'cleanup-expired-shares-daily': {
+            'task': 'cleanup.remove_expired_shares',
+            'schedule': crontab(minute=0, hour=0),  # Midnight every day
+            'options': {'queue': 'cleanup'},
+        },
     },
     
     # Task routing
@@ -154,6 +172,11 @@ celery_app.conf.update(
         },
         "core.tasks.deal_tasks.*": {
             "queue": "deals"
+        },
+        
+        # Shared content tasks
+        "core.tasks.background_tasks.cleanup_expired_shared_content": {
+            "queue": "cleanup"
         },
         
         # Notification tasks
@@ -185,6 +208,13 @@ celery_app.conf.update(
             "exchange": "deals",
             "routing_key": "deals.default",
             "queue_arguments": {"x-max-priority": 5}
+        },
+        
+        # Cleanup queue
+        "cleanup": {
+            "exchange": "cleanup",
+            "routing_key": "cleanup.default",
+            "queue_arguments": {"x-max-priority": 3}
         },
         
         # Notification queues

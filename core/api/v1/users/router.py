@@ -13,7 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 import decimal
 import jwt
 
-from core.database import get_db
+from core.database import get_db, get_async_db_context
 from core.utils.logger import get_logger
 from core.dependencies import get_current_user
 from core.services.auth import get_password_hash, verify_password, create_access_token, create_refresh_token, AuthService
@@ -34,6 +34,15 @@ router = APIRouter(tags=["auth"])
 logger = get_logger(__name__)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+# Define get_db_session function for local use
+async def get_db_session():
+    """
+    Get a database session using the async context manager.
+    This properly manages connections and prevents leaks.
+    """
+    async with get_async_db_context() as session:
+        yield session
 
 class UserRegistrationRequest(BaseModel):
     """Model for user registration request"""
@@ -58,7 +67,7 @@ class UserRegistrationRequest(BaseModel):
 async def register_user(
     user: UserRegistrationRequest,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Register a new user with proper validation and error handling"""
     try:
@@ -116,7 +125,7 @@ async def register_user(
 @router.post("/login", response_model=Token)
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Login user"""
     try:
@@ -153,7 +162,7 @@ async def login(
 
 @router.get("/me", response_model=UserResponse)
 async def get_user_me(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user)
 ) -> UserResponse:
     """Get current user information."""
@@ -230,7 +239,7 @@ async def get_user_me(
 @router.post("/logout")
 async def logout(
     current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Logout user"""
     # TODO: Implement token blacklisting
@@ -242,7 +251,7 @@ class TokenRefreshRequest(BaseModel):
 @router.post("/refresh-token", response_model=Token)
 async def refresh_token(
     request: TokenRefreshRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Refresh access token using refresh token"""
     try:
@@ -263,7 +272,7 @@ async def refresh_token(
 @router.get("/profile", response_model=UserResponse)
 async def get_user_profile(
     current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Get user profile"""
     try:
@@ -343,7 +352,7 @@ class UpdatePasswordRequest(BaseModel):
 async def request_password_reset(
     request: PasswordResetRequest,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Request password reset"""
     try:
@@ -380,7 +389,7 @@ async def request_password_reset(
 @router.post("/password-reset/confirm")
 async def confirm_password_reset(
     request: PasswordResetConfirm,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Confirm password reset with token"""
     try:
@@ -422,7 +431,7 @@ async def confirm_password_reset(
 async def request_email_verification(
     request: EmailVerificationRequest,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Request email verification"""
     try:
@@ -467,7 +476,7 @@ async def request_email_verification(
 @router.post("/verify-email/confirm/{token}")
 async def confirm_email_verification(
     token: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Confirm email verification"""
     try:
@@ -503,7 +512,7 @@ async def confirm_email_verification(
 async def update_profile(
     request: UpdateProfileRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Update user profile"""
     try:
@@ -533,7 +542,7 @@ async def update_profile(
 async def update_password(
     request: UpdatePasswordRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Update user password"""
     try:
@@ -566,7 +575,7 @@ async def update_password(
 @router.delete("/account")
 async def delete_account(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Delete user account"""
     try:
@@ -584,7 +593,7 @@ async def delete_account(
 @router.get("/activity")
 async def get_user_activity(
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Get user activity history"""
     try:
@@ -607,7 +616,7 @@ async def get_user_activity(
 async def update_preferences(
     request: UserPreferencesUpdate,
     current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Update user preferences"""
     try:
@@ -658,7 +667,7 @@ async def update_preferences(
 @router.get("/settings", response_model=UserPreferencesResponse)
 async def get_settings(
     current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Get user settings"""
     try:
@@ -850,7 +859,7 @@ async def get_settings(
 async def update_settings(
     request: UserPreferencesUpdate,
     current_user = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ) -> Any:
     """Update user settings"""
     try:
@@ -909,10 +918,53 @@ async def update_settings(
                 # Convert notification frequency to the right format
                 updated_freq = {}
                 for notification_type, frequency in request.notification_frequency.items():
-                    updated_freq[notification_type.value] = {
-                        "type": notification_type.value,
-                        "frequency": frequency.value
-                    }
+                    # Handle different formats of frequency value
+                    if isinstance(frequency, dict) and "frequency" in frequency:
+                        # Make a copy to avoid modifying the original
+                        freq_copy = frequency.copy()
+                        # Convert enabled from boolean to string if present
+                        if "enabled" in freq_copy and isinstance(freq_copy["enabled"], bool):
+                            freq_copy["enabled"] = str(freq_copy["enabled"]).lower()
+                        updated_freq[notification_type] = freq_copy
+                    elif isinstance(frequency, str) and frequency.lower() in ["immediate", "hourly", "daily", "weekly", "off"]:
+                        # Simple string format
+                        if frequency.lower() == "off":
+                            updated_freq[notification_type] = {
+                                "type": notification_type,
+                                "frequency": "daily",  # Default to daily when turned off
+                                "enabled": "false"  # Convert boolean to string
+                            }
+                        else:
+                            updated_freq[notification_type] = {
+                                "type": notification_type,
+                                "frequency": frequency.lower()
+                            }
+                    elif frequency == "off" or (isinstance(frequency, dict) and frequency.get("enabled") is False):
+                        # Special case for "off" option
+                        updated_freq[notification_type] = {
+                            "type": notification_type,
+                            "frequency": "daily",  # Default to daily when turned off
+                            "enabled": "false"  # Convert boolean to string
+                        }
+                    elif isinstance(frequency, dict) and "type" in frequency and "frequency" in frequency:
+                        # Object with both type and frequency, convert boolean to string
+                        freq_copy = frequency.copy()
+                        if "enabled" in freq_copy and isinstance(freq_copy["enabled"], bool):
+                            freq_copy["enabled"] = str(freq_copy["enabled"]).lower()
+                        updated_freq[notification_type] = freq_copy
+                    else:
+                        # Default fallback
+                        updated_freq[notification_type] = {
+                            "type": notification_type,
+                            "frequency": "immediate"
+                        }
+                
+                # Ensure all 'enabled' values are strings
+                for type_key, type_value in updated_freq.items():
+                    if isinstance(type_value, dict) and "enabled" in type_value:
+                        if isinstance(type_value["enabled"], bool):
+                            type_value["enabled"] = str(type_value["enabled"]).lower()
+                
                 preferences.notification_frequency = updated_freq
             if request.time_windows is not None:
                 # Convert time windows to the right format
@@ -996,11 +1048,19 @@ async def update_settings(
         try:
             if preferences.notification_frequency:
                 for key, value in preferences.notification_frequency.items():
-                    if isinstance(value, dict) and "frequency" in value:
-                        notification_freq[key] = value
+                    if isinstance(value, dict):
+                        # Make a copy to avoid modifying the original
+                        val_copy = value.copy()
+                        # Convert boolean enabled to string if present
+                        if "enabled" in val_copy and not isinstance(val_copy["enabled"], str):
+                            val_copy["enabled"] = str(val_copy["enabled"]).lower()
+                        notification_freq[key] = val_copy
                     else:
                         # Handle case where value is already a string/enum
-                        notification_freq[key] = {"type": key, "frequency": value if isinstance(value, str) else value.value}
+                        notification_freq[key] = {
+                            "type": key, 
+                            "frequency": value if isinstance(value, str) else getattr(value, 'value', 'immediate')
+                        }
         except Exception as e:
             logger.warning(f"Error processing notification frequency for response: {str(e)}")
             # Set default notification frequency if there's an error
@@ -1010,7 +1070,7 @@ async def update_settings(
                 "price_alert": {"type": "price_alert", "frequency": "immediate"},
                 "token": {"type": "token", "frequency": "daily"},
                 "security": {"type": "security", "frequency": "immediate"},
-                "market": {"type": "market", "frequency": "daily"},
+                "market": {"type": "market", "frequency": "daily", "enabled": "false"},
                 "system": {"type": "system", "frequency": "immediate"}
             }
         

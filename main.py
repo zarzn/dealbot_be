@@ -118,6 +118,7 @@ from core.api.v1.shared import router as shared_content_router
 # Import websocket handlers
 from core.api.v1.notifications.websocket import handle_websocket
 from core.api.websocket import router as websocket_router
+from core.tasks.background_tasks import periodic_database_cleanup
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -127,6 +128,7 @@ async def lifespan(app: FastAPI):
     and cleanup after it stops.
     """
     # Background tasks for monitoring
+    background_tasks = []
     
     # Setup
     try:
@@ -163,6 +165,16 @@ async def lifespan(app: FastAPI):
             logger.info("Database connection monitoring started")
         except Exception as e:
             logger.error(f"Failed to start database connection monitoring: {str(e)}")
+            
+        # Start periodic database cleanup task to prevent connection pool exhaustion
+        try:
+            logger.info("Starting periodic database connection cleanup task...")
+            # Create and start the periodic cleanup task
+            cleanup_task = asyncio.create_task(periodic_database_cleanup())
+            background_tasks.append(cleanup_task)
+            logger.info("Periodic database connection cleanup task started")
+        except Exception as e:
+            logger.error(f"Failed to start database connection cleanup task: {str(e)}")
         
         yield
     
@@ -174,6 +186,17 @@ async def lifespan(app: FastAPI):
     finally:
         # Shutdown
         logger.info("Shutting down application...")
+        
+        # Cancel all background tasks
+        for task in background_tasks:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    logger.info(f"Background task {task.get_name()} cancelled")
+                except Exception as e:
+                    logger.error(f"Error cancelling background task: {str(e)}")
         
         # Clean up database connections - this will be handled by the engine.dispose() calls
         
@@ -525,6 +548,13 @@ def create_app() -> FastAPI:
             "environment": str(settings.APP_ENVIRONMENT)
         }
 
+    # Add a root health endpoint that redirects to the API health endpoint
+    @app.get("/health")
+    async def root_health_redirect():
+        """Root health endpoint that redirects to the API health endpoint"""
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/api/v1/health")
+
     # Health endpoint moved to app.py which redirects to /api/v1/health/health
 
     # Add a more comprehensive health check endpoint
@@ -534,7 +564,7 @@ def create_app() -> FastAPI:
         
         This endpoint checks database and Redis connectivity.
         """
-        from core.database import AsyncDatabaseSession
+        from core.database import get_async_db_context
         from core.services.redis import get_redis_service
         import time
         
@@ -552,7 +582,7 @@ def create_app() -> FastAPI:
         
         # Check database connection
         try:
-            async with AsyncDatabaseSession() as db_session:
+            async with get_async_db_context() as db_session:
                 # Simple query to check database connectivity
                 result = await db_session.execute(text("SELECT 1"))
                 value = result.scalar()

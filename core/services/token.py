@@ -1,4 +1,5 @@
 """Token service implementation"""
+import logging
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import List, Optional, Dict, Any, Tuple
@@ -49,10 +50,11 @@ from core.exceptions import (
 )
 from core.config import settings
 from core.utils.logger import get_logger
-from core.database import get_db
+from core.database import get_async_db_session, get_async_db_context
 from core.services.redis import get_redis_service
 
-logger = get_logger(__name__)
+# Set up logger to track token service operations and errors
+logger = logging.getLogger(__name__)
 
 class ITokenService(ABC):
     """Abstract base class defining the token service interface"""
@@ -409,34 +411,76 @@ class SolanaTokenService(ITokenService):
         user_id: str,
         operation: str
     ) -> None:
-        """Validate if user can perform an operation"""
-        try:
-            # Get pricing for operation
-            pricing = await self.get_pricing_info(operation)
-            if not pricing:
-                logger.warning(f"No pricing found for operation {operation}")
-                return
+        """
+        Validates if a user can perform an operation based on token balance and rules.
+        
+        Args:
+            user_id: User ID
+            operation: Operation name
             
-            # Get user balance
-            balance = await self.check_balance(user_id)
-            
-            # Check if user has enough tokens
-            if balance < pricing.cost:
-                logger.error(f"Insufficient balance for operation {operation}: {balance} < {pricing.cost}")
-                raise TokenBalanceError(
-                    operation=operation,
-                    reason="Insufficient balance for operation",
-                    balance=balance
-                )
-        except TokenBalanceError:
-            raise
-        except Exception as e:
-            logger.error(f"Failed to validate operation {operation} for user {user_id}: {str(e)}")
-            raise TokenValidationError(
-                field="operation",
-                reason=f"Failed to validate operation: {str(e)}",
-                details={"user_id": user_id, "operation": operation}
+        Raises:
+            TokenValidationError: If the user can't perform the operation
+            TokenBalanceError: If the user doesn't have enough balance
+        """
+        # Get pricing
+        pricing = await self.get_pricing_info(operation)
+        
+        # If pricing doesn't exist, allow the operation
+        if not pricing:
+            return
+        
+        # Check balance
+        balance = await self.check_balance(user_id)
+        
+        # Check if the user has enough balance (use token_cost instead of min_balance)
+        if balance < pricing.token_cost:
+            raise TokenBalanceError(
+                f"Insufficient balance for operation. Required: {pricing.token_cost}, Available: {balance}",
+                available=balance,
+                required=pricing.token_cost
             )
+
+    async def validate_tokens(
+        self,
+        user_id: UUID,
+        operation: str
+    ) -> None:
+        """
+        Validates if a user has enough tokens for an operation.
+        
+        Args:
+            user_id: User ID
+            operation: Operation name
+            
+        Raises:
+            TokenValidationError: If the user can't perform the operation
+            TokenBalanceError: If the user doesn't have enough balance
+        """
+        # First try to validate the operation using existing method
+        try:
+            await self.validate_operation(str(user_id), operation)
+            return
+        except (TokenValidationError, TokenBalanceError) as e:
+            # Re-raise the exception
+            raise e
+        except Exception as e:
+            # For any other exceptions, try the fallback approach
+            logger.warning(f"Error in validate_operation, trying fallback approach: {str(e)}")
+        
+        # Fallback approach - check if user has a positive balance
+        try:
+            balance = await self.check_balance(str(user_id))
+            # For now, just ensure there's a positive balance
+            if balance <= Decimal('0'):
+                raise TokenBalanceError(
+                    f"Insufficient balance for operation {operation}. Available: {balance}",
+                    available=balance,
+                    required=Decimal('1.0')  # Minimum requirement
+                )
+        except Exception as e:
+            # Log and re-raise
+            logger.error(f"Error validating tokens: {str(e)}")
+            raise
 
     async def get_balance(self, user_id: str) -> Decimal:
         """Get user's token balance with caching"""
@@ -693,7 +737,7 @@ class SolanaTokenService(ITokenService):
                 balance=current_balance if 'current_balance' in locals() else Decimal("0.0")
             )
 
-    async def check_token_balance(self, user_id: str, required_amount: Decimal) -> bool:
+    async def check_token_balance(self, user_id: UUID, required_amount: float) -> bool:
         """Check if user has sufficient token balance
         
         Args:
@@ -704,16 +748,23 @@ class SolanaTokenService(ITokenService):
             True if user has sufficient balance, False otherwise
         """
         try:
+            # Convert required_amount to Decimal if it's not already
+            if not isinstance(required_amount, Decimal):
+                required_amount = Decimal(str(required_amount))
+                
             # Get current balance
-            current_balance = await self.check_balance(user_id)
+            current_balance = await self.check_balance(str(user_id))
             
             # Compare with required amount
-            return current_balance >= required_amount
+            sufficient = current_balance >= required_amount
+            logger.debug(f"Balance check for user {user_id}: required={required_amount}, current={current_balance}, sufficient={sufficient}")
+            return sufficient
         except Exception as e:
             logger.error(f"Error checking token balance for user {user_id}: {str(e)}")
+            # Default to False on error to prevent unauthorized operations
             return False
 
-    async def consume_tokens(self, user_id: str, amount: Decimal, reason: str) -> Dict[str, Any]:
+    async def consume_tokens(self, user_id: UUID, amount: float, reason: str) -> Dict[str, Any]:
         """Consume tokens for a specific operation
         
         Args:
@@ -727,14 +778,87 @@ class SolanaTokenService(ITokenService):
         Raises:
             TokenBalanceError: If user has insufficient balance
         """
-        return await self.deduct_tokens(user_id, amount, reason)
+        try:
+            # Convert amount to Decimal if it's not already
+            if not isinstance(amount, Decimal):
+                amount = Decimal(str(amount))
+                
+            # Use deduct_tokens to handle the actual consumption
+            return await self.deduct_tokens(str(user_id), amount, reason)
+        except Exception as e:
+            logger.error(f"Error consuming tokens for user {user_id}: {str(e)}")
+            raise TokenTransactionError(
+                transaction_id="",
+                operation="consume_tokens",
+                reason=f"Failed to consume tokens: {str(e)}"
+            )
+
+    async def deduct_tokens_for_goal_operation(
+        self,
+        user_id: UUID,
+        operation: str,
+        goal_data: Dict[str, Any] = None,
+        original_goal: Dict[str, Any] = None,
+        updated_goal: Dict[str, Any] = None,
+        goal_service = None
+    ) -> Decimal:
+        """Deduct tokens for goal operations with dynamic pricing
+        
+        Args:
+            user_id: The user ID
+            operation: The operation type (e.g., goal_creation, update_goal)
+            goal_data: The goal data for creation operations
+            original_goal: The original goal data (for updates)
+            updated_goal: The updated goal data (for updates)
+            goal_service: GoalService instance for cost calculation
+            
+        Returns:
+            Decimal: The amount of tokens deducted
+        """
+        if goal_service is None:
+            # We need a goal service to calculate costs, use import here to avoid circular imports
+            from core.services.goal import GoalService
+            from sqlalchemy.ext.asyncio import AsyncSession
+            from core.database import get_async_session
+            
+            async with get_async_session() as session:
+                goal_service = GoalService(session)
+        
+        # Calculate the cost of the goal operation
+        cost_info = await goal_service.calculate_goal_cost(
+            operation, 
+            goal_data=goal_data, 
+            original_goal=original_goal, 
+            updated_goal=updated_goal
+        )
+        
+        # Log the cost calculation for debugging and transparency
+        logger.info(
+            f"Goal operation cost for user {user_id}: {cost_info['final_cost']} tokens. "
+            f"Base: {cost_info['base_cost']}, Multiplier: {cost_info['multiplier']}, "
+            f"Description: {cost_info['description']}"
+        )
+        
+        # Use the Decimal cost directly without converting to float
+        cost_to_deduct = cost_info['final_cost']
+        
+        # Deduct the tokens
+        await self.deduct_tokens(user_id, cost_to_deduct)
+        
+        return cost_info['final_cost']
 
 # Export SolanaTokenService as TokenService for backward compatibility
 TokenService = SolanaTokenService
 
-# Add this function to provide a dependency for the token service
+# Add the get_db_session function to ensure it's available
+async def get_db_session():
+    """Get DB session using the async context manager to prevent connection leaks."""
+    async with get_async_db_context() as db:
+        yield db
+
+# Update this function to provide a dependency for the token service using the improved session management
 async def get_token_service(
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     redis_service = Depends(get_redis_service)
 ) -> SolanaTokenService:
     """Get a token service instance."""

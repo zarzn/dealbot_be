@@ -16,6 +16,8 @@ from core.services.redis import get_redis_service
 
 logger = logging.getLogger(__name__)
 
+# In-memory cache dictionary will be added as a class variable to DealService
+
 async def _analyze_deal(self, deal_data: Any) -> Dict:
     """Perform comprehensive deal analysis"""
     try:
@@ -285,6 +287,64 @@ async def _update_deal_score(self, deal_id: UUID) -> None:
         logger.error(f"Failed to update score for deal {deal_id}: {str(e)}")
         # Don't propagate this error as it's not critical
 
+async def get_deal_analysis(self, deal_id: UUID, user_id: UUID) -> Optional[Dict[str, Any]]:
+    """Get AI analysis for a deal.
+    
+    This method retrieves AI analysis for a deal if it has been previously analyzed.
+    It checks the Redis cache first, and if not found, returns None.
+    
+    Args:
+        deal_id: The ID of the deal
+        user_id: The ID of the user requesting the analysis
+        
+    Returns:
+        Dictionary containing the analysis results or None if not found
+    """
+    try:
+        # Check the Redis cache first
+        redis = await get_redis_service()
+        deal_id_str = str(deal_id)
+        
+        if redis:
+            redis_key = f"deal:analysis:{deal_id}"
+            cached_analysis = await redis.get(redis_key)
+            if cached_analysis:
+                try:
+                    analysis = json.loads(cached_analysis)
+                    logger.info(f"Retrieving AI analysis for deal {deal_id} for user {user_id} from Redis")
+                    # Format response according to AIAnalysisResponse model
+                    return {
+                        "deal_id": deal_id_str,
+                        "status": "completed",
+                        "message": "Analysis retrieved successfully",
+                        "token_cost": analysis.get("token_cost", 0),
+                        "analysis": analysis,  # Include the full analysis data
+                        "timestamp": datetime.utcnow()
+                    }
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid JSON in cached analysis for deal {deal_id}")
+        
+        # Redis not available or no cache hit, use in-memory cache instead
+        if hasattr(self.__class__, '_analysis_cache'):
+            if deal_id_str in self.__class__._analysis_cache:
+                cached_analysis = self.__class__._analysis_cache[deal_id_str]
+                logger.info(f"Retrieving AI analysis for deal {deal_id} from in-memory cache")
+                # Format response according to AIAnalysisResponse model
+                return {
+                    "deal_id": deal_id_str,
+                    "status": "completed",
+                    "message": "Analysis retrieved successfully",
+                    "token_cost": cached_analysis.get("token_cost", 0),
+                    "analysis": cached_analysis,  # Include the full analysis data
+                    "timestamp": datetime.utcnow()
+                }
+                    
+        logger.info(f"No analysis found in Redis or in-memory cache for deal {deal_id}")
+        return None
+    except Exception as e:
+        logger.error(f"Error retrieving deal analysis: {str(e)}")
+        return None
+
 async def analyze_deal_with_ai(self, deal_id: UUID, user_id: UUID) -> Dict[str, Any]:
     """Analyze a deal with AI to provide personalized insights and recommendations.
     
@@ -298,10 +358,22 @@ async def analyze_deal_with_ai(self, deal_id: UUID, user_id: UUID) -> Dict[str, 
     try:
         logger.info(f"Starting AI analysis for deal {deal_id}")
         
-        # Get the deal
-        deal = await self.get_by_id(deal_id)
-        if not deal:
-            raise ValueError(f"Deal {deal_id} not found")
+        # Get the deal using the get_deal_by_id method from the core service
+        deal = None
+        try:
+            if hasattr(self, 'get_deal_by_id'):
+                deal = await self.get_deal_by_id(deal_id)
+            
+            # Try fallback to repository if method isn't available
+            if not deal and hasattr(self, '_repository') and hasattr(self._repository, 'get_by_id'):
+                deal = await self._repository.get_by_id(deal_id)
+                
+            if not deal:
+                raise ValueError(f"Deal {deal_id} not found")
+                
+        except Exception as e:
+            logger.error(f"Error retrieving deal {deal_id}: {str(e)}")
+            raise ValueError(f"Deal {deal_id} not found. Error: {str(e)}")
             
         # Get AI service
         from core.services.ai import get_ai_service
@@ -311,116 +383,80 @@ async def analyze_deal_with_ai(self, deal_id: UUID, user_id: UUID) -> Dict[str, 
             
         # Check if we have a cached analysis
         redis = await get_redis_service()
+        deal_id_str = str(deal_id)
+        
         if redis:
-            redis_key = f"deal:analysis:{deal_id}:{user_id}"
+            redis_key = f"deal:analysis:{deal_id}"
             cached_analysis = await redis.get(redis_key)
             if cached_analysis:
-                logger.info(f"Using cached analysis for deal {deal_id}")
-                return json.loads(cached_analysis)
+                try:
+                    analysis = json.loads(cached_analysis)
+                    logger.info(f"Using cached analysis for deal {deal_id} from Redis")
+                    return {
+                        "deal_id": deal_id_str,
+                        "status": "completed",
+                        "message": "Analysis retrieved successfully",
+                        "token_cost": analysis.get("token_cost", 0),
+                        "analysis": analysis,
+                        "timestamp": datetime.utcnow()
+                    }
+                except json.JSONDecodeError:
+                    logger.error(f"Invalid JSON in cached analysis for deal {deal_id}")
+        else:
+            # Redis not available, check in-memory cache
+            if not hasattr(self.__class__, '_analysis_cache'):
+                self.__class__._analysis_cache = {}
+            
+            if deal_id_str in self.__class__._analysis_cache:
+                cached_analysis = self.__class__._analysis_cache[deal_id_str]
+                logger.info(f"Using in-memory cached analysis for deal {deal_id}")
+                return {
+                    "deal_id": deal_id_str,
+                    "status": "completed",
+                    "message": "Analysis retrieved successfully",
+                    "token_cost": cached_analysis.get("token_cost", 0),
+                    "analysis": cached_analysis,
+                    "timestamp": datetime.utcnow()
+                }
         
         # Perform AI analysis
+        # Ensure deal is passed as a model object, not as a dictionary
+        if isinstance(deal, dict):
+            logger.warning(f"Deal {deal_id} was retrieved as a dictionary, not a model object")
+            
         analysis_result = await ai_service.analyze_deal(deal)
-        if not analysis_result:
-            error_msg = "AI analysis returned no results"
-            logger.error(error_msg)
-            analysis_error = {
-                "error": error_msg,
-                "deal_id": str(deal_id),
-                "user_id": str(user_id),
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            
-            # Cache the error result
-            if redis:
-                redis_key = f"deal:analysis:{deal_id}:{user_id}"
-                await redis.set(
-                    redis_key,
-                    json.dumps(analysis_error),
-                    ex=86400  # 24 hours
-                )
-            
-            return analysis_error
         
-        # Cache the result
-        if redis:
-            redis_key = f"deal:analysis:{deal_id}:{user_id}"
-            try:
-                await redis.set(
-                    redis_key,
-                    json.dumps(analysis_result),
-                    ex=86400  # 24 hours
-                )
-                logger.info(f"Stored analysis in Redis with key {redis_key}")
-            except Exception as e:
-                logger.warning(f"Failed to cache deal analysis: {str(e)}")
-        
-        logger.info(f"AI analysis completed for deal {deal_id}")
-        return analysis_result
-        
-    except Exception as e:
-        error_msg = f"Error analyzing deal {deal_id}: {str(e)}"
-        logger.error(error_msg)
-        
-        # Create error response
-        analysis_error = {
-            "error": error_msg,
-            "deal_id": str(deal_id),
-            "user_id": str(user_id),
+        # Format the final result according to expected structure
+        formatted_result = {
+            "deal_id": deal_id_str,
+            "status": "completed",
+            "message": "Analysis completed successfully",
+            "token_cost": 2,  # Default token cost
+            "analysis": analysis_result,
             "timestamp": datetime.utcnow().isoformat()
         }
         
-        # Cache the error result
-        redis = await get_redis_service()
+        # Cache the analysis result
         if redis:
             try:
-                redis_key = f"deal:analysis:{deal_id}:{user_id}"
+                # Cache for 1 hour (3600 seconds)
                 await redis.set(
-                    redis_key,
-                    json.dumps(analysis_error),
-                    ex=86400  # 24 hours
+                    f"deal:analysis:{deal_id}",
+                    json.dumps(analysis_result),
+                    ex=3600
                 )
-            except Exception as cache_err:
-                logger.warning(f"Failed to cache error analysis: {str(cache_err)}")
+                logger.info(f"Cached analysis for deal {deal_id}")
+            except Exception as e:
+                logger.error(f"Failed to set key deal:analysis:{deal_id} in Redis: {str(e)}")
         
-        return analysis_error
-
-async def get_deal_analysis(self, deal_id: UUID, user_id: UUID) -> Optional[Dict[str, Any]]:
-    """Get the most recent AI analysis for a deal.
-    
-    This method retrieves a previously generated AI analysis from Redis.
-    If no analysis exists, it returns None.
-    
-    Args:
-        deal_id: The ID of the deal
-        user_id: The ID of the user who requested the analysis
+        # Always store in memory cache as a fallback
+        if not hasattr(self.__class__, '_analysis_cache'):
+            self.__class__._analysis_cache = {}
         
-    Returns:
-        Dictionary containing the analysis or None if no analysis exists
-    """
-    try:
-        logger.info(f"Retrieving AI analysis for deal {deal_id} for user {user_id}")
+        self.__class__._analysis_cache[deal_id_str] = analysis_result
+        logger.info(f"Cached analysis for deal {deal_id} in memory")
         
-        # Try to get from Redis
-        redis = await get_redis_service()
-        if redis:
-            redis_key = f"deal:analysis:{deal_id}:{user_id}"
-            analysis_json = await redis.get(redis_key)
-            
-            if analysis_json:
-                try:
-                    if isinstance(analysis_json, bytes):
-                        analysis_json = analysis_json.decode('utf-8')
-                    
-                    analysis = json.loads(analysis_json)
-                    logger.info(f"Found analysis in Redis for deal {deal_id}")
-                    return analysis
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to decode analysis JSON: {str(e)}")
-                    return None
-        
-        logger.info(f"No analysis found in Redis for deal {deal_id}")
-        return None
-        
+        return formatted_result
     except Exception as e:
-        logger.error(f"Error retrieving deal analysis: {str(e)}")
-        return None 
+        logger.error(f"Error analyzing deal {deal_id}: {str(e)}")
+        raise 

@@ -7,6 +7,7 @@ especially for complex types like datetime and UUID objects.
 import json
 import logging
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 from typing import Any, Dict, List, Optional, Union
 
@@ -20,6 +21,8 @@ class DateTimeEncoder(json.JSONEncoder):
             return obj.isoformat()
         elif isinstance(obj, UUID):
             return str(obj)
+        elif isinstance(obj, Decimal):
+            return float(obj)
         # Handle pydantic HttpUrl
         elif hasattr(obj, '__str__') and (hasattr(obj, 'host') or hasattr(obj, 'scheme')):
             return str(obj)
@@ -46,6 +49,8 @@ def sanitize_for_json(data: Any) -> Any:
         return [sanitize_for_json(item) for item in data]
     elif isinstance(data, (datetime, UUID)):
         return str(data)
+    elif isinstance(data, Decimal):
+        return float(data)
     elif hasattr(data, '__str__') and (hasattr(data, 'host') or hasattr(data, 'scheme')):
         # Handle URL objects
         return str(data)

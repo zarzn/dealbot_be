@@ -9,7 +9,7 @@ import copy
 from typing import Dict, Any, List, Optional, Set, Tuple
 from uuid import UUID
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 import statistics
 from collections import Counter
@@ -55,9 +55,16 @@ async def get_deal_metrics(
     try:
         # Set default date range if not provided
         if not end_date:
-            end_date = datetime.utcnow()
+            end_date = datetime.now(timezone.utc)
+        else:
+            # Ensure end_date is timezone-aware
+            end_date = self._ensure_timezone_aware(end_date)
+            
         if not start_date:
             start_date = end_date - timedelta(days=30)  # Default to last 30 days
+        else:
+            # Ensure start_date is timezone-aware
+            start_date = self._ensure_timezone_aware(start_date)
             
         # Calculate date range
         date_range = (end_date - start_date).days
@@ -80,7 +87,8 @@ async def get_deal_metrics(
                 k: v for k, v in metrics.items()
                 if k == "id" or k == "title" or (
                     "date" in v and 
-                    start_date <= datetime.fromisoformat(v["date"]) <= end_date
+                    self._ensure_timezone_aware(datetime.fromisoformat(v["date"])) <= end_date and
+                    self._ensure_timezone_aware(datetime.fromisoformat(v["date"])) >= start_date
                 )
             }
             
@@ -162,12 +170,16 @@ async def get_deal_metrics(
                     price_ranges["500+"] += 1
                     
                 # Check if deal was created in date range
-                if deal.created_at and start_date <= deal.created_at <= end_date:
-                    aggregated_metrics["new_deals_count"] += 1
+                if deal.created_at:
+                    created_at_aware = self._ensure_timezone_aware(deal.created_at)
+                    if start_date <= created_at_aware <= end_date:
+                        aggregated_metrics["new_deals_count"] += 1
                     
                 # Check if deal expired in date range
-                if deal.expires_at and start_date <= deal.expires_at <= end_date:
-                    aggregated_metrics["expired_deals_count"] += 1
+                if deal.expires_at:
+                    expires_at_aware = self._ensure_timezone_aware(deal.expires_at)
+                    if start_date <= expires_at_aware <= end_date:
+                        aggregated_metrics["expired_deals_count"] += 1
                     
             # Calculate averages and percentages
             if prices:
@@ -1058,4 +1070,18 @@ async def _notify_price_drop(
         logger.info(f"Notified {len(interested_users)} users about price drop for deal {deal_id}")
         
     except Exception as e:
-        logger.error(f"Error notifying price drop for deal {deal_id}: {str(e)}") 
+        logger.error(f"Error notifying price drop for deal {deal_id}: {str(e)}")
+
+def _ensure_timezone_aware(self, dt: datetime) -> datetime:
+    """
+    Ensure datetime is timezone-aware by adding UTC timezone if it's naive.
+    
+    Args:
+        dt: The datetime object to check
+        
+    Returns:
+        A timezone-aware datetime object
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt 

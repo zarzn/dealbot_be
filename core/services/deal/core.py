@@ -192,6 +192,25 @@ async def get_deal(self, deal_id: str, user_id: Optional[UUID] = None) -> Dict[s
         # Try to get from cache first
         cached_deal = await self._get_cached_deal(deal_id)
         if cached_deal:
+            # If user_id is provided, check if deal is tracked by user
+            if user_id:
+                # Query the tracking status directly
+                from sqlalchemy import select, and_
+                from core.models.tracked_deal import TrackedDeal
+                
+                # Check if this deal is tracked by the user
+                tracking_query = select(TrackedDeal).where(
+                    and_(
+                        TrackedDeal.user_id == user_id,
+                        TrackedDeal.deal_id == deal_id
+                    )
+                )
+                result = await self.session.execute(tracking_query)
+                tracked_deal = result.scalar_one_or_none()
+                
+                # Attach this information to the deal object for use in _convert_to_response
+                cached_deal.is_tracked_by_user = user_id if tracked_deal else None
+            
             # Convert to response before returning
             return self._convert_to_response(cached_deal, user_id)
             
@@ -200,6 +219,25 @@ async def get_deal(self, deal_id: str, user_id: Optional[UUID] = None) -> Dict[s
         if not deal:
             logger.error(f"Deal with ID {deal_id} not found")
             raise DealNotFoundError(f"Deal {deal_id} not found")
+        
+        # If user_id is provided, check if deal is tracked by user
+        if user_id:
+            # Query the tracking status directly
+            from sqlalchemy import select, and_
+            from core.models.tracked_deal import TrackedDeal
+            
+            # Check if this deal is tracked by the user
+            tracking_query = select(TrackedDeal).where(
+                and_(
+                    TrackedDeal.user_id == user_id,
+                    TrackedDeal.deal_id == deal_id
+                )
+            )
+            result = await self.session.execute(tracking_query)
+            tracked_deal = result.scalar_one_or_none()
+            
+            # Attach this information to the deal object for use in _convert_to_response
+            deal.is_tracked_by_user = user_id if tracked_deal else None
             
         # Cache the deal
         await self._cache_deal(deal)

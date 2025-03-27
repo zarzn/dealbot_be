@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from core.database import get_db
+from core.database import get_db, get_async_db_context
 from core.dependencies import get_current_user
 from core.models.user import User
 
@@ -23,6 +23,11 @@ from .deals.share import router as deals_share_router
 from .shared import router as shared_router
 
 router = APIRouter()
+
+async def get_db_session():
+    """Get DB session using the async context manager to prevent connection leaks."""
+    async with get_async_db_context() as db:
+        yield db
 
 # Core routes
 router.include_router(auth_router, prefix="/auth", tags=["Authentication"])
@@ -49,7 +54,7 @@ router.include_router(health_router, prefix="/health", tags=["System"])
 @router.get("/wallet/balance")
 async def get_wallet_balance(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user)
 ):
     """Redirect to token balance endpoint."""
@@ -59,7 +64,7 @@ async def get_wallet_balance(
 @router.get("/wallet/transactions")
 async def get_wallet_transactions(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user)
 ):
     """Redirect to token transactions endpoint."""
@@ -78,7 +83,7 @@ async def get_wallet_transactions(
 @router.get("/wallet/info")
 async def get_wallet_info(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user)
 ):
     """Provide wallet info by combining token endpoints."""
