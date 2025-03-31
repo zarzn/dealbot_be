@@ -22,68 +22,20 @@ check_port() {
     fi
 }
 
-# Function to create database if it doesn't exist
-create_database_if_not_exists() {
-    echo "Checking if database '$POSTGRES_DB' exists..."
+# Function to create or reset database
+create_or_reset_database() {
+    echo "Database management: Checking database status..."
     
     # Make sure psycopg2-binary is installed
     pip install psycopg2-binary
     
-    # Create a Python script to check and create database
-    cat > /tmp/create_db.py << 'EOF'
-import os
-import sys
-import psycopg2
-from psycopg2 import sql
-from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-
-# Get database connection parameters from environment
-db_host = os.environ.get('POSTGRES_HOST')
-db_port = os.environ.get('POSTGRES_PORT', '5432')
-db_user = os.environ.get('POSTGRES_USER')
-db_password = os.environ.get('POSTGRES_PASSWORD')
-db_name = os.environ.get('POSTGRES_DB', 'agentic_deals')
-
-print(f"Checking if database '{db_name}' exists...")
-
-try:
-    # Connect to postgres database
-    print(f"Connecting to postgres database at {db_host}:{db_port} as {db_user}")
-    conn = psycopg2.connect(
-        host=db_host,
-        port=db_port,
-        user=db_user,
-        password=db_password,
-        database="postgres"
-    )
-    conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-    cursor = conn.cursor()
-    
-    # Check if the database exists
-    cursor.execute(sql.SQL("SELECT 1 FROM pg_database WHERE datname = %s"), (db_name,))
-    exists = cursor.fetchone()
-    
-    if exists:
-        print(f"Database '{db_name}' already exists.")
-    else:
-        print(f"Creating database '{db_name}'...")
-        cursor.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(db_name)))
-        print(f"Database '{db_name}' created successfully.")
-    
-    cursor.close()
-    conn.close()
-    sys.exit(0)
-except Exception as e:
-    print(f"Failed to create database: {str(e)}")
-    sys.exit(1)
-EOF
-
-    # Execute the Python script
-    python /tmp/create_db.py
+    # Execute the create_db.py script (handles create or reset)
+    echo "Running database creation/reset script..."
+    python -m scripts.deployment.create_db
     
     # Check the exit status
     if [ $? -ne 0 ]; then
-        echo "Failed to create database, aborting."
+        echo "Failed to create or reset database, aborting."
         return 1
     fi
     
@@ -91,16 +43,16 @@ EOF
 }
 
 # Wait for PostgreSQL
-echo "Waiting for PostgreSQL..."
+echo "Waiting for PostgreSQL to be ready..."
 while ! check_port "$POSTGRES_HOST" "$POSTGRES_PORT"; do
     sleep 0.1
 done
-echo "PostgreSQL started"
+echo "PostgreSQL is ready"
 
-# Create database if it doesn't exist
-echo "Checking and creating database if needed..."
-if ! create_database_if_not_exists; then
-    echo "Database preparation failed. Exiting."
+# Create or reset database as needed
+echo "Initializing database..."
+if ! create_or_reset_database; then
+    echo "Database initialization failed. Exiting."
     exit 1
 fi
 
@@ -111,18 +63,37 @@ while ! check_port "$REDIS_HOST" "$REDIS_PORT"; do
 done
 echo "Redis started"
 
-# Run migrations
+# Run migrations using Alembic
 echo "Running database migrations..."
 alembic upgrade head
+if [ $? -ne 0 ]; then
+    echo "Database migration failed. Exiting."
+    exit 1
+fi
+echo "Database migrations completed successfully"
 
-# Create initial data if needed
+# Initialize database tables and extensions
+echo "Initializing database tables and extensions..."
+python -m scripts.init_db
+if [ $? -ne 0 ]; then
+    echo "Database table initialization failed. Exiting."
+    exit 1
+fi
+echo "Database tables and extensions initialized successfully"
+
+# Create initial data
 echo "Creating initial data..."
 cd /app
 echo "Current directory: $(pwd)"
-echo "Directory contents:"
-ls -la
-echo "Running create_initial_data script..."
-python -m scripts.create_initial_data || echo "Warning: Initial data creation failed, but continuing with application startup."
+echo "Initializing admin users and system data..."
+# Run with more detailed logging to diagnose any issues
+python -m scripts.create_initial_data
+if [ $? -ne 0 ]; then
+    echo "ERROR: Initial data creation failed! Check the logs for details."
+    echo "WARNING: Continuing with application startup despite initial data creation failure."
+else
+    echo "Initial data creation completed successfully."
+fi
 
 # Start the application
 echo "Starting application..."

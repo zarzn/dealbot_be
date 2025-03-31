@@ -21,6 +21,10 @@ from .announcements.router import router as announcements_router
 from .admin.router import router as admin_router
 from .deals.share import router as deals_share_router
 from .shared import router as shared_router
+from .contact.router import router as contact_router
+from .ai import router as ai_router
+from .analytics import router as analytics_router
+from .debug import router as debug_router
 
 router = APIRouter()
 
@@ -28,6 +32,11 @@ async def get_db_session():
     """Get DB session using the async context manager to prevent connection leaks."""
     async with get_async_db_context() as db:
         yield db
+
+# Public routes that don't require auth
+router.include_router(health_router, prefix="/health", tags=["System"])
+router.include_router(contact_router, prefix="/contact", tags=["Contact"])
+router.include_router(shared_router, tags=["Shared Content"])
 
 # Core routes
 router.include_router(auth_router, prefix="/auth", tags=["Authentication"])
@@ -43,12 +52,6 @@ router.include_router(price_tracking_router, prefix="/price-tracking", tags=["Pr
 router.include_router(price_prediction_router, prefix="/price-prediction", tags=["Price Prediction"])
 router.include_router(announcements_router, prefix="/announcements", tags=["Announcements"])
 router.include_router(admin_router, prefix="/admin", tags=["Admin"])
-
-# Public shared content routes
-router.include_router(shared_router, tags=["Shared Content"])
-
-# System routes
-router.include_router(health_router, prefix="/health", tags=["System"])
 
 # Add wallet routes that redirect to token routes for backward compatibility
 @router.get("/wallet/balance")
@@ -109,3 +112,8 @@ async def get_wallet_info(
         "is_connected": bool(current_user.sol_address),
         "recent_transactions": transactions
     }
+
+# Feature routes
+router.include_router(ai_router, prefix="/ai", tags=["AI"])
+router.include_router(analytics_router, prefix="/analytics", tags=["Analytics"])
+router.include_router(debug_router, prefix="/debug", tags=["Debug"])

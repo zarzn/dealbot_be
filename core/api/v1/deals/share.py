@@ -66,8 +66,9 @@ async def create_shareable_content(
             personal_notes=sanitized_data.get("personal_notes")
         )
         
-        # Get the base URL for generating shareable links
-        base_url = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+        # Use the frontend URL from settings instead of request's host
+        base_url = settings.SITE_URL
+        logger.info(f"Using frontend URL from settings: {base_url} for creating shareable content")
         
         # Create the shareable content
         sharing_service = SharingService(db)
@@ -151,8 +152,9 @@ async def list_user_shares(
         sharing_service = SharingService(db)
         content_type_enum = ShareableContentType(content_type) if content_type else None
         
-        # Get the base URL for generating shareable links
-        base_url = f"{request.url.scheme}://{request.headers.get('host', request.url.netloc)}"
+        # Use the frontend URL from settings instead of request's host
+        base_url = settings.SITE_URL
+        logger.info(f"Using frontend URL from settings: {base_url} for listing user shares")
         
         result = await sharing_service.get_user_shared_content(
             user_id=current_user.id,

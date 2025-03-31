@@ -6,6 +6,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import aiosmtplib
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+import datetime
 
 from core.config import settings
 from core.services.email.backends.console import ConsoleEmailBackend
@@ -41,17 +42,19 @@ class EmailService:
             if env is None:
                 raise ValueError("Email templates not initialized")
 
-            template = env.get_template(template_name)
-            html_content = template.render(**template_data)
-
             # If using console backend
             if self.backend is not None:
                 return await self.backend.send_email(
                     to_email=to_email,
                     subject=subject,
-                    html_content=html_content,
+                    template_name=template_name,
+                    template_data=template_data,
                     from_email=from_email or settings.EMAIL_FROM
                 )
+
+            # For SMTP backend, render the template
+            template = env.get_template(template_name)
+            html_content = template.render(**template_data)
 
             # Create message
             message = MIMEMultipart('alternative')
@@ -121,6 +124,28 @@ async def send_magic_link_email(email: str, token: str) -> bool:
         template_data={
             "login_link": login_link,
             "expiry_minutes": 15
+        }
+    )
+
+async def send_contact_form_email(name: str, email: str, message: str) -> bool:
+    """Send contact form submission email to admin."""
+    email_service = EmailService()
+    
+    # Use a safe approach to get email from settings with fallback
+    admin_email = "admin@example.com"  # Default fallback
+    
+    if hasattr(settings, "ADMIN_EMAIL") and settings.ADMIN_EMAIL:
+        admin_email = settings.ADMIN_EMAIL
+    
+    return await email_service.send_email(
+        to_email=admin_email,
+        subject=f"New Contact Form Submission from {name}",
+        template_name="contact_form.html",
+        template_data={
+            "name": name,
+            "email": email,
+            "message": message,
+            "year": datetime.datetime.now().year  # Add current year for template
         }
     )
 

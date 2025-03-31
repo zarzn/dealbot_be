@@ -27,18 +27,19 @@ async def get_db_session() -> AsyncSession:
     async with get_async_db_context() as session:
         yield session
 
-# Track startup time to provide a grace period for database connections
+# Constants for health check
 STARTUP_TIME = time.time()
-STARTUP_GRACE_PERIOD = 300  # seconds - increased from 120 to 300 seconds (5 minutes)
+STARTUP_GRACE_PERIOD = 300  # 5 minutes
 
-# Check if we're running in an AWS environment
 def is_aws_environment() -> bool:
-    """Check if the application is running in an AWS environment."""
+    """Check if we're running in an AWS environment."""
+    host = os.environ.get("HOSTNAME", socket.gethostname())
+    # Check common AWS environment flags
     return (
-        os.environ.get("AWS_EXECUTION_ENV") is not None or
-        os.environ.get("AWS_LAMBDA_FUNCTION_NAME") is not None or
-        os.environ.get("ECS_CONTAINER_METADATA_URI") is not None or
-        os.environ.get("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") is not None
+        os.environ.get("AWS_EXECUTION_ENV") is not None
+        or "ECS" in host
+        or "EC2" in host
+        or os.environ.get("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") is not None
     )
 
 @router.get("")
@@ -112,239 +113,45 @@ async def health_check(
     
     # Check Redis connection
     try:
-        # Import Redis directly to avoid service layer
-        from redis.asyncio import Redis
-        from core.config import settings
-        import asyncio
-        
-        # Basic info
-        result = {
-            "status": "unknown",
-            "timestamp": time.time()
-        }
-        
-        # Create a direct connection to Redis
-        try:
-            # Get Redis host and port from settings
-            redis_host = settings.REDIS_HOST
-            redis_port = settings.REDIS_PORT
-            redis_db = settings.REDIS_DB
-            
-            # Try with the default docker-compose password first
-            try:
-                redis = Redis(
-                    host=redis_host,
-                    port=redis_port,
-                    db=redis_db,
-                    password="your_redis_password",
-                    socket_timeout=1.0,
-                    socket_connect_timeout=1.0,
-                    decode_responses=True
-                )
-                
-                # Try a simple PING command
-                ping_start = time.time()
-                ping_result = await redis.ping()
-                ping_time_ms = round((time.time() - ping_start) * 1000)
-                
-                # Process result
-                result["ping_time_ms"] = ping_time_ms
-                
-                if ping_result:
-                    result["status"] = "healthy"
-                    result["message"] = f"Redis is connected (ping: {ping_time_ms}ms)"
-                    await redis.close()
-                    return result
-                else:
-                    await redis.close()
-                    raise Exception("Ping returned False")
-                    
-            except Exception as e:
-                logger.debug(f"Redis connection failed with default password: {str(e)}")
-                
-                # Try with the configured password
-                try:
-                    redis = Redis(
-                        host=redis_host,
-                        port=redis_port,
-                        db=redis_db,
-                        password=settings.REDIS_PASSWORD,
-                        socket_timeout=1.0,
-                        socket_connect_timeout=1.0,
-                        decode_responses=True
-                    )
-                    
-                    # Try a simple PING command
-                    ping_start = time.time()
-                    ping_result = await redis.ping()
-                    ping_time_ms = round((time.time() - ping_start) * 1000)
-                    
-                    # Process result
-                    result["ping_time_ms"] = ping_time_ms
-                    
-                    if ping_result:
-                        result["status"] = "healthy"
-                        result["message"] = f"Redis is connected (ping: {ping_time_ms}ms)"
-                        await redis.close()
-                        return result
-                    else:
-                        await redis.close()
-                        raise Exception("Ping returned False")
-                        
-                except Exception as e2:
-                    logger.debug(f"Redis connection failed with configured password: {str(e2)}")
-                    result["status"] = "unhealthy"
-                    result["message"] = f"Redis connection failed with both passwords: {str(e2)}"
-                    response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-                    return result
-            
-        except Exception as conn_error:
-            result["status"] = "unhealthy"
-            result["message"] = f"Redis connection setup failed: {str(conn_error)}"
-            result["error"] = str(conn_error)
-            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            return result
-            
+        redis = await get_redis_service()
+        if redis:
+            ping_result = await redis.ping()
+            if ping_result:
+                health_result["cache"] = "connected"
+            else:
+                health_result["cache"] = "disconnected"
+                health_result["cache_error"] = "Redis ping failed"
+                # Only make service unhealthy if outside grace period
+                if not is_in_grace_period:
+                    health_result["status"] = "unhealthy"
+                    # Only set non-200 status code if outside grace period
+                    # status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        else:
+            health_result["cache"] = "not_configured"
     except Exception as e:
-        logger.error(f"Redis health check failed: {str(e)}")
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {
-            "status": "unhealthy",
-            "message": str(e),
-            "timestamp": time.time()
-        }
+        logger.warning(f"Redis health check failed: {str(e)}")
+        health_result["cache"] = "disconnected"
+        health_result["cache_error"] = str(e)
+        if not is_in_grace_period:
+            health_result["status"] = "unhealthy"
+            # Only set non-200 status code if outside grace period
+            # status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     
-    # Set the response status code - always 200 for now to prevent load balancer from terminating the task
     response.status_code = status_code
-    
-    # Log health check results
-    log_level = logging.INFO if health_result["status"] == "healthy" else logging.WARNING
-    logger.log(log_level, f"Health check: uptime={int(uptime)}s, grace_period={is_in_grace_period}, status={health_result['status']}, db={health_result['database']}, cache={health_result['cache']}")
-    
     return health_result
 
 @router.get("/health")
-@router.post("/health")
 async def simple_health_check():
     """Simple health check endpoint for AWS load balancers.
     
     This endpoint ALWAYS returns a 200 status code and healthy status,
     regardless of the actual application state. This is used specifically
     for ELB health checks to prevent instances from being terminated during startup.
-    
-    WARNING: This endpoint should ONLY be used by load balancers and not for
-    actual health monitoring.
     """
     return {
         "status": "healthy",
         "message": "Load balancer health check endpoint"
     }
-
-@router.get("/redis")
-async def check_redis(response: Response):
-    """Check Redis connection."""
-    try:
-        # Import Redis directly to avoid service layer
-        from redis.asyncio import Redis
-        from core.config import settings
-        import asyncio
-        
-        # Basic info
-        result = {
-            "status": "unknown",
-            "timestamp": time.time()
-        }
-        
-        # Create a direct connection to Redis
-        try:
-            # Get Redis host and port from settings
-            redis_host = settings.REDIS_HOST
-            redis_port = settings.REDIS_PORT
-            redis_db = settings.REDIS_DB
-            
-            # Try with the default docker-compose password first
-            try:
-                redis = Redis(
-                    host=redis_host,
-                    port=redis_port,
-                    db=redis_db,
-                    password="your_redis_password",
-                    socket_timeout=1.0,
-                    socket_connect_timeout=1.0,
-                    decode_responses=True
-                )
-                
-                # Try a simple PING command
-                ping_start = time.time()
-                ping_result = await redis.ping()
-                ping_time_ms = round((time.time() - ping_start) * 1000)
-                
-                # Process result
-                result["ping_time_ms"] = ping_time_ms
-                
-                if ping_result:
-                    result["status"] = "healthy"
-                    result["message"] = f"Redis is connected (ping: {ping_time_ms}ms)"
-                    await redis.close()
-                    return result
-                else:
-                    await redis.close()
-                    raise Exception("Ping returned False")
-                    
-            except Exception as e:
-                logger.debug(f"Redis connection failed with default password: {str(e)}")
-                
-                # Try with the configured password
-                try:
-                    redis = Redis(
-                        host=redis_host,
-                        port=redis_port,
-                        db=redis_db,
-                        password=settings.REDIS_PASSWORD,
-                        socket_timeout=1.0,
-                        socket_connect_timeout=1.0,
-                        decode_responses=True
-                    )
-                    
-                    # Try a simple PING command
-                    ping_start = time.time()
-                    ping_result = await redis.ping()
-                    ping_time_ms = round((time.time() - ping_start) * 1000)
-                    
-                    # Process result
-                    result["ping_time_ms"] = ping_time_ms
-                    
-                    if ping_result:
-                        result["status"] = "healthy"
-                        result["message"] = f"Redis is connected (ping: {ping_time_ms}ms)"
-                        await redis.close()
-                        return result
-                    else:
-                        await redis.close()
-                        raise Exception("Ping returned False")
-                        
-                except Exception as e2:
-                    logger.debug(f"Redis connection failed with configured password: {str(e2)}")
-                    result["status"] = "unhealthy"
-                    result["message"] = f"Redis connection failed with both passwords: {str(e2)}"
-                    response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-                    return result
-            
-        except Exception as conn_error:
-            result["status"] = "unhealthy"
-            result["message"] = f"Redis connection setup failed: {str(conn_error)}"
-            result["error"] = str(conn_error)
-            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-            return result
-            
-    except Exception as e:
-        logger.error(f"Redis health check failed: {str(e)}")
-        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return {
-            "status": "unhealthy",
-            "message": str(e),
-            "timestamp": time.time()
-        }
 
 @router.get("/database")
 async def check_database(response: Response):
@@ -389,36 +196,4 @@ async def check_database(response: Response):
         result["status"] = "unhealthy"
         result["message"] = f"Database error: {str(e)}"
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
-        return result
-
-@router.get("/scraper-api/usage", response_model=Dict[str, int])
-async def get_scraper_api_usage(db: AsyncSession = Depends(get_db_session)):
-    """Get current ScraperAPI credit usage."""
-    try:
-        # Import here to avoid circular imports
-        from core.integrations.market_factory import MarketIntegrationFactory
-        
-        market_factory = MarketIntegrationFactory(db=db)
-        # Check if get_credit_usage method exists, otherwise return dummy data
-        if hasattr(market_factory.scraper_api, 'get_credit_usage'):
-            return await market_factory.scraper_api.get_credit_usage()
-        else:
-            # Return mock data to avoid errors
-            return {"credits_used": 0, "credits_remaining": 1000}
-    except MarketIntegrationError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get ScraperAPI usage: {str(e)}"
-        )
-
-@router.get("/")
-async def root_health_check():
-    """Root health check endpoint for AWS load balancers.
-    
-    This endpoint ALWAYS returns a 200 status code and healthy status,
-    regardless of the actual application state.
-    """
-    return {
-        "status": "healthy",
-        "message": "Root health check endpoint"
-    } 
+        return result 

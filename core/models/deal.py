@@ -346,6 +346,42 @@ class Deal(Base):
     price_predictions = relationship("PricePrediction", back_populates="deal", cascade="all, delete-orphan")
     tokens = relationship("DealToken", back_populates="deal", cascade="all, delete-orphan")
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the Deal object to a dictionary.
+        
+        This method handles proper serialization of UUID, Decimal, and datetime values.
+        
+        Returns:
+            Dictionary representation of the Deal object
+        """
+        result = {
+            "id": str(self.id) if self.id else None,
+            "user_id": str(self.user_id) if self.user_id else None,
+            "goal_id": str(self.goal_id) if self.goal_id else None,
+            "market_id": str(self.market_id) if self.market_id else None,
+            "title": self.title,
+            "description": self.description,
+            "url": self.url,
+            "price": float(self.price) if self.price is not None else None,
+            "original_price": float(self.original_price) if self.original_price is not None else None,
+            "currency": self.currency,
+            "source": self.source.value if isinstance(self.source, enum.Enum) else self.source,
+            "image_url": self.image_url,
+            "category": self.category.value if isinstance(self.category, enum.Enum) else self.category,
+            "seller_info": self.seller_info,
+            "availability": self.availability,
+            "found_at": self.found_at.isoformat() if self.found_at else None,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "status": self.status.value if isinstance(self.status, enum.Enum) else self.status,
+            "deal_metadata": self.deal_metadata,
+            "price_metadata": self.price_metadata,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "is_active": self.is_active,
+            "score": float(self.score) if self.score is not None else None
+        }
+        return result
+
     def __init__(
         self,
         *,

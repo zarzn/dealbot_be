@@ -221,6 +221,7 @@ class Settings(BaseSettings):
     # Authentication settings
     AUTH_EXCLUDE_PATHS: List[str] = Field(
         default=[
+            # Auth endpoints
             "/api/v1/auth/login",
             "/api/v1/auth/register",
             "/api/v1/auth/refresh",
@@ -228,14 +229,23 @@ class Settings(BaseSettings):
             "/api/v1/auth/verify-email",
             "/api/v1/auth/magic-link",
             "/api/v1/auth/social",
+            
+            # API docs
             "/api/v1/docs",
             "/api/v1/openapi.json",
+            
+            # System endpoints
             "/api/v1/health",
             "/api/v1/metrics",
+            
+            # Public endpoints
             "/api/v1/deals/public",
             "/api/v1/deals/open-public",
             "/api/v1/deals/share/auth-debug",
-            "/api/v1/deals/share/no-auth-test"
+            "/api/v1/deals/share/no-auth-test",
+            
+            # Contact form endpoint
+            "/api/v1/contact",
         ]
     )
 
@@ -284,6 +294,8 @@ class Settings(BaseSettings):
     EMAIL_SENDER_NAME: str = Field(default="AI Agentic Deals")
     EMAIL_SENDER_ADDRESS: str = Field(default="noreply@aideals.com")
     EMAIL_FROM: str = Field(default="AI Agentic Deals <noreply@aideals.com>")
+    CONTACT_EMAIL: str = Field(default="contact@aideals.com")
+    ADMIN_EMAIL: str = Field(default="admin@aideals.com")
     EMAIL_BACKEND: str = Field(
         default="core.services.email.backends.console.ConsoleEmailBackend",
         description="Email backend class"

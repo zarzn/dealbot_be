@@ -4,13 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Background
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import logging
 import time
 from pydantic import BaseModel, Field
 
-from core.database import get_async_db_session as get_db
+from core.database import get_async_db_context
 from core.models.deal import (
     DealResponse,
     DealAnalytics,
@@ -62,6 +62,15 @@ router = APIRouter(tags=["deals"])
 UNAUTH_SEARCH_LIMIT = 10  # 10 searches per minute
 UNAUTH_ANALYSIS_LIMIT = 20  # 20 analyses per minute
 RATE_LIMIT_WINDOW = 60  # 1 minute window
+
+# Helper dependency to get db session using the new context manager
+async def get_db_session() -> AsyncSession:
+    """Get a database session using the improved context manager.
+    
+    This dependency provides better connection management and prevents connection leaks.
+    """
+    async with get_async_db_context() as session:
+        yield session
 
 async def validate_tokens(
     token_service: TokenService,
@@ -128,6 +137,78 @@ async def process_deals_background(background_tasks: BackgroundTasks, deals: Lis
     for deal in deals:
         background_tasks.add_task(deal_service.process_deal_background, deal.id)
 
+@router.get("/tracked")
+async def get_tracked_deals(
+    request: Request,
+    deal_service: DealService = Depends(get_deal_service),
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """Get all deals tracked by the current user"""
+    logger.info(f"Tracked deals request received for user: {current_user.id}")
+    try:
+        # Log the start time for performance monitoring
+        start_time = time.time()
+        
+        # Get tracked deals
+        tracked_deals = await deal_service.get_tracked_deals(user_id=current_user.id)
+        
+        # Log performance
+        duration = time.time() - start_time
+        logger.info(f"Retrieved {len(tracked_deals)} tracked deals for user {current_user.id} in {duration:.2f}s")
+        
+        return tracked_deals
+    except AttributeError as e:
+        # Log detailed info about the error
+        logger.error(f"AttributeError in get_tracked_deals: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Service configuration error: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting tracked deals for user {current_user.id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/recent", response_model=List[DealResponse])
+async def get_recent_deals(
+    limit: int = Query(10, ge=1, le=50),
+    deal_service: DealService = Depends(get_deal_service),
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """Get recent deals for the current user."""
+    try:
+        deals = await deal_service.get_recent_deals(
+            user_id=current_user.id,
+            limit=limit
+        )
+        return [DealResponse.model_validate(deal) for deal in deals]
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to retrieve recent deals: {str(e)}"
+        )
+
+@router.get("/metrics", response_model=Dict[str, Any])
+async def get_deal_metrics(
+    time_range: Optional[str] = Query(
+        "30d",
+        description="Time range for metrics (7d, 30d, 90d, all)"
+    ),
+    analytics_service: AnalyticsService = Depends(get_analytics_service),
+    current_user: UserInDB = Depends(get_current_user)
+):
+    """Get deal metrics for the current user."""
+    try:
+        metrics = await analytics_service.get_deal_metrics(
+            user_id=current_user.id,
+            time_range=time_range
+        )
+        return metrics
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to retrieve deal metrics: {str(e)}"
+        )
+
 @router.get("/", response_model=List[DealResponse], response_model_exclude_none=True)
 async def get_deals(
     background_tasks: BackgroundTasks,
@@ -184,7 +265,7 @@ async def search_deals_get(
     page: int = Query(1, description="Page number", ge=1),
     page_size: int = Query(20, description="Items per page", ge=1, le=100),
     current_user: Optional[User] = Depends(get_current_user_optional),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ):
     """
     Search for deals matching the specified criteria (GET method)
@@ -211,7 +292,7 @@ async def search_deals(
     request: Request,
     search: DealSearch,
     current_user: Optional[User] = Depends(get_current_user_optional),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ):
     """
     Search for deals matching the specified criteria
@@ -313,7 +394,7 @@ async def search_deals(
 @router.get("/{deal_id}", response_model=DealResponse)
 async def get_deal(
     deal_id: UUID,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession = Depends(get_db_session),
     deal_service: DealService = Depends(get_deal_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
@@ -337,7 +418,7 @@ async def get_deal_analytics(
         await validate_tokens(token_service, current_user.id, "deal_analytics")
         
         # Convert time range to datetime
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         ranges = {
             "1d": now - timedelta(days=1),
             "7d": now - timedelta(days=7),
@@ -574,134 +655,7 @@ async def stop_tracking_deal(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/analysis/{deal_id}", response_model=AIAnalysisResponse)
-async def get_deal_analysis(
-    request: Request,
-    deal_id: UUID,
-    current_user: Optional[User] = Depends(get_current_user_optional),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get AI analysis for a deal.
-    
-    This endpoint can be accessed by both authenticated and unauthenticated users.
-    Unauthenticated users are subject to rate limiting.
-    """
-    try:
-        # Check rate limit for unauthenticated users
-        if current_user is None:
-            await check_rate_limit(
-                request, 
-                f"unauth:analysis", 
-                UNAUTH_ANALYSIS_LIMIT, 
-                RATE_LIMIT_WINDOW
-            )
-        
-        # Get user ID if authenticated
-        user_id = current_user.id if current_user else None
-        
-        # Initialize repositories
-        deal_repository = DealRepository(db)
-        analytics_repository = AnalyticsRepository(db)
-        
-        # Initialize services
-        deal_service = DealService(db, deal_repository)
-        deal_analysis_service = DealAnalysisService(
-            db, 
-            MarketService(db, MarketRepository(db)),
-            deal_service
-        )
-        analytics_service = AnalyticsService(
-            analytics_repository=analytics_repository,
-            deal_repository=deal_repository
-        )
-        
-        # Get analysis from analytics service
-        analysis = await analytics_service.get_deal_analysis(
-            deal_id=deal_id,
-            user_id=user_id,
-            deal_analysis_service=deal_analysis_service
-        )
-        
-        if not analysis:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Analysis for deal {deal_id} not found"
-            )
-            
-        # Convert to response model
-        return AIAnalysisResponse(
-            deal_id=analysis.deal_id,
-            score=analysis.score,
-            confidence=analysis.confidence,
-            price_analysis=analysis.price_analysis,
-            market_analysis=analysis.market_analysis,
-            recommendations=analysis.recommendations,
-            analysis_date=analysis.analysis_date,
-            expiration_analysis=analysis.expiration_analysis
-        )
-        
-    except RateLimitExceededError as e:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Rate limit exceeded: {str(e)}"
-        )
-    except NotFoundException as e:
-        raise HTTPException(
-            status_code=404,
-            detail=str(e)
-        )
-    except ValidationError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Error getting deal analysis: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to get deal analysis: {str(e)}"
-        )
-
-@router.get("/{deal_id}/similar", response_model=List[DealResponse])
-async def get_similar_deals(
-    deal_id: UUID,
-    limit: int = Query(10, ge=1, le=50),
-    recommendation_service: RecommendationService = Depends(get_recommendation_service),
-    current_user: UserInDB = Depends(get_current_user)
-):
-    """Get similar deals to the specified deal"""
-    try:
-        similar_deals = await recommendation_service.get_similar_deals(
-            deal_id=deal_id,
-            user_id=current_user.id,
-            limit=limit
-        )
-        return similar_deals
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@router.get("/{deal_id}/predictions", response_model=List[PriceHistoryResponse])
-async def get_deal_predictions(
-    deal_id: UUID,
-    days: int = Query(30, ge=1, le=90),
-    analytics_service: AnalyticsService = Depends(get_analytics_service),
-    token_service: TokenService = Depends(get_token_service),
-    current_user: UserInDB = Depends(get_current_user)
-):
-    """Get price predictions for a deal"""
-    try:
-        await validate_tokens(token_service, current_user.id, "deal_predictions")
-        predictions = await analytics_service.get_price_predictions(
-            deal_id=deal_id,
-            user_id=current_user.id,
-            days=days
-        )
-        return predictions
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@router.post("/{deal_id}/validate", response_model=Dict[str, Any])
+@router.get("/{deal_id}/validate", response_model=Dict[str, Any])
 async def validate_deal(
     deal_id: UUID,
     validation_data: Dict[str, Any] = Body({}),
@@ -1021,8 +975,7 @@ async def list_deals(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     current_user: User = Depends(get_current_user),
-    deal_service: DealService = Depends(get_deal_service),
-    db: AsyncSession = Depends(get_db)
+    deal_service: DealService = Depends(get_deal_service)
 ):
     """
     List deals for the current user with optional filtering.
@@ -1033,7 +986,6 @@ async def list_deals(
         page_size: Number of items per page
         current_user: Current authenticated user
         deal_service: Deal service instance
-        db: Database session
         
     Returns:
         List of deals matching the criteria
@@ -1094,6 +1046,7 @@ async def list_deals(
         
         return enhanced_deals
     except Exception as e:
+        logger.error(f"Error in list_deals: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Failed to retrieve deals: {str(e)}"
@@ -1287,7 +1240,7 @@ async def get_deal_goals(
     deal_id: UUID,
     current_user: UserInDB = Depends(get_current_user),
     deal_service: DealService = Depends(get_deal_service),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ):
     """
     Get goals that match with a specific deal.
@@ -1454,7 +1407,7 @@ async def analyze_deal(
     current_user: User = Depends(get_current_user),
     deal_service: DealService = Depends(get_deal_service),
     ai_service: AIService = Depends(get_ai_service),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ):
     """
     Analyze a specific deal with AI (premium feature)
@@ -1541,7 +1494,7 @@ async def get_deal_analysis_by_id(
     deal_id: UUID,
     deal_service: DealService = Depends(get_deal_service),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db_session)
 ):
     """
     Get the AI analysis for a specific deal

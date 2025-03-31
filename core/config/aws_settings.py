@@ -56,9 +56,9 @@ def load_aws_parameters() -> Dict[str, str]:
         logger.info("Loading parameters from AWS Parameter Store")
         ssm = boto3.client('ssm')
         
-        # Fetch parameters with /aideals/production/ prefix
+        # Fetch parameters with /agentic-deals/ prefix
         response = ssm.get_parameters_by_path(
-            Path='/aideals/production/',
+            Path='/agentic-deals/',
             Recursive=True,
             WithDecryption=True
         )
@@ -72,7 +72,7 @@ def load_aws_parameters() -> Dict[str, str]:
         # Continue pagination if needed
         while 'NextToken' in response:
             response = ssm.get_parameters_by_path(
-                Path='/aideals/production/',
+                Path='/agentic-deals/',
                 Recursive=True,
                 WithDecryption=True,
                 NextToken=response['NextToken']
@@ -235,7 +235,7 @@ def get_aws_parameter(name: str, default: Optional[str] = None) -> Optional[str]
         
         # Build the full parameter name
         app_env = os.environ.get("APP_ENVIRONMENT", "development").lower()
-        param_name = f"/aideals/{app_env}/{name}"
+        param_name = f"/agentic-deals/{name}"
         
         response = ssm.get_parameter(Name=param_name, WithDecryption=True)
         return response['Parameter']['Value']

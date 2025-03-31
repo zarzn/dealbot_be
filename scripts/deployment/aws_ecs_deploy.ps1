@@ -358,4 +358,58 @@ else {
     }
 }
 
-Write-StepHeader "Deployment Process Completed" 
+Write-StepHeader "Deployment Process Completed"
+
+# Set up Parameters in AWS Systems Manager Parameter Store for ECS
+Write-Host "Checking if parameters exist in AWS Systems Manager Parameter Store..." -ForegroundColor Cyan
+
+# Required parameters for the application
+$parameters = @(
+    @{Name="/agentic-deals/POSTGRES_DB"; Value=$PostgresDb; Type="String"; Description="PostgreSQL database name"},
+    @{Name="/agentic-deals/POSTGRES_HOST"; Value=$PostgresHost; Type="String"; Description="PostgreSQL hostname"},
+    @{Name="/agentic-deals/POSTGRES_PORT"; Value=$PostgresPort; Type="String"; Description="PostgreSQL port"},
+    @{Name="/agentic-deals/POSTGRES_USER"; Value=$PostgresUser; Type="String"; Description="PostgreSQL username"},
+    @{Name="/agentic-deals/POSTGRES_PASSWORD"; Value=$PostgresPassword; Type="SecureString"; Description="PostgreSQL password"},
+    @{Name="/agentic-deals/REDIS_HOST"; Value=$RedisHost; Type="String"; Description="Redis hostname"},
+    @{Name="/agentic-deals/REDIS_PORT"; Value=$RedisPort; Type="String"; Description="Redis port"},
+    @{Name="/agentic-deals/REDIS_PASSWORD"; Value=$RedisPassword; Type="SecureString"; Description="Redis password"},
+    @{Name="/agentic-deals/SECRET_KEY"; Value=$SecretKey; Type="SecureString"; Description="Secret key for JWT"},
+    @{Name="/agentic-deals/DEEPSEEK_API_KEY"; Value=$DeepseekApiKey; Type="SecureString"; Description="DeepSeek API Key"},
+    @{Name="/agentic-deals/OPENAI_API_KEY"; Value=$OpenaiApiKey; Type="SecureString"; Description="OpenAI API Key"},
+    @{Name="/agentic-deals/SCRAPER_API_KEY"; Value=$ScraperApiKey; Type="SecureString"; Description="Scraper API Key"},
+    @{Name="/agentic-deals/RESET_DB"; Value="false"; Type="String"; Description="Flag to reset database on startup (true/false)"}
+)
+
+# Loop through parameters and create/update them in Parameter Store
+foreach ($param in $parameters) {
+    # Check if parameter exists
+    try {
+        $existingParam = Get-SSMParameter -Name $param.Name -ErrorAction SilentlyContinue
+        
+        if ($existingParam) {
+            # Parameter exists, but only update it if the value is provided and different
+            if ($param.Value -and ($existingParam.Value -ne $param.Value)) {
+                Write-Host "Updating parameter $($param.Name)..." -ForegroundColor Yellow
+                Write-SSMParameter -Name $param.Name -Value $param.Value -Type $param.Type -Description $param.Description -Overwrite $true -Force
+            } else {
+                Write-Host "Parameter $($param.Name) already exists with the correct value." -ForegroundColor Green
+            }
+        } else {
+            # Parameter doesn't exist, create it if value is provided
+            if ($param.Value) {
+                Write-Host "Creating parameter $($param.Name)..." -ForegroundColor Yellow
+                Write-SSMParameter -Name $param.Name -Value $param.Value -Type $param.Type -Description $param.Description
+            } else {
+                Write-Host "WARNING: Parameter $($param.Name) doesn't exist and no value provided. Skipping." -ForegroundColor Red
+            }
+        }
+    } catch {
+        Write-Host "Error checking/updating parameter $($param.Name): $_" -ForegroundColor Red
+    }
+}
+
+# Reminder about database reset
+Write-Host "`nIMPORTANT: To reset the database, update the RESET_DB parameter in Parameter Store:" -ForegroundColor Yellow
+Write-Host "aws ssm put-parameter --name '/agentic-deals/RESET_DB' --value 'true' --type String --overwrite --profile agentic-deals-deployment" -ForegroundColor Cyan
+Write-Host "After the task runs successfully, remember to set it back to false:" -ForegroundColor Yellow
+Write-Host "aws ssm put-parameter --name '/agentic-deals/RESET_DB' --value 'false' --type String --overwrite --profile agentic-deals-deployment" -ForegroundColor Cyan 

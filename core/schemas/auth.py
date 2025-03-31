@@ -18,6 +18,18 @@ class TokenResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
 
+class TokenRequest(BaseModel):
+    """Token request schema."""
+    token: str
+
+class RefreshTokenRequest(BaseModel):
+    """Refresh token request schema."""
+    refresh_token: str
+
+class AccessTokenVerifyRequest(BaseModel):
+    """Access token verify request schema."""
+    token: str
+
 class RegisterRequest(BaseModel):
     """Register request schema."""
     email: EmailStr
@@ -54,6 +66,15 @@ class MessageResponse(BaseModel):
 
 class RequestPasswordResetRequest(BaseModel):
     """Request password reset request schema."""
+    email: EmailStr
+
+class ResetPasswordRequest(BaseModel):
+    """Reset password request schema."""
+    token: str
+    password: str
+
+class RequestEmailVerificationRequest(BaseModel):
+    """Request email verification request schema."""
     email: EmailStr
 
 class VerifyEmailRequest(BaseModel):
@@ -101,6 +122,22 @@ class AuthResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class LoginResponse(AuthResponse):
+    """Login response schema."""
+    pass
+
+class RegisterResponse(AuthResponse):
+    """Register response schema."""
+    pass
+
+class PasswordResetResponse(BaseModel):
+    """Password reset response schema."""
+    message: str
+
+class NewPasswordResponse(BaseModel):
+    """New password response schema."""
+    message: str
+
 class TokenPayload(BaseModel):
     """Token payload schema."""
     sub: str
@@ -116,10 +153,6 @@ class ErrorResponse(BaseModel):
     detail: str
     error_code: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
-
-class PasswordResetResponse(BaseModel):
-    """Password reset response schema."""
-    message: str
 
 class PasswordResetRequest(BaseModel):
     """Password reset request schema."""

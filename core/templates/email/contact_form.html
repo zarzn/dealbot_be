@@ -1,0 +1,27 @@
+{% extends "base_email.html" %}
+
+{% block title %}New Contact Form Submission{% endblock %}
+
+{% block content %}
+<tr>
+  <td align="left" style="padding: 20px 30px 0 30px; color: #ffffff; font-family: 'Lato', Helvetica, Arial, sans-serif; font-size: 18px; font-weight: 400; line-height: 25px;">
+    <p style="margin: 0;">You've received a new contact form submission from the AI Agentic Deals System website.</p>
+  </td>
+</tr>
+<tr>
+  <td align="left" style="padding: 20px 30px 20px 30px; color: #ffffff; font-family: 'Lato', Helvetica, Arial, sans-serif; font-size: 18px; font-weight: 400; line-height: 25px;">
+    <h2 style="margin: 0; color: #00aeff;">Contact Details</h2>
+    <p style="margin: 10px 0 0 0;"><strong>Name:</strong> {{ name }}</p>
+    <p style="margin: 10px 0 0 0;"><strong>Email:</strong> {{ email }}</p>
+    <p style="margin: 15px 0 0 0;"><strong>Message:</strong></p>
+    <div style="margin: 10px 0 0 0; padding: 15px; background-color: rgba(255, 255, 255, 0.1); border-radius: 5px;">
+      {{ message }}
+    </div>
+  </td>
+</tr>
+<tr>
+  <td align="left" style="padding: 20px 30px 40px 30px; color: #ffffff; font-family: 'Lato', Helvetica, Arial, sans-serif; font-size: 18px; font-weight: 400; line-height: 25px;">
+    <p style="margin: 0;">Please respond to this inquiry as soon as possible.</p>
+  </td>
+</tr>
+{% endblock %} 

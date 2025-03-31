@@ -1,27 +1,33 @@
-"""Application entry point.
-
-This module exports the FastAPI application instance for use with uvicorn.
-"""
-
-from core.main import app
+"""Main application entry point with FastAPI initialization."""
 import logging
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-# Set up logger
+# Import the main application factory
+from main import app as main_app
+
+# Setup logger
 logger = logging.getLogger(__name__)
 
-# Add direct health check endpoints for container health monitoring
-@app.get("/health")
-@app.get("/healthcheck")
-@app.get("/api/healthcheck")
-async def health_check():
-    """Basic health check endpoint for container health monitoring.
-    
-    This endpoint always returns healthy and doesn't check any dependencies.
-    It's designed specifically for AWS ECS health checks.
-    """
-    logger.info("Health check endpoint hit")
-    return JSONResponse(content={"status": "healthy"})
+# Create a FastAPI application instance
+app = main_app
 
-# This file is referenced in the Docker CMD as "app:app"
-# It simply exports the FastAPI application instance from main.py 
+# No need to define health check endpoints here since they're already in main.py and router.py
+# This avoids route conflicts and makes the health check structure cleaner
+
+if __name__ == "__main__":
+    import uvicorn
+    import os
+    
+    # Get host and port from environment variables with defaults
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", 8000))
+    
+    # Start the Uvicorn server
+    uvicorn.run(
+        "app:app",
+        host=host,
+        port=port,
+        reload=True,
+        log_level="debug",
+    ) 

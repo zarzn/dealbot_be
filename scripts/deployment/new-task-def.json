@@ -1,13 +1,12 @@
 {
-  "family": "agentic-deals-tasks",
-  "executionRoleArn": "arn:aws:iam::586794462529:role/ecsTaskExecutionRole",
-  "taskRoleArn": "arn:aws:iam::586794462529:role/agentic-deals-task-role",
-  "networkMode": "awsvpc",
+  "taskDefinitionArn": "arn:aws:ecs:us-east-1:586794462529:task-definition/agentic-deals-tasks:67",
   "containerDefinitions": [
     {
       "name": "agentic-deals-app",
       "image": "586794462529.dkr.ecr.us-east-1.amazonaws.com/agentic-deals-backend:latest",
-      "essential": true,
+      "cpu": 1024,
+      "memory": 2048,
+      "memoryReservation": 1024,
       "portMappings": [
         {
           "containerPort": 8000,
@@ -17,7 +16,12 @@
           "appProtocol": "http"
         }
       ],
+      "essential": true,
       "environment": [
+        {
+          "name": "ALLOWED_ORIGINS",
+          "value": "*"
+        },
         {
           "name": "APP_ENVIRONMENT",
           "value": "production"
@@ -25,10 +29,6 @@
         {
           "name": "LOG_LEVEL",
           "value": "INFO"
-        },
-        {
-          "name": "ALLOWED_ORIGINS",
-          "value": "*"
         },
         {
           "name": "USE_PARAMETER_STORE",
@@ -39,6 +39,8 @@
           "value": "false"
         }
       ],
+      "mountPoints": [],
+      "volumesFrom": [],
       "secrets": [
         {
           "name": "POSTGRES_HOST",
@@ -111,18 +113,68 @@
         "retries": 3,
         "startPeriod": 150
       },
-      "cpu": 1024,
-      "memory": 2048,
-      "memoryReservation": 1024
+      "systemControls": []
     }
   ],
+  "family": "agentic-deals-tasks",
+  "taskRoleArn": "arn:aws:iam::586794462529:role/agentic-deals-task-role",
+  "executionRoleArn": "arn:aws:iam::586794462529:role/ecsTaskExecutionRole",
+  "networkMode": "awsvpc",
+  "revision": 67,
+  "volumes": [],
+  "status": "ACTIVE",
+  "requiresAttributes": [
+    {
+      "name": "ecs.capability.execution-role-awslogs"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.ecr-auth"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.docker-remote-api.1.21"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.task-iam-role"
+    },
+    {
+      "name": "ecs.capability.container-health-check"
+    },
+    {
+      "name": "ecs.capability.execution-role-ecr-pull"
+    },
+    {
+      "name": "ecs.capability.secrets.ssm.environment-variables"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+    },
+    {
+      "name": "ecs.capability.task-eni"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.docker-remote-api.1.29"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+    },
+    {
+      "name": "com.amazonaws.ecs.capability.docker-remote-api.1.19"
+    }
+  ],
+  "placementConstraints": [],
+  "compatibilities": [
+    "EC2",
+    "FARGATE"
+  ],
+  "runtimePlatform": {
+    "cpuArchitecture": "X86_64",
+    "operatingSystemFamily": "LINUX"
+  },
   "requiresCompatibilities": [
     "FARGATE"
   ],
   "cpu": "1024",
   "memory": "2048",
-  "runtimePlatform": {
-    "cpuArchitecture": "X86_64",
-    "operatingSystemFamily": "LINUX"
-  }
-} 
+  "registeredAt": "2025-03-31T11:21:06.984+08:00",
+  "registeredBy": "arn:aws:iam::586794462529:user/agentic-deals-deployment"
+}

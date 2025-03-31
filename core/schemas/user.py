@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, Any
 from uuid import UUID
 from pydantic import BaseModel, EmailStr
 
@@ -31,6 +31,18 @@ class UserResponse(UserBase):
     success_rate: float = 0.0
     total_tokens_spent: float = 0.0
     total_rewards_earned: float = 0.0
+
+    class Config:
+        """Pydantic config."""
+        from_attributes = True
+
+class UserInDB(UserBase):
+    """Model for user in database with password."""
+    password: str
+    id: UUID
+    created_at: datetime
+    updated_at: datetime
+    last_payment_at: Optional[datetime] = None
 
     class Config:
         """Pydantic config."""

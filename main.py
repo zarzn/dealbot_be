@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import configure_mappers
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.sql import text, select
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -22,11 +22,18 @@ import time
 import sys
 import asyncio
 from typing import Dict, Any, List, Optional, Union, Callable
+from fastapi.middleware.gzip import GZipMiddleware
 
 from core.config import settings
 from core.models.relationships import setup_relationships
-from core.database import async_engine, sync_engine
-from core.services.redis import get_redis_service
+from core.database import async_engine, sync_engine, init_db, check_db_connection
+from core.services.redis import get_redis_service, ping as redis_ping, close_redis
+from core.services.ai import get_ai_service
+from core.integrations.market_factory import MarketIntegrationFactory
+
+# Create our own setup_logging function since it doesn't exist in core.config
+# Remove the non-existent import
+# from core.config.logging_config import setup_logging
 
 # Configure environment-specific logging
 def setup_logging():
@@ -115,6 +122,9 @@ from core.api.v1.deals.share import router as deals_share_router
 from core.api.v1.deals.simple_share import router as simple_share_router
 from core.api.v1.shared import router as shared_content_router
 
+# Import contact router directly from the module
+from core.api.v1.contact.router import router as contact_router
+
 # Import websocket handlers
 from core.api.v1.notifications.websocket import handle_websocket
 from core.api.websocket import router as websocket_router
@@ -175,6 +185,15 @@ async def lifespan(app: FastAPI):
             logger.info("Periodic database connection cleanup task started")
         except Exception as e:
             logger.error(f"Failed to start database connection cleanup task: {str(e)}")
+        
+        # Initialize market integrations
+        try:
+            # Instead of calling a non-existent function, just create an instance
+            # of MarketIntegrationFactory which will initialize the base structures
+            market_factory = MarketIntegrationFactory()
+            logger.info("Market integrations factory initialized successfully")
+        except Exception as e:
+            logger.error(f"Market integrations initialization failed: {str(e)}")
         
         yield
     
@@ -465,6 +484,9 @@ def create_app() -> FastAPI:
         max_age=600,  # 10 minutes
     )
 
+    # Add GZip compression middleware
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
+
     # Setup other middleware
     @app.on_event("startup")
     async def startup_event():
@@ -474,11 +496,7 @@ def create_app() -> FastAPI:
         # Initialize AIService at startup to avoid race conditions later
         try:
             logger.info("Initializing AI service during application startup...")
-            from core.services.ai import get_ai_service
-            
-            # Set a timeout to prevent hanging during startup
-            ai_init_task = asyncio.create_task(get_ai_service())
-            ai_service = await asyncio.wait_for(ai_init_task, timeout=10.0)
+            ai_service = await get_ai_service()
             
             if ai_service is not None and getattr(ai_service, 'is_initialized', False):
                 logger.info("AI service initialized successfully during startup")
@@ -512,6 +530,54 @@ def create_app() -> FastAPI:
             },
         )
 
+    # Direct contact endpoint for bypassing router issues
+    @app.post("/api/v1/contact")
+    async def direct_contact_endpoint(request: Request):
+        """Direct contact form endpoint that bypasses router.
+        This is a fallback for the router-based endpoint.
+        """
+        logger.info("Direct contact endpoint called")
+        try:
+            # Get request body
+            body = await request.json()
+            
+            # Log the received data
+            logger.info(f"Contact form data received: {body}")
+            
+            # Process contact form
+            from core.services.email import send_contact_form_email
+            
+            success = await send_contact_form_email(
+                name=body.get("name", ""),
+                email=body.get("email", ""),
+                message=body.get("message", "")
+            )
+            
+            if not success:
+                logger.error(f"Failed to send contact form email from {body.get('email')}")
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "success": False,
+                        "message": "Failed to send contact form email. Please try again later."
+                    }
+                )
+                
+            return {
+                "success": True,
+                "message": "Your message has been sent. We'll get back to you soon!"
+            }
+        
+        except Exception as e:
+            logger.exception(f"Error processing contact form: {e}")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "message": "An error occurred while processing your contact form. Please try again later."
+                }
+            )
+
     # Include routers
     app.include_router(auth_router, prefix=f"{settings.API_V1_PREFIX}/auth", tags=["Authentication"])
     app.include_router(users_router, prefix=f"{settings.API_V1_PREFIX}/users", tags=["Users"])
@@ -519,6 +585,9 @@ def create_app() -> FastAPI:
     app.include_router(deals_router, prefix=f"{settings.API_V1_PREFIX}/deals", tags=["Deals"])
     app.include_router(deals_share_router, prefix=f"{settings.API_V1_PREFIX}/deals", tags=["Deals Sharing"])
     app.include_router(simple_share_router, prefix=f"{settings.API_V1_PREFIX}", tags=["Simple Sharing"])
+    
+    # Changed to directly use the contact_router imported from router module
+    app.include_router(contact_router, prefix=f"{settings.API_V1_PREFIX}/contact", tags=["Contact"])
 
     # Mount shared content router only at the API path
     app.include_router(shared_content_router, prefix=f"{settings.API_V1_PREFIX}", tags=["Shared Content"])
@@ -541,111 +610,46 @@ def create_app() -> FastAPI:
 
     @app.get("/")
     async def root():
-        """Root endpoint for health check"""
+        """Root endpoint for API information or redirection to documentation.
+        
+        In production, this endpoint shows a simple message.
+        In development, it redirects to the API documentation.
+        """
+        # Show a simple status response instead of using the missing SHOW_API_DOCS setting
         return {
             "status": "ok",
+            "message": "AI Agentic Deals API is running",
             "version": settings.APP_VERSION,
             "environment": str(settings.APP_ENVIRONMENT)
         }
 
-    # Add a root health endpoint that redirects to the API health endpoint
+    # Add health check endpoint directly in main.py
     @app.get("/health")
-    async def root_health_redirect():
-        """Root health endpoint that redirects to the API health endpoint"""
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url="/api/v1/health")
-
-    # Health endpoint moved to app.py which redirects to /api/v1/health/health
-
-    # Add a more comprehensive health check endpoint
-    @app.get("/api/v1/health")
-    async def api_health():
-        """API health check that verifies connectivity to dependencies.
+    async def health_check():
+        """Basic health check endpoint for AWS ECS health checks.
         
-        This endpoint checks database and Redis connectivity.
+        This endpoint always returns 200 OK status code with "healthy" status,
+        specifically designed for load balancer health checks.
         """
-        from core.database import get_async_db_context
-        from core.services.redis import get_redis_service
-        import time
-        
-        start_time = time.time()
-        health_status = {
-            "status": "healthy",
-            "checks": {
-                "database": {"status": "unknown", "message": "Not checked"},
-                "redis": {"status": "unknown", "message": "Not checked"},
-            },
-            "version": settings.APP_VERSION,
-            "environment": str(settings.APP_ENVIRONMENT),
-            "timestamp": start_time
-        }
-        
-        # Check database connection
-        try:
-            async with get_async_db_context() as db_session:
-                # Simple query to check database connectivity
-                result = await db_session.execute(text("SELECT 1"))
-                value = result.scalar()
-                
-                if value == 1:
-                    db_response_time = time.time() - start_time
-                    health_status["checks"]["database"] = {
-                        "status": "healthy",
-                        "message": "Connected successfully",
-                        "response_time_ms": round(db_response_time * 1000, 2)
-                    }
-                else:
-                    health_status["checks"]["database"] = {
-                        "status": "unhealthy",
-                        "message": "Database query failed"
-                    }
-                    health_status["status"] = "unhealthy"
-        except Exception as e:
-            health_status["checks"]["database"] = {
-                "status": "unhealthy",
-                "message": f"Database connection error: {str(e)}"
-            }
-            health_status["status"] = "unhealthy"
-        
-        # Check Redis connection
-        redis_start_time = time.time()
-        try:
-            redis = await get_redis_service()
-            ping_result = await redis.ping()
-            
-            redis_response_time = time.time() - redis_start_time
-            if ping_result:
-                health_status["checks"]["redis"] = {
-                    "status": "healthy",
-                    "message": "Connected successfully",
-                    "ping_time_ms": round(redis_response_time * 1000, 2)
-                }
-            else:
-                health_status["checks"]["redis"] = {
-                    "status": "unhealthy",
-                    "message": "Redis ping failed"
-                }
-                health_status["status"] = "unhealthy"
-        except Exception as e:
-            health_status["checks"]["redis"] = {
-                "status": "unhealthy",
-                "message": f"Redis connection error: {str(e)}"
-            }
-            health_status["status"] = "unhealthy"
-        
-        # Update total response time
-        health_status["response_time_ms"] = round((time.time() - start_time) * 1000, 2)
-        
-        return health_status
+        logger.info("Direct health check endpoint hit")
+        # Return a direct JSON response without any redirection
+        return JSONResponse(
+            content={"status": "healthy", "message": "Service is running"},
+            status_code=status.HTTP_200_OK
+        )
 
-    @app.get("/api/v1/health/health")
-    async def simple_api_health():
-        """Simple API health check that always returns healthy.
+    # Global exception handler for unhandled exceptions
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        """Global exception handler to catch and log unhandled exceptions."""
+        # Log the exception
+        logger.exception(f"Unhandled exception: {str(exc)}")
         
-        This is an alternative to the more comprehensive health check
-        and is useful for basic health monitoring.
-        """
-        return {"status": "healthy"}
+        # Return a generic error response
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "An unexpected error occurred. Please try again later."},
+        )
 
     return app
 

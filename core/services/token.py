@@ -432,12 +432,12 @@ class SolanaTokenService(ITokenService):
         # Check balance
         balance = await self.check_balance(user_id)
         
-        # Check if the user has enough balance (use token_cost instead of min_balance)
-        if balance < pricing.token_cost:
+        # Check if the user has enough balance
+        if balance < pricing.min_balance:
             raise TokenBalanceError(
-                f"Insufficient balance for operation. Required: {pricing.token_cost}, Available: {balance}",
+                f"Insufficient balance for operation. Required: {pricing.min_balance}, Available: {balance}",
                 available=balance,
-                required=pricing.token_cost
+                required=pricing.min_balance
             )
 
     async def validate_tokens(

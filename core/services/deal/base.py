@@ -26,6 +26,7 @@ from core.config import settings
 from core.services.token import TokenService
 from core.services.crawler import WebCrawler
 from core.services.redis import get_redis_service
+from .tracking import DealTrackingMixin  # Import the tracking mixin
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +38,12 @@ CACHE_TTL_PRICE_HISTORY = 86400  # 24 hours
 CACHE_TTL_SEARCH = 600  # 10 minutes
 
 
-class DealService(BaseService[Deal, Any, Any]):
+class DealService(BaseService[Deal, Any, Any], DealTrackingMixin):
     """Deal service for managing deal-related operations."""
     
     model_config = ConfigDict(arbitrary_types_allowed=True)
     model = Deal
+    _analysis_cache = {}  # In-memory cache for deal analysis when Redis is not available
     
     def __init__(self, session: AsyncSession, redis_service: Optional[Redis] = None):
         """Initialize the deal service.

@@ -526,13 +526,7 @@ async def get_promotion_service(
     db: AsyncSession = Depends(get_async_db_session),
     redis_service = Depends(get_redis_service)
 ) -> PromotionService:
-    """Get promotion service dependency.
-    
-    Args:
-        db: Database session
-        redis_service: Redis service
-        
-    Returns:
-        PromotionService instance
+    """
+    Dependency to get the promotion service with optimal session management.
     """
     return PromotionService(db, redis_service) 

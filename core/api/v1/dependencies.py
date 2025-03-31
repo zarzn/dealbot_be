@@ -21,6 +21,8 @@ from core.services.recommendation import RecommendationService
 from core.services.redis import get_redis_service
 from core.models.user import User
 from core.dependencies import get_optional_user, oauth2_scheme
+# Import get_optional_user as get_current_user_optional for compatibility
+from core.dependencies import get_optional_user as get_current_user_optional
 
 from core.repositories.market import MarketRepository
 from core.repositories.deal import DealRepository
@@ -54,104 +56,6 @@ async def get_auth_service(
     """Get authentication service instance."""
     from core.services.auth import AuthService
     return AuthService(db, redis_service)
-
-async def get_current_user_optional(
-    token: Optional[str] = Depends(oauth2_scheme_optional),
-    db: AsyncSession = Depends(get_db_session)
-) -> Optional[User]:
-    """Get current user if authenticated, otherwise return None."""
-    # Import at the top of the function to ensure the User model is always available
-    from core.models.user import User
-    from sqlalchemy import select
-    import uuid
-    from datetime import datetime
-    from core.models.enums import TokenType
-
-    logger.debug(f"get_current_user_optional called with token: {'Present' if token else 'None'}")
-
-    # Handle test tokens for debugging - simplified approach
-    if token and token == 'test':
-        logger.info("Using test token for authentication")
-        
-        # Find a user that has data in the system (goals, deals, etc.)
-        try:
-            # Try to find a user with goals
-            from core.models.goal import Goal
-            result = await db.execute(
-                select(Goal.user_id).distinct().limit(1)
-            )
-            user_with_data = result.scalar_one_or_none()
-            
-            if user_with_data:
-                # Use found user ID
-                test_user_id = user_with_data
-                logger.info(f"Found user with data: {test_user_id}")
-                
-                # Get the actual user from the database
-                stmt = select(User).where(User.id == test_user_id)
-                result = await db.execute(stmt)
-                existing_user = result.scalar_one_or_none()
-                
-                if existing_user:
-                    logger.info(f"Using existing user with ID: {test_user_id}")
-                    return existing_user
-            
-            # If we couldn't find or load a user, create a default test user
-            logger.info("Creating default test user")
-            test_user = User(
-                id=uuid.uuid4(),
-                email="test@example.com",
-                username="testuser",
-                full_name="Test User",
-                status="active",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
-                roles=["user"],
-            )
-            return test_user
-        except Exception as e:
-            logger.error(f"Error finding/creating test user: {str(e)}")
-            # Create a default test user on error
-            test_user = User(
-                id=uuid.uuid4(),
-                email="test@example.com",
-                username="testuser",
-                full_name="Test User",
-                status="active",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
-                roles=["user"],
-            )
-            return test_user
-
-    # Handle the case where token is None (no Authorization header)
-    if not token:
-        return None
-
-    # Get auth service and verify token
-    try:
-        # Import the auth service here to avoid circular imports
-        from core.services.auth import AuthService, get_jwt_secret_key, verify_token
-
-        # Verify the token
-        auth_service = get_auth_service()
-        try:
-            payload = await auth_service.verify_token(token, token_type=TokenType.ACCESS)
-            user_id = payload.get("sub")
-            user_data = payload.get("user_data", {})
-
-            # Query the database for the user
-            stmt = select(User).where(User.id == user_id)
-            result = await db.execute(stmt)
-            user = result.scalar_one_or_none()
-
-            return user
-        except Exception as e:
-            logger.warning(f"Error in get_current_user_optional: {e}")
-            return None
-    except Exception as e:
-        logger.warning(f"Error in get_current_user_optional: {e}")
-        return None
 
 async def get_token_service(db: AsyncSession = Depends(get_db_session)) -> TokenService:
     """Get token service instance."""
