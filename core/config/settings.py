@@ -209,7 +209,7 @@ class Settings(BaseSettings):
 
     # Security settings
     SECRET_KEY: SecretStr = Field(default="test-secret-key")
-    CORS_ORIGINS: List[str] = Field(default=["*", "https://d3irpl0o2ddv9y.cloudfront.net"])
+    CORS_ORIGINS: List[str] = Field(default=["https://rebaton.ai", "https://d3irpl0o2ddv9y.cloudfront.net"])
     SENSITIVE_HEADERS: Set[str] = Field(
         default={
             "authorization", "cookie", "x-api-key",

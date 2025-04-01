@@ -52,9 +52,9 @@ TEST_USER_EMAIL = "test@test.com"
 async def create_default_users():
     """Create default admin and test users if they don't exist."""
     logger.info("=== CREATING DEFAULT USERS ===")
-        logger.info("Connecting to database...")
-        
-        try:
+    logger.info("Connecting to database...")
+    
+    try:
         async with get_async_db_context() as session:
             logger.info("Checking if system admin user exists...")
             # Check if admin user exists
@@ -186,8 +186,8 @@ async def create_sample_deals():
             
             if not markets:
                 logger.warning("No markets found, skipping sample deals creation")
-            return
-        
+                return
+            
             market_dict = {market[1]: market[0] for market in markets}
             
             # Sample deals data
@@ -253,17 +253,17 @@ async def create_sample_deals():
                 deal_id = str(uuid.uuid4())
                 
                 # Insert deal
-        await session.execute(
-            text("""
+                await session.execute(
+                    text("""
                     INSERT INTO deals (
                         id, title, url, price, original_price, description, category, 
                         market_id, image_url, status, user_id, created_at, updated_at
-            ) VALUES (
+                    ) VALUES (
                         :id, :title, :url, :price, :original_price, :description, :category,
                         :market_id, :image_url, 'active', :user_id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-            )
-            """),
-            {
+                    )
+                    """),
+                    {
                         "id": deal_id,
                         "title": deal_data["title"],
                         "url": deal_data["url"],
@@ -407,25 +407,25 @@ async def create_initial_tokens():
             
             # Add initial tokens to test user
             logger.info("Adding initial tokens to test user...")
-        await session.execute(
-            text("""
-                INSERT INTO token_transactions (
-                    id, user_id, amount, meta_data, type, 
-                    status, created_at
-            ) VALUES (
-                    :id, :user_id, :amount, :meta_data, :type, 
-                    :status, CURRENT_TIMESTAMP
+            await session.execute(
+                text("""
+                    INSERT INTO token_transactions (
+                        id, user_id, amount, meta_data, type, 
+                        status, created_at
+                    ) VALUES (
+                        :id, :user_id, :amount, :meta_data, :type, 
+                        :status, CURRENT_TIMESTAMP
+                    )
+                    """),
+                    {
+                        "id": str(uuid.uuid4()),
+                        "user_id": user_id,
+                        "amount": 1000,
+                        "meta_data": json.dumps({"description": "Initial tokens allocation"}),
+                        "type": "credit",
+                        "status": "completed"
+                    }
                 )
-                """),
-                {
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "amount": 1000,
-                    "meta_data": json.dumps({"description": "Initial tokens allocation"}),
-                    "type": "credit",
-                    "status": "completed"
-                }
-            )
             
             # Add sample token transactions
             for i, (amount, trans_type, description) in enumerate([
@@ -443,9 +443,9 @@ async def create_initial_tokens():
                     ) VALUES (
                         :id, :user_id, :amount, :meta_data, :type, 
                         :status, :created_at
-            )
-            """),
-            {
+                    )
+                    """),
+                    {
                         "id": str(uuid.uuid4()),
                         "user_id": user_id,
                         "amount": amount,
@@ -453,10 +453,10 @@ async def create_initial_tokens():
                         "type": trans_type,
                         "status": "completed",
                         "created_at": datetime.utcnow() - timedelta(days=i+1)
-            }
-        )
-        
-        await session.commit()
+                    }
+                )
+            
+            await session.commit()
             logger.info("Initial tokens created successfully")
         
     except Exception as e:
@@ -488,8 +488,8 @@ async def run_initial_data_creation():
             logger.info("Step 5/5: Creating initial tokens...")
             await create_initial_tokens()
                 
-                logger.info("Initial data creation completed successfully")
-                return True
+            logger.info("Initial data creation completed successfully")
+            return True
     except Exception as e:
         logger.error(f"INITIAL DATA ERROR: Failed to create initial data: {str(e)}")
         raise

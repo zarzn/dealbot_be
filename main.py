@@ -479,8 +479,8 @@ def create_app() -> FastAPI:
         allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-        allow_headers=["*"],
-        expose_headers=["*"],
+        allow_headers=["Content-Type", "X-Amz-Date", "Authorization", "X-Api-Key", "X-Amz-Security-Token", "X-Requested-With"],
+        expose_headers=["Content-Type", "X-Amz-Date", "Authorization", "X-Api-Key", "X-Amz-Security-Token", "X-Requested-With"],
         max_age=600,  # 10 minutes
     )
 
@@ -513,22 +513,22 @@ def create_app() -> FastAPI:
     # Add OPTIONS handler for all routes
     @app.options("/{full_path:path}")
     async def options_handler(request: Request):
-        origin = request.headers.get("origin", "*")
-        # Ensure CloudFront domain is allowed
-        cloudfront_domain = "https://d3irpl0o2ddv9y.cloudfront.net"
+        """Handle OPTIONS requests with proper CORS headers.
         
-        # If origin is our CloudFront domain, use it specifically, otherwise use the settings
-        allowed_origin = origin if origin == cloudfront_domain or origin in settings.CORS_ORIGINS else "*"
+        This is a catch-all handler for OPTIONS requests to support CORS preflight
+        requests across the entire API.
+        """
+        # Get the origin from the request, or use the specific allowed origin
+        origin = request.headers.get("origin", "https://rebaton.ai")
         
-        return JSONResponse(
-            content={},
-            headers={
-                "Access-Control-Allow-Origin": allowed_origin,
-                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                "Access-Control-Allow-Headers": "*",
-                "Access-Control-Allow-Credentials": "true",
-            },
-        )
+        # Instead of using a wildcard, use the specific origin
+        headers = {
+            "Access-Control-Allow-Origin": origin if origin else "https://rebaton.ai",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "Content-Type, X-Amz-Date, Authorization, X-Api-Key, X-Amz-Security-Token, X-Requested-With",
+            "Access-Control-Allow-Credentials": "true",
+        }
+        return JSONResponse(content={"detail": "OK"}, headers=headers)
 
     # Direct contact endpoint for bypassing router issues
     @app.post("/api/v1/contact")
