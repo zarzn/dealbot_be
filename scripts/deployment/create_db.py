@@ -9,6 +9,7 @@ It's designed to be run as part of the container startup process.
 
 import os
 import sys
+import time
 import logging
 import psycopg2
 from psycopg2 import sql
@@ -21,6 +22,88 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("aws-db-creation")
+
+def terminate_database_connections(cursor, db_name, max_retries=5, wait_time=2):
+    """
+    Terminate all connections to the specified database with retry mechanism.
+    
+    Args:
+        cursor: Database cursor
+        db_name: Name of the database
+        max_retries: Maximum number of retries to terminate connections
+        wait_time: Time to wait between retries in seconds
+        
+    Returns:
+        bool: True if all connections were terminated, False otherwise
+    """
+    for attempt in range(max_retries):
+        try:
+            # Get current connection count
+            cursor.execute(
+                sql.SQL("""
+                SELECT COUNT(*) 
+                FROM pg_stat_activity 
+                WHERE pg_stat_activity.datname = %s
+                AND pid <> pg_backend_pid()
+                """),
+                (db_name,)
+            )
+            connection_count = cursor.fetchone()[0]
+            
+            if connection_count == 0:
+                logger.info(f"No active connections to '{db_name}' found.")
+                return True
+                
+            logger.info(f"Found {connection_count} active connections to '{db_name}'. Terminating...")
+            
+            # First, revoke connect permission to prevent new connections
+            cursor.execute(
+                sql.SQL("""
+                REVOKE CONNECT ON DATABASE {} FROM PUBLIC;
+                """).format(sql.Identifier(db_name))
+            )
+            
+            # Force close all connections
+            cursor.execute(
+                sql.SQL("""
+                SELECT pg_terminate_backend(pg_stat_activity.pid)
+                FROM pg_stat_activity
+                WHERE pg_stat_activity.datname = %s
+                AND pid <> pg_backend_pid()
+                """), 
+                (db_name,)
+            )
+            
+            # Wait a bit
+            time.sleep(wait_time)
+            
+            # Check if connections are still active
+            cursor.execute(
+                sql.SQL("""
+                SELECT COUNT(*) 
+                FROM pg_stat_activity 
+                WHERE pg_stat_activity.datname = %s
+                AND pid <> pg_backend_pid()
+                """),
+                (db_name,)
+            )
+            remaining_connections = cursor.fetchone()[0]
+            
+            if remaining_connections == 0:
+                logger.info(f"Successfully terminated all connections to '{db_name}'.")
+                return True
+            
+            logger.warning(f"Still {remaining_connections} connections active after attempt {attempt+1}. Retrying...")
+        
+        except Exception as e:
+            logger.error(f"Error while terminating connections: {str(e)}")
+        
+        # If we've reached here, we need to try again
+        time.sleep(wait_time)
+    
+    # If we've exhausted all retries
+    logger.error(f"Failed to terminate all connections to '{db_name}' after {max_retries} attempts.")
+    return False
 
 def create_or_reset_database():
     """Create the agentic_deals database if it doesn't exist or reset it if RESET_DB is true."""
@@ -59,17 +142,11 @@ def create_or_reset_database():
             if reset_db:
                 logger.info(f"DATABASE RESET: Database '{db_name}' exists and will be reset")
                 
-                # Terminate all connections to the database
+                # Terminate all connections to the database using the improved function
                 logger.info(f"DATABASE RESET: Terminating all connections to '{db_name}'...")
-                cursor.execute(
-                    sql.SQL("""
-                    SELECT pg_terminate_backend(pg_stat_activity.pid)
-                    FROM pg_stat_activity
-                    WHERE pg_stat_activity.datname = %s
-                    AND pid <> pg_backend_pid()
-                    """), 
-                    (db_name,)
-                )
+                if not terminate_database_connections(cursor, db_name):
+                    logger.error("Failed to terminate all database connections. Aborting reset.")
+                    return False
                 
                 # Drop the database
                 logger.info(f"DATABASE RESET: Dropping database '{db_name}'...")

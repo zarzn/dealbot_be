@@ -15,6 +15,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from langchain_core.prompts import PromptTemplate
 import time
+import copy
+import asyncio
 
 from core.models.deal import Deal
 from core.services.base import BaseService
@@ -199,10 +201,47 @@ class DealService(BaseService[Deal, Any, Any], DealTrackingMixin):
         4. Match new deals with user goals
         """
         from core.services.deal.search.monitoring import monitor_deals
-        try:
-            await monitor_deals(self)
-        except Exception as e:
-            logger.error(f"Error in deal monitoring: {str(e)}")
+        from core.database import get_async_db_context
+        
+        # Maximum number of retry attempts
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # Use a fresh database session for each monitoring run
+                # This ensures we don't use a stale or closed connection
+                async with get_async_db_context() as session:
+                    # Create a temporary service instance with the fresh session
+                    # This avoids issues with the existing session that might be closed or invalid
+                    temp_service = copy.copy(self)
+                    temp_service.db = session
+                    
+                    # Run the monitoring with the fresh database session
+                    logger.info("Starting scheduled deal monitoring")
+                    await monitor_deals(temp_service)
+                    logger.info("Scheduled deal monitoring completed successfully")
+                    
+                    # If successful, break out of the retry loop
+                    break
+                    
+            except Exception as e:
+                retry_count += 1
+                logger.error(f"Error during deal monitoring (attempt {retry_count}/{max_retries}): {str(e)}")
+                
+                if "connection is closed" in str(e).lower():
+                    logger.warning("Database connection was closed, retrying with new connection...")
+                    
+                    # Add a small delay before retrying to allow resources to clean up
+                    await asyncio.sleep(1)
+                    continue
+                    
+                # For other errors, just log and continue
+                logger.error(f"Unhandled error in deal monitoring: {str(e)}")
+                    
+                # If we've reached the maximum number of retries, log a critical error
+                if retry_count >= max_retries:
+                    logger.critical(f"Failed to complete deal monitoring after {max_retries} attempts")
 
     def _setup_rate_limiting(self) -> None:
         """Initialize rate limiting configuration"""

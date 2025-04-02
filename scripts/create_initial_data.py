@@ -154,7 +154,7 @@ async def create_default_markets():
                         "name": market_type.capitalize(),
                         "type": market_type,
                         "description": f"{market_type.capitalize()} marketplace",
-                        "config": json.dumps({'supported_categories': ['electronics', 'home', 'clothing', 'books']})
+                        "config": json.dumps({'supported_categories': ['electronics', 'home', 'fashion', 'books']})
                     }
                 )
             
@@ -200,7 +200,7 @@ async def create_sample_deals():
                     "description": "Industry-leading noise canceling with Dual Noise Sensor technology",
                     "category": "electronics",
                     "market_type": "amazon",
-                    "image_url": "https://example.com/images/sony-wh1000xm4.jpg",
+                    "image_url": "https://m.media-amazon.com/images/I/71o8Q5XJS5L._AC_SL1500_.jpg",
                 },
                 {
                     "title": "Nintendo Switch OLED Model",
@@ -210,7 +210,7 @@ async def create_sample_deals():
                     "description": "7-inch OLED screen, enhanced audio, and wide adjustable stand",
                     "category": "electronics",
                     "market_type": "bestbuy",
-                    "image_url": "https://example.com/images/nintendo-switch-oled.jpg",
+                    "image_url": "https://m.media-amazon.com/images/I/61dRkODwukL._SL1500_.jpg",
                 },
                 {
                     "title": "Keurig K-Elite Coffee Maker",
@@ -220,7 +220,7 @@ async def create_sample_deals():
                     "description": "Single serve coffee maker with strong brew and iced coffee settings",
                     "category": "home",
                     "market_type": "target",
-                    "image_url": "https://example.com/images/keurig-k-elite.jpg",
+                    "image_url": "https://m.media-amazon.com/images/I/81kQBmJ+JJL._AC_SL1500_.jpg",
                 },
                 {
                     "title": "Apple iPad Air 10.9-inch (2022)",
@@ -230,7 +230,7 @@ async def create_sample_deals():
                     "description": "10.9-inch Liquid Retina display with M1 chip",
                     "category": "electronics",
                     "market_type": "walmart",
-                    "image_url": "https://example.com/images/ipad-air.jpg",
+                    "image_url": "https://m.media-amazon.com/images/I/61XZQXFQeVL._AC_SL1500_.jpg",
                 },
                 {
                     "title": "Samsung 55-inch Class QLED 4K Smart TV",
@@ -240,7 +240,7 @@ async def create_sample_deals():
                     "description": "4K QLED display with Quantum HDR and Alexa Built-in",
                     "category": "electronics",
                     "market_type": "amazon",
-                    "image_url": "https://example.com/images/samsung-qled-tv.jpg",
+                    "image_url": "https://m.media-amazon.com/images/I/71LJJrKbezL._AC_SL1500_.jpg",
                 }
             ]
             
@@ -354,7 +354,7 @@ async def create_test_goals():
                 VALUES (
                     gen_random_uuid(), 
                     :user_id, 
-                    'clothing', 
+                    'fashion', 
                     'Running Shoes for Marathon Training', 
                     'Need comfortable running shoes for marathon training with good cushioning and support',
                     '{"size": "US 10", "type": "Long-distance running", "features": ["Good cushioning", "Support"], "max_price": 160.00, "target_price": 120.00}',
@@ -380,7 +380,7 @@ async def create_test_goals():
         raise
 
 async def create_initial_tokens():
-    """Create initial token transactions for test users."""
+    """Create initial token transactions for test users and set up token balance."""
     logger.info("=== CREATING INITIAL TOKENS ===")
     
     try:
@@ -390,8 +390,18 @@ async def create_initial_tokens():
             count = existing_tokens.scalar()
             
             if count > 0:
-                logger.info("Token transactions already exist, skipping...")
-                return
+                logger.info("Token transactions already exist, checking token balance...")
+                
+                # Check if balance exists and update if needed
+                balance_check = await session.execute(
+                    text(f"SELECT COUNT(*) FROM token_balances WHERE user_id = '{TEST_USER_ID}'")
+                )
+                balance_exists = balance_check.scalar()
+                
+                if balance_exists > 0:
+                    logger.info("Token balance record exists, skipping...")
+                    return
+                # If transactions exist but balance doesn't, continue to create balance
             
             # Get test user ID
             result = await session.execute(
@@ -405,59 +415,125 @@ async def create_initial_tokens():
             
             user_id = test_user[0]
             
-            # Add initial tokens to test user
-            logger.info("Adding initial tokens to test user...")
-            await session.execute(
+            # Calculate the total balance from transactions (if any)
+            balance_result = await session.execute(
                 text("""
-                    INSERT INTO token_transactions (
-                        id, user_id, amount, meta_data, type, 
-                        status, created_at
-                    ) VALUES (
-                        :id, :user_id, :amount, :meta_data, :type, 
-                        :status, CURRENT_TIMESTAMP
-                    )
-                    """),
-                    {
-                        "id": str(uuid.uuid4()),
-                        "user_id": user_id,
-                        "amount": 1000,
-                        "meta_data": json.dumps({"description": "Initial tokens allocation"}),
-                        "type": "credit",
-                        "status": "completed"
-                    }
-                )
+                    SELECT 
+                        COALESCE(SUM(CASE WHEN type = 'credit' THEN amount ELSE 0 END), 0) -
+                        COALESCE(SUM(CASE WHEN type = 'deduction' THEN amount ELSE 0 END), 0) as balance
+                    FROM token_transactions
+                    WHERE user_id = :user_id AND status = 'completed'
+                """),
+                {"user_id": user_id}
+            )
             
-            # Add sample token transactions
-            for i, (amount, trans_type, description) in enumerate([
-                (50, "deduction", "AI analysis of deal: Sony WH-1000XM4"),
-                (25, "deduction", "AI analysis of deal: iRobot Roomba"),
-                (100, "credit", "Referral bonus"),
-                (75, "deduction", "Market trend analysis"),
-                (200, "credit", "Monthly subscription bonus")
-            ]):
+            existing_balance = balance_result.scalar() or 0
+            
+            # Set the target balance - if no transactions, it will be 1000
+            target_balance = 1000
+            
+            if existing_balance < target_balance:
+                # Add initial tokens to test user if needed
+                logger.info(f"Adding initial tokens to test user (current balance: {existing_balance})...")
+                amount_to_add = target_balance - existing_balance
+                
+                if amount_to_add > 0:
+                    await session.execute(
+                        text("""
+                            INSERT INTO token_transactions (
+                                id, user_id, amount, meta_data, type, 
+                                status, created_at
+                            ) VALUES (
+                                :id, :user_id, :amount, :meta_data, :type, 
+                                :status, CURRENT_TIMESTAMP
+                            )
+                            """),
+                            {
+                                "id": str(uuid.uuid4()),
+                                "user_id": user_id,
+                                "amount": amount_to_add,
+                                "meta_data": json.dumps({"description": "Initial tokens allocation"}),
+                                "type": "credit",
+                                "status": "completed"
+                            }
+                        )
+                    logger.info(f"Added {amount_to_add} tokens to reach target balance of {target_balance}")
+                    
+                    # Adjust existing_balance for the token_balances table
+                    existing_balance = target_balance
+                
+                # Add sample token transactions if needed
+                if count == 0:
+                    for i, (amount, trans_type, description) in enumerate([
+                        (50, "deduction", "AI analysis of deal: Sony WH-1000XM4"),
+                        (25, "deduction", "AI analysis of deal: iRobot Roomba"),
+                        (100, "credit", "Referral bonus"),
+                        (75, "deduction", "Market trend analysis"),
+                        (200, "credit", "Monthly subscription bonus")
+                    ]):
+                        await session.execute(
+                            text("""
+                            INSERT INTO token_transactions (
+                                id, user_id, amount, meta_data, type, 
+                                status, created_at
+                            ) VALUES (
+                                :id, :user_id, :amount, :meta_data, :type, 
+                                :status, :created_at
+                            )
+                            """),
+                            {
+                                "id": str(uuid.uuid4()),
+                                "user_id": user_id,
+                                "amount": amount,
+                                "meta_data": json.dumps({"description": description}),
+                                "type": trans_type,
+                                "status": "completed",
+                                "created_at": datetime.utcnow() - timedelta(days=i+1)
+                            }
+                        )
+                        
+                        # Update running balance based on transactions
+                        if trans_type == "credit":
+                            existing_balance += amount
+                        else:
+                            existing_balance -= amount
+            
+            # Now create or update the token_balances record
+            balance_check = await session.execute(
+                text(f"SELECT id FROM token_balances WHERE user_id = '{user_id}'")
+            )
+            balance_record = balance_check.fetchone()
+            
+            if balance_record:
+                # Update existing balance record
                 await session.execute(
                     text("""
-                    INSERT INTO token_transactions (
-                        id, user_id, amount, meta_data, type, 
-                        status, created_at
-                    ) VALUES (
-                        :id, :user_id, :amount, :meta_data, :type, 
-                        :status, :created_at
-                    )
+                        UPDATE token_balances 
+                        SET balance = :balance, updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = :user_id
                     """),
                     {
-                        "id": str(uuid.uuid4()),
                         "user_id": user_id,
-                        "amount": amount,
-                        "meta_data": json.dumps({"description": description}),
-                        "type": trans_type,
-                        "status": "completed",
-                        "created_at": datetime.utcnow() - timedelta(days=i+1)
+                        "balance": existing_balance
                     }
                 )
+                logger.info(f"Updated token balance record with balance: {existing_balance}")
+            else:
+                # Create a new balance record
+                await session.execute(
+                    text("""
+                        INSERT INTO token_balances (user_id, balance, created_at, updated_at)
+                        VALUES (:user_id, :balance, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """),
+                    {
+                        "user_id": user_id,
+                        "balance": existing_balance
+                    }
+                )
+                logger.info(f"Created new token balance record with balance: {existing_balance}")
             
             await session.commit()
-            logger.info("Initial tokens created successfully")
+            logger.info("Initial tokens and balance setup completed successfully")
         
     except Exception as e:
         logger.error(f"Failed to create initial tokens: {str(e)}")
