@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 import logging
 from fastapi import status
@@ -38,11 +38,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.database import get_db, get_async_db_context
 from pydantic import BaseModel, ValidationError
 from core.models.enums import GoalStatus, GoalPriority
+from core.exceptions import NotFoundException, AnalyticsError
+from core.utils.logger import get_logger
 # Removed dependency import
 # Removed token dependency import
 
 # Set up logger
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Main router with authentication
 router = APIRouter(tags=["goals"])
@@ -115,7 +117,7 @@ async def get_goal_cost(
                     "min_price": 0,
                     "max_price": 100
                 },
-                "deadline": (datetime.now() + timedelta(days=30)).isoformat()
+                "deadline": (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
             }
         )
         
@@ -708,10 +710,18 @@ async def get_goal_analytics(
         description="Time range for analytics (1d, 7d, 30d, all)"
     ),
     analytics_service: AnalyticsService = Depends(get_analytics_service),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: Union[User, dict] = Depends(get_current_active_user)
 ):
     """Get analytics for a specific goal"""
     try:
+        # Ensure analytics_service is properly initialized
+        if not analytics_service:
+            logger.error("Analytics service not properly initialized")
+            raise HTTPException(
+                status_code=500, 
+                detail="Analytics service configuration error"
+            )
+            
         # Convert time range to datetime
         now = datetime.utcnow()
         ranges = {
@@ -722,14 +732,29 @@ async def get_goal_analytics(
         }
         start_date = ranges.get(time_range)
         
+        # Get user_id safely whether current_user is a dict or User object
+        user_id = current_user.id if hasattr(current_user, 'id') else current_user["id"]
+        
+        # Use the injected analytics_service - the service itself has been properly initialized
+        # with dependencies through get_analytics_service
         analytics = await analytics_service.get_goal_analytics(
             goal_id=goal_id,
-            user_id=current_user["id"],
+            user_id=user_id,
             start_date=start_date
         )
         return analytics
+    except NotFoundException as e:
+        logger.warning(f"Goal not found in get_goal_analytics: {str(e)}")
+        raise HTTPException(status_code=404, detail=f"Goal not found: {str(e)}")
+    except AnalyticsError as e:
+        logger.error(f"Analytics error in get_goal_analytics: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to get goal analytics: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error in get_goal_analytics: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"An unexpected error occurred while getting goal analytics: {str(e)}"
+        )
 
 @router.post("/{goal_id}/share", response_model=GoalShareResponse)
 async def share_goal(
@@ -737,28 +762,31 @@ async def share_goal(
     share_data: GoalShare,
     goal_service: GoalService = Depends(get_goal_service),
     token_service: TokenService = Depends(get_token_service),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: Union[User, dict] = Depends(get_current_active_user)
 ):
     """Share a goal with other users"""
     try:
+        # Get user_id safely whether current_user is a dict or User object
+        user_id = current_user.id if hasattr(current_user, 'id') else current_user["id"]
+        
         # Validate tokens before sharing
-        await validate_user_tokens(token_service, current_user["id"], "share_goal")
+        await validate_user_tokens(token_service, user_id, "share_goal")
         
         # Get the original goal data for token calculation
-        original_goal = await goal_service.get_goal(goal_id=goal_id, user_id=current_user["id"])
+        original_goal = await goal_service.get_goal(goal_id=goal_id, user_id=user_id)
         original_goal_dict = original_goal.model_dump() if hasattr(original_goal, "model_dump") else dict(original_goal)
         
         # Share goal
         share_result = await goal_service.share_goal(
             goal_id=goal_id,
-            user_id=current_user["id"],
+            user_id=user_id,
             share_with=share_data.share_with,
             permissions=share_data.permissions
         )
         
         # Deduct tokens using our dynamic pricing method
         await token_service.deduct_tokens_for_goal_operation(
-            user_id=current_user["id"],
+            user_id=user_id,
             operation="share_goal",
             original_goal=original_goal_dict,
             goal_service=goal_service
@@ -897,7 +925,7 @@ async def get_goals_progress(
         description="Time range for progress (1d, 7d, 30d, all)"
     ),
     analytics_service: AnalyticsService = Depends(get_analytics_service),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: Union[User, dict] = Depends(get_current_active_user)
 ):
     """Get progress analytics for all goals"""
     try:
@@ -911,25 +939,33 @@ async def get_goals_progress(
         }
         start_date = ranges.get(time_range)
         
+        # Get user_id safely whether current_user is a dict or User object
+        user_id = current_user.id if hasattr(current_user, 'id') else current_user["id"]
+        
+        # Use the injected analytics_service that's properly initialized with dependencies
         progress = await analytics_service.get_goals_progress(
-            user_id=current_user["id"],
+            user_id=user_id,
             start_date=start_date
         )
         return progress
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error in get_goals_progress: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to get goals progress: {str(e)}")
 
 @router.get("/{goal_id}/deals", response_model=dict)
 async def get_goal_deals(
     goal_id: UUID,
     goal_service: GoalService = Depends(get_goal_service),
     deal_service: DealService = Depends(get_deal_service),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: Union[User, dict] = Depends(get_current_active_user)
 ):
     """Get deals associated with a goal"""
     try:
+        # Get user_id safely whether current_user is a dict or User object
+        user_id = current_user.id if hasattr(current_user, 'id') else current_user["id"]
+        
         # Debug information
-        print(f"get_goal_deals: goal_id={goal_id}, user_id={current_user.id}")
+        print(f"get_goal_deals: goal_id={goal_id}, user_id={user_id}")
         
         # Verify the goal exists and belongs to the user
         try:
@@ -950,10 +986,10 @@ async def get_goal_deals(
                     print("In test environment, returning empty deals list instead of 404")
                     return {"items": []}
             else:
-                print(f"Goal {goal_id} exists, owner_id={goal_exists.user_id}, current_user.id={current_user.id}")
+                print(f"Goal {goal_id} exists, owner_id={goal_exists.user_id}, current_user.id={user_id}")
             
             # Now try to get the goal with user filter
-            goal = await goal_service.get_goal_by_id(goal_id, user_id=current_user.id)
+            goal = await goal_service.get_goal_by_id(goal_id, user_id=user_id)
         except Exception as e:
             print(f"Error getting goal: {str(e)}")
             # TEMPORARY - For testing only, return empty list instead of raising 404
@@ -979,15 +1015,18 @@ async def match_goal_deals(
     goal_id: UUID,
     goal_service: GoalService = Depends(get_goal_service),
     token_service: TokenService = Depends(get_token_service),
-    current_user: dict = Depends(get_current_active_user)
+    current_user: Union[User, dict] = Depends(get_current_active_user)
 ):
     """Match deals with a goal"""
     try:
+        # Get user_id safely whether current_user is a dict or User object
+        user_id = current_user.id if hasattr(current_user, 'id') else current_user["id"]
+        
         # Validate tokens before matching
-        await validate_user_tokens(token_service, current_user["id"], "match_goal")
+        await validate_user_tokens(token_service, user_id, "match_goal")
         
         # Get the original goal data for token calculation
-        original_goal = await goal_service.get_goal(goal_id=goal_id, user_id=current_user["id"])
+        original_goal = await goal_service.get_goal(goal_id=goal_id, user_id=user_id)
         original_goal_dict = original_goal.model_dump() if hasattr(original_goal, "model_dump") else dict(original_goal)
         
         # Match deals with goal
@@ -995,7 +1034,7 @@ async def match_goal_deals(
         
         # Deduct tokens using our dynamic pricing method
         await token_service.deduct_tokens_for_goal_operation(
-            user_id=current_user["id"],
+            user_id=user_id,
             operation="match_goal",
             original_goal=original_goal_dict,
             goal_service=goal_service
@@ -1035,14 +1074,17 @@ async def get_pricing_factors(
 @router.post("/create-test", response_model=dict)
 async def create_goal_test(
     goal_data: dict,
-    current_user: dict = Depends(get_current_active_user)
+    current_user: Union[User, dict] = Depends(get_current_active_user)
 ):
     """Test endpoint for creating goals to debug route issues."""
+    # Get user_id safely whether current_user is a dict or User object
+    user_id = current_user.id if hasattr(current_user, 'id') else current_user["id"]
+    
     logger.info(f"TEST ROUTE: create_goal_test endpoint called with data: {goal_data}")
     return {
         "message": "Test route works! This confirms the router is properly registered.",
         "data": goal_data,
-        "user_id": current_user["id"]
+        "user_id": user_id
     }
 
 # END OF FILE 

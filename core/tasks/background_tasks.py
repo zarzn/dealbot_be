@@ -19,27 +19,75 @@ async def periodic_database_cleanup():
     """
     Periodically clean up idle database connections to prevent connection pool exhaustion.
     
-    This task runs every 5 minutes to identify and close idle database connections.
+    This task runs every 2 minutes to identify and close idle database connections.
+    It's critical for preventing RDS connection slot exhaustion.
     """
+    # Initial cleanup delay after application start
+    initial_delay = 30  # Run first cleanup 30 seconds after startup
+    
+    # Set how frequently to run cleanup
+    cleanup_interval = 120  # Run every 2 minutes (reduced from 5 minutes)
+    
+    # Add jitter to avoid all instances running cleanup at the same time
+    import random
+    jitter = random.randint(0, 15)  # 0-15 seconds of jitter
+    
+    # Wait for initial startup delay with jitter
+    await asyncio.sleep(initial_delay + jitter)
+    
     while True:
         try:
-            # Sleep at the beginning to give the application time to start up
-            await asyncio.sleep(60)  # Wait a minute after startup before first run
-            
             logger.info("Starting periodic database connection cleanup")
+            
+            # Run the cleanup and log results
             connections_cleaned = await cleanup_idle_connections()
             
             if connections_cleaned > 0:
                 logger.info(f"Cleaned up {connections_cleaned} idle database connections")
             else:
                 logger.debug("No idle database connections to clean up")
+            
+            # Check database pool status for high utilization
+            try:
+                from core.database import async_engine
+                from core.config import settings
                 
-            # Wait 5 minutes before next cleanup
-            await asyncio.sleep(300)
+                # Check pool status
+                async_pool = async_engine.pool
+                size = async_pool.size()
+                checkedout = async_pool.checkedout()
+                checkedin = async_pool.checkedin()
+                overflow = async_pool.overflow()
+                
+                logger.info(f"DB Pool status: size={size}, checkedout={checkedout}, checkedin={checkedin}, overflow={overflow}")
+                
+                # If utilization is high, run cleanup more aggressively
+                max_connections = settings.DB_POOL_SIZE + settings.DB_MAX_OVERFLOW
+                if checkedout > max_connections * 0.7:
+                    logger.warning(f"High DB connection utilization: {checkedout}/{max_connections}")
+                    
+                    # If very high utilization, try more aggressive measures
+                    if checkedout > max_connections * 0.9:
+                        logger.critical(f"CRITICAL DB connection utilization: {checkedout}/{max_connections}")
+                        
+                        # Try to recycle the pool
+                        try:
+                            from core.utils.connection_monitor import safe_dispose_pool
+                            logger.warning("Attempting to safely dispose connection pool due to high utilization")
+                            await safe_dispose_pool(async_pool)
+                            logger.info("Successfully disposed connection pool")
+                        except Exception as pool_e:
+                            logger.error(f"Failed to dispose pool: {str(pool_e)}")
+            except Exception as status_e:
+                logger.error(f"Error checking pool status: {str(status_e)}")
+            
+            # Wait before next cleanup
+            await asyncio.sleep(cleanup_interval)
+            
         except Exception as e:
             logger.error(f"Error in periodic database cleanup task: {str(e)}")
             # Still wait before retry even if there was an error
-            await asyncio.sleep(300) 
+            await asyncio.sleep(cleanup_interval)
 
 @shared_task(
     bind=True,

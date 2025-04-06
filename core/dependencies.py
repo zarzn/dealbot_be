@@ -101,7 +101,9 @@ async def get_market_service(db: AsyncSession = Depends(get_db_session)) -> Mark
 
 async def get_deal_service(db: AsyncSession = Depends(get_db_session)) -> DealService:
     """Get deal service instance."""
-    return DealService(DealRepository(db))
+    service = DealService(session=db)
+    await service.initialize()
+    return service
 
 async def get_market_search_service(
     db: AsyncSession = Depends(get_db_session)

@@ -137,6 +137,7 @@ async def get_chat_analytics(
         }
         start_date = ranges.get(time_range)
         
+        # Use the injected analytics_service that's properly initialized with dependencies
         analytics = await analytics_service.get_chat_analytics(
             user_id=current_user.id,
             start_date=start_date
@@ -152,7 +153,8 @@ async def get_chat_analytics(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error in get_chat_analytics: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to get chat analytics: {str(e)}")
 
 @router.delete("/history")
 async def clear_chat_history(

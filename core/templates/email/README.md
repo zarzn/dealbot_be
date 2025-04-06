@@ -1,6 +1,6 @@
 # Email Template System
 
-This directory contains the email templates used throughout the AI Agentic Deals System.
+This directory contains the email templates used throughout the RebatOn platform.
 
 ## Structure
 

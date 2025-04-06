@@ -83,28 +83,78 @@ async def safe_dispose_pool(db_pool):
     Args:
         db_pool: The SQLAlchemy pool object to dispose
     """
+    logger.info("Starting safe pool disposal...")
+    
     try:
+        # Get current pool stats before disposal
+        stats_before = {
+            "size": db_pool.size(),
+            "checkedin": db_pool.checkedin(),
+            "checkedout": db_pool.checkedout(),
+            "overflow": db_pool.overflow()
+        }
+        logger.info(f"Pool stats before disposal: {stats_before}")
+        
         # Set the pool's pre_ping to False to avoid unnecessary checks during cleanup
         db_pool._pre_ping = False
         
-        # Close connections one by one instead of all at once
+        # Try to reclaim connections first
+        logger.info("Attempting to reclaim connections...")
+        await db_pool._reclaim()
+        logger.info("Connection reclaim completed")
+        
+        # Try disposing with a timeout
+        logger.info("Attempting pool disposal with timeout...")
+        
+        # Create a task for the disposal
+        dispose_task = asyncio.create_task(db_pool.dispose())
+        
+        # Wait with timeout
+        try:
+            await asyncio.wait_for(dispose_task, timeout=5.0)
+            logger.info("Pool disposal completed successfully with timeout")
+            return
+        except asyncio.TimeoutError:
+            logger.warning("Pool disposal timed out, trying alternate approach")
+            # Continue with alternate approach
+        
+        # Alternate approach: close connections one by one
+        logger.info("Trying connection-by-connection disposal...")
+        
+        # Get the current size for iteration
         size = db_pool.size()
+        logger.info(f"Closing {size} connections one by one")
+        
+        # Track successful closures
+        closed_count = 0
+        
+        # Close connections one by one
         for _ in range(size):
             try:
                 conn = await db_pool.connect()
                 await conn.close()
+                closed_count += 1
             except Exception as e:
                 logger.warning(f"Error closing individual connection: {str(e)}")
         
+        logger.info(f"Closed {closed_count}/{size} connections individually")
+        
         logger.info("Completed safer connection pool cleanup")
+        
     except Exception as e:
         logger.error(f"Error in safe_dispose_pool: {str(e)}")
+        # Even if we fail, try the standard dispose as a last resort
+        try:
+            await db_pool.dispose()
+            logger.info("Fallback standard pool disposal completed")
+        except Exception as fallback_e:
+            logger.error(f"Fallback pool disposal also failed: {str(fallback_e)}")
 
-async def monitor_database_connections(interval: int = 60):
+async def monitor_database_connections(interval: int = 30):
     """Continuously monitor database connections and log statistics.
     
     Args:
-        interval: Check interval in seconds
+        interval: Check interval in seconds (reduced from 60 to 30 seconds)
     """
     from core.database import async_engine, sync_engine, get_async_db_context
     
@@ -113,6 +163,12 @@ async def monitor_database_connections(interval: int = 60):
     # Get the engine instances directly
     async_engine_instance = async_engine
     sync_engine_instance = sync_engine
+    
+    # Tracking variables for consecutive high utilization counts
+    high_utilization_count = 0
+    
+    # Add some initial delay to allow system startup
+    await asyncio.sleep(20)
     
     while True:
         try:
@@ -132,17 +188,25 @@ async def monitor_database_connections(interval: int = 60):
                 }
                 logger.info(f"Sync pool status: size={sync_stats['size']}, checkedin={sync_stats['checkedin']}, checkedout={sync_stats['checkedout']}, overflow={sync_stats['overflow']}")
             
-            # If we detect a high utilization (>80% of max connections)
+            # If we detect a high utilization (>60% of max connections) - lowered from 70%
             max_connections = settings.DB_POOL_SIZE + settings.DB_MAX_OVERFLOW
-            if async_stats['checkedout'] > max_connections * 0.8:
+            if async_stats['checkedout'] > max_connections * 0.6:
                 logger.warning(f"High database connection utilization: {async_stats['checkedout']}/{max_connections} connections in use")
+                high_utilization_count += 1
                 
                 # Clean up idle connections
-                await close_idle_connections(async_pool)
+                if high_utilization_count >= 1:  # Trigger on first high utilization (reduced from 2)
+                    logger.warning("High connection utilization detected, closing idle connections")
+                    try:
+                        # More aggressive cleanup (30 second idle time) - reduced from 60 seconds
+                        await close_idle_connections(async_pool, idle_seconds=30)
+                    except Exception as e:
+                        logger.error(f"Error cleaning up idle connections: {str(e)}")
                 
                 # If we're still at high utilization, try to recover by disposing the pool
-                if async_stats['checkedout'] > max_connections * 0.9:
+                if async_stats['checkedout'] > max_connections * 0.8 or high_utilization_count >= 3:
                     logger.warning("Critical database connection utilization, disposing pool")
+                    high_utilization_count = 0  # Reset counter after taking action
                     
                     # Use our improved context manager to ensure we're in a proper async context
                     try:
@@ -156,6 +220,9 @@ async def monitor_database_connections(interval: int = 60):
                         logger.info("Pool disposed and will be recreated on next access")
                     except Exception as e:
                         logger.error(f"Error disposing pool: {str(e)}")
+            else:
+                # Reset counter if utilization is not high
+                high_utilization_count = 0
             
         except Exception as e:
             logger.error(f"Error monitoring database connections: {str(e)}")
@@ -165,5 +232,32 @@ async def monitor_database_connections(interval: int = 60):
 
 def start_connection_monitor():
     """Start the connection monitoring as a background task."""
-    asyncio.create_task(monitor_database_connections())
+    # Create the monitoring task
+    monitor_task = asyncio.create_task(
+        monitor_database_connections(),
+        name="db_connection_monitor"
+    )
+    
+    # Add error handling
+    def handle_monitor_exception(task):
+        try:
+            # Get the exception if the task failed
+            exc = task.exception()
+            if exc:
+                logger.error(f"Database connection monitor crashed with exception: {exc}")
+                # Restart the monitor
+                logger.info("Restarting database connection monitor...")
+                new_task = asyncio.create_task(
+                    monitor_database_connections(),
+                    name="db_connection_monitor_restarted"
+                )
+                new_task.add_done_callback(handle_monitor_exception)
+        except asyncio.CancelledError:
+            logger.info("Database connection monitor was cancelled")
+        except Exception as e:
+            logger.error(f"Error in monitor exception handler: {str(e)}")
+    
+    # Add the callback
+    monitor_task.add_done_callback(handle_monitor_exception)
+    
     logger.info("Database connection monitoring started") 

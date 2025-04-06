@@ -43,6 +43,12 @@ services:
     container_name: deals_backend
     env_file:
       - .env.development
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=12345678
+      - POSTGRES_HOST=deals_postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=agentic_deals
     ports:
       - "8000:8000"
     depends_on:

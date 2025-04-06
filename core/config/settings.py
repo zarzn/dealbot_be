@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     PASSWORD_RESET_TOKEN_EXPIRE_HOURS: int = Field(default=24)
 
     # Application settings
-    APP_NAME: str = Field(default="AI Agentic Deals", description="Application name")
+    APP_NAME: str = Field(default="RebatOn", description="Application name")
     APP_VERSION: str = Field(default="1.0.0", description="Application version")
     APP_ENVIRONMENT: str = Field(default="development", description="Application environment")
     APP_HOST: str = Field(default="0.0.0.0", description="Application host")
@@ -196,7 +196,7 @@ class Settings(BaseSettings):
     API_V1_PREFIX: str = Field(default="/api/v1")
     API_PREFIX: str = Field(default="/api/v1")
     API_VERSION: str = Field(default="v1")
-    API_TITLE: str = Field(default="AI Agentic Deals API")
+    API_TITLE: str = Field(default="RebatOn API")
     API_DESCRIPTION: str = Field(default="AI-powered deal monitoring system")
     API_DOCS_URL: str = Field(default="/docs")
     API_REDOC_URL: str = Field(default="/redoc")
@@ -205,11 +205,14 @@ class Settings(BaseSettings):
     API_DEBUG: bool = Field(default=False)
 
     # Site settings
-    SITE_URL: str = Field(default="http://localhost:3000", description="Frontend site URL")
+    SITE_URL: str = Field(
+        default="http://localhost:3000", 
+        description="Frontend site URL, overridden by environment variable in production"
+    )
 
     # Security settings
     SECRET_KEY: SecretStr = Field(default="test-secret-key")
-    CORS_ORIGINS: List[str] = Field(default=["https://rebaton.ai", "https://d3irpl0o2ddv9y.cloudfront.net"])
+    CORS_ORIGINS: List[str] = Field(default=["https://rebaton.ai", "https://d3irpl0o2ddv9y.cloudfront.net", "http://localhost:3000"])
     SENSITIVE_HEADERS: Set[str] = Field(
         default={
             "authorization", "cookie", "x-api-key",
@@ -290,12 +293,12 @@ class Settings(BaseSettings):
 
     # Email settings
     EMAIL_TEMPLATES_DIR: str = str(_BASE_DIR / "core" / "templates" / "email")
-    EMAIL_SUBJECT_PREFIX: str = Field(default="[AI Agentic Deals]")
-    EMAIL_SENDER_NAME: str = Field(default="AI Agentic Deals")
-    EMAIL_SENDER_ADDRESS: str = Field(default="noreply@aideals.com")
-    EMAIL_FROM: str = Field(default="AI Agentic Deals <noreply@aideals.com>")
-    CONTACT_EMAIL: str = Field(default="contact@aideals.com")
-    ADMIN_EMAIL: str = Field(default="admin@aideals.com")
+    EMAIL_SUBJECT_PREFIX: str = Field(default="[RebatOn]")
+    EMAIL_SENDER_NAME: str = Field(default="RebatOn")
+    EMAIL_SENDER_ADDRESS: str = Field(default="noreply@rebaton.ai")
+    EMAIL_FROM: str = Field(default="RebatOn <noreply@rebaton.ai>")
+    CONTACT_EMAIL: str = Field(default="contact@rebaton.ai")
+    ADMIN_EMAIL: str = Field(default="admin@rebaton.ai")
     EMAIL_BACKEND: str = Field(
         default="core.services.email.backends.console.ConsoleEmailBackend",
         description="Email backend class"
@@ -764,6 +767,16 @@ class Settings(BaseSettings):
             values['hosts'] = ["localhost"]
         
         return values
+
+    @model_validator(mode='after')
+    def set_environment_specific_values(self) -> 'Settings':
+        """Set environment-specific values after validation."""
+        # Set environment-specific CORS settings
+        if self.APP_ENVIRONMENT.lower() == "development":
+            # In development, use wildcard for CORS
+            self.CORS_ORIGINS = ["*"]
+        
+        return self
 
     class Config:
         """Pydantic model configuration."""

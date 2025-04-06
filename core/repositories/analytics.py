@@ -425,7 +425,7 @@ class AnalyticsRepository:
             )
 
     async def get_dashboard_metrics(self, user_id: UUID) -> Dict[str, Any]:
-        """Get real dashboard metrics for a user.
+        """Get dashboard metrics for a user.
         
         Args:
             user_id: The UUID of the user
@@ -437,12 +437,15 @@ class AnalyticsRepository:
             DatabaseError: If there is an error retrieving metrics
         """
         try:
+            # Initialize repositories
             from core.repositories.token import TokenRepository
-            from core.repositories.deal import DealRepository
+            from core.repositories.deal import DealRepository 
             from core.repositories.goal import GoalRepository
             from core.services.goal import GoalService
+            from core.models.deal import Deal, DealStatus
+            from core.models.goal import Goal
+            from datetime import datetime, timezone, timedelta
             
-            # Initialize repositories
             token_repo = TokenRepository(self.session)
             deal_repo = DealRepository(self.session)
             goal_repo = GoalRepository(self.session)
@@ -454,16 +457,27 @@ class AnalyticsRepository:
             token_balance = await token_repo.get_user_balance(str(user_id))
             balance_value = float(token_balance.balance) if token_balance else 0.0
             
-            # Get token transactions for history
-            token_transactions = await token_repo.get_user_transactions(
+            # Calculate the first day of the current month for "spent this month" calculation
+            now = datetime.now(timezone.utc)
+            first_day_of_month = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+            
+            # Get token transactions for history (limited to 10 most recent for display)
+            recent_token_transactions = await token_repo.get_user_transactions(
                 str(user_id),
                 limit=10,
                 offset=0
             )
             
-            # Process token history
+            # Get all transactions for the current month (for accurate "spent this month" calculation)
+            monthly_token_transactions = await token_repo.get_user_transactions(
+                str(user_id),
+                start_date=first_day_of_month,
+                end_date=now
+            )
+            
+            # Process token history for display
             token_history = []
-            for tx in token_transactions:
+            for tx in recent_token_transactions:
                 token_history.append({
                     "date": tx.created_at.isoformat(),
                     "amount": float(tx.amount),
@@ -471,9 +485,14 @@ class AnalyticsRepository:
                     "category": tx.type.lower()
                 })
             
-            # Calculate token spent/earned from transactions
-            tokens_spent = sum(float(tx.amount) for tx in token_transactions if tx.amount < 0)
-            tokens_earned = sum(float(tx.amount) for tx in token_transactions if tx.amount > 0)
+            # Calculate token spent/earned from monthly transactions
+            tokens_spent = sum(float(tx.amount) for tx in monthly_token_transactions if tx.amount < 0)
+            tokens_earned = sum(float(tx.amount) for tx in monthly_token_transactions if tx.amount > 0)
+            
+            # Log the transactions found for debugging
+            logger.debug(f"Found {len(monthly_token_transactions)} transactions for the current month")
+            logger.debug(f"Total spent this month: {tokens_spent}")
+            logger.debug(f"Total earned this month: {tokens_earned}")
             
             # Get deals statistics
             # Note: This assumes methods exist in DealRepository - modify as needed

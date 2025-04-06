@@ -59,6 +59,7 @@ from core.models.token import Token
 from core.models.chat_context import ChatContext
 from core.utils.auth import create_token
 from core.models.enums import UserStatus, TokenType, TokenStatus, TokenScope, TokenTransactionType, BalanceChangeType
+from core.models.user_metadata import UserMetadata
 
 # Import UserPreferences for backward compatibility
 from core.models.user_preferences import UserPreferences
@@ -292,6 +293,9 @@ class User(Base):
         .scalar_subquery()
         .cast(Numeric(18, 8))  # Cast to NUMERIC(18,8) to maintain precision
     )
+
+    # Add relationship to UserMetadata
+    user_metadata = relationship("UserMetadata", back_populates="user", cascade="all, delete-orphan")
 
     # Relationships
     goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")

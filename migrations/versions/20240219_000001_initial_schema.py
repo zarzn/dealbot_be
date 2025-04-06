@@ -257,6 +257,23 @@ def upgrade() -> None:
         """))
         logger.info("Users table created")
 
+        # Create user_metadata table
+        logger.info("Creating user_metadata table...")
+        conn.execute(text("""
+            CREATE TABLE user_metadata (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                key VARCHAR(255) NOT NULL,
+                value VARCHAR(1024) NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX ix_user_metadata_user_id ON user_metadata(user_id);
+            CREATE INDEX ix_user_metadata_key ON user_metadata(key);
+            CREATE INDEX ix_user_metadata_user_key ON user_metadata(user_id, key);
+        """))
+        logger.info("User_metadata table created")
+
         # Create auth_tokens table
         logger.info("Creating auth_tokens table...")
         conn.execute(text("""
@@ -956,6 +973,11 @@ def upgrade() -> None:
                 FOR EACH ROW
                 EXECUTE FUNCTION update_updated_at_column();
 
+            CREATE TRIGGER update_user_metadata_updated_at
+                BEFORE UPDATE ON user_metadata
+                FOR EACH ROW
+                EXECUTE FUNCTION update_updated_at_column();
+
             CREATE TRIGGER update_goals_updated_at
                 BEFORE UPDATE ON goals
                 FOR EACH ROW
@@ -1201,6 +1223,7 @@ def downgrade() -> None:
             DROP TRIGGER IF EXISTS update_users_updated_at ON users;
             DROP TRIGGER IF EXISTS update_auth_tokens_updated_at ON auth_tokens;
             DROP TRIGGER IF EXISTS update_markets_updated_at ON markets;
+            DROP TRIGGER IF EXISTS update_user_metadata_updated_at ON user_metadata;
             DROP TRIGGER IF EXISTS update_goals_updated_at ON goals;
             DROP TRIGGER IF EXISTS update_deals_updated_at ON deals;
             DROP TRIGGER IF EXISTS update_deal_tokens_updated_at ON deal_tokens;
@@ -1232,7 +1255,7 @@ def downgrade() -> None:
         # Drop tables in reverse order
         logger.info("Dropping tables...")
         tables = [
-            'share_views', 'shared_contents', 'agents', 'chat_messages', 'chats', 'chat_contexts', 'user_preferences', 'price_histories',
+            'share_views', 'shared_contents', 'agents', 'chat_messages', 'chats', 'chat_contexts', 'user_preferences', 'user_metadata', 'price_histories',
             'token_pricing', 'token_balance_history', 'token_transactions',
             'token_balances', 'wallet_transactions', 'token_wallets', 'deal_scores', 'deal_interactions', 'tracked_deals', 'notifications', 
             'deal_tokens', 'deals', 'goals', 'markets', 'auth_tokens', 'users', 'price_trackers', 'price_predictions'

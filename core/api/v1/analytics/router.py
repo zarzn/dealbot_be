@@ -67,7 +67,7 @@ async def get_dashboard_metrics(
 async def get_performance_metrics(
     timeframe: str = Query("weekly", description="Timeframe for metrics (daily, weekly, monthly)"),
     current_user: dict = Depends(get_current_active_user),
-    analytics_service = Depends(get_analytics_service)
+    analytics_service: AnalyticsService = Depends(get_analytics_service)
 ):
     """
     Get performance metrics for the current user.
@@ -90,14 +90,14 @@ async def get_performance_metrics(
         if not isinstance(user_id, UUID):
             user_id = UUID(str(user_id))
         
-        # Get metrics from service
+        # Use the injected analytics_service that's properly initialized with dependencies
         metrics = await analytics_service.get_performance_metrics(user_id, timeframe)
         
         return metrics
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching performance metrics: {str(e)}")
+        logger.error(f"Error in get_performance_metrics: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching performance metrics: {str(e)}")
 
 @router.get("/tokens/usage", response_model=Dict[str, Any])

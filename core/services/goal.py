@@ -2007,7 +2007,7 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         """
         try:
             logger.info("Checking for expired goals")
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)  # Make now timezone-aware with UTC
             
             # Find all active goals with a deadline in the past
             expired_goals_query = select(GoalModel).where(
@@ -2068,7 +2068,7 @@ class GoalService(BaseService[GoalModel, GoalCreate, GoalUpdate]):
         """
         try:
             logger.info(f"Checking for goals with deadlines approaching in the next {days_threshold} days")
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)  # Make now timezone-aware with UTC
             
             # Calculate date thresholds
             approaching_date = now + timedelta(days=days_threshold)

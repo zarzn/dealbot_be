@@ -1,6 +1,6 @@
-# AI Agentic Deals System - Backend
+# RebatOn - Backend
 
-This repository contains the backend component of the AI Agentic Deals System, a platform for scraping, analyzing, and presenting deal opportunities using AI capabilities.
+This repository contains the backend component of the RebatOn platform, a system for scraping, analyzing, and presenting deal opportunities using AI capabilities.
 
 ## Documentation
 
@@ -30,8 +30,8 @@ Comprehensive documentation for the backend is available in the `docs` folder:
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/ai-agentic-deals.git
-   cd ai-agentic-deals
+   git clone https://github.com/yourusername/rebaton.git
+   cd rebaton
    ```
 
 2. Set up a virtual environment:
@@ -128,4 +128,4 @@ For detailed information on implementing WebSocket clients and servers, see the 
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details.

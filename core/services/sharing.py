@@ -280,6 +280,8 @@ class SharingService:
         
         # Construct the shareable link with the frontend path structure instead of API path
         # Using frontend route instead of API endpoint for better user experience
+        # Ensure base_url doesn't have trailing slash to avoid double slashes
+        base_url = base_url.rstrip('/')
         shareable_link = f"{base_url}/shared-deal/{share_id}"
         
         # Log the generated link for debugging

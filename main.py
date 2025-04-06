@@ -164,23 +164,64 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to initialize Redis: {str(e)} - continuing without Redis")
         
-        # Start database connection monitoring
+        # Configure database connection pool settings for RDS
         try:
+            logger.info("Configuring database connection pool...")
+            
+            # Test database connection to verify connectivity
+            logger.info("Testing database connection...")
+            from core.database import check_db_connection
+            
+            db_connected = await check_db_connection()
+            if db_connected:
+                logger.info("Database connection test successful")
+            else:
+                logger.error("Database connection test failed")
+                # Continue anyway to let the application try to recover
+            
+            # Start database connection monitoring
             logger.info("Starting database connection monitoring...")
             from core.utils.connection_monitor import start_connection_monitor
             
             # Start connection monitoring
             start_connection_monitor()
-            
             logger.info("Database connection monitoring started")
+            
         except Exception as e:
-            logger.error(f"Failed to start database connection monitoring: {str(e)}")
+            logger.error(f"Failed to configure database connection pool: {str(e)}")
             
         # Start periodic database cleanup task to prevent connection pool exhaustion
         try:
             logger.info("Starting periodic database connection cleanup task...")
             # Create and start the periodic cleanup task
-            cleanup_task = asyncio.create_task(periodic_database_cleanup())
+            from core.tasks.background_tasks import periodic_database_cleanup
+            cleanup_task = asyncio.create_task(
+                periodic_database_cleanup(),
+                name="db_periodic_cleanup"
+            )
+            
+            # Add error handling to restart the task if it fails
+            def handle_cleanup_exception(task):
+                try:
+                    exc = task.exception()
+                    if exc:
+                        logger.error(f"Database cleanup task crashed with exception: {exc}")
+                        # Restart the task
+                        logger.info("Restarting database cleanup task...")
+                        new_task = asyncio.create_task(
+                            periodic_database_cleanup(),
+                            name="db_periodic_cleanup_restarted"
+                        )
+                        new_task.add_done_callback(handle_cleanup_exception)
+                        background_tasks.append(new_task)
+                except asyncio.CancelledError:
+                    logger.info("Database cleanup task was cancelled")
+                except Exception as e:
+                    logger.error(f"Error in cleanup exception handler: {str(e)}")
+            
+            # Add the callback
+            cleanup_task.add_done_callback(handle_cleanup_exception)
+            
             background_tasks.append(cleanup_task)
             logger.info("Periodic database connection cleanup task started")
         except Exception as e:
@@ -213,11 +254,9 @@ async def lifespan(app: FastAPI):
                 try:
                     await task
                 except asyncio.CancelledError:
-                    logger.info(f"Background task {task.get_name()} cancelled")
+                    logger.info(f"Background task {task.get_name() if hasattr(task, 'get_name') else 'unknown'} cancelled")
                 except Exception as e:
                     logger.error(f"Error cancelling background task: {str(e)}")
-        
-        # Clean up database connections - this will be handled by the engine.dispose() calls
         
         # Close Redis connections
         try:
@@ -233,6 +272,20 @@ async def lifespan(app: FastAPI):
                 logger.error(f"Error closing Redis connections: {str(e)}")
         except Exception as e:
             logger.error(f"Exception accessing Redis service during shutdown: {str(e)}")
+        
+        # Aggressively clean up database connections before exit
+        try:
+            logger.info("Aggressively cleaning up database connections before shutdown...")
+            from core.database import cleanup_all_connections
+            
+            try:
+                await cleanup_all_connections()
+                logger.info("Completed aggressive database connection cleanup during shutdown")
+            except Exception as cleanup_error:
+                logger.error(f"Error during final connection cleanup: {str(cleanup_error)}")
+                
+        except Exception as e:
+            logger.error(f"Error in final database cleanup: {str(e)}")
         
         # Close database connections
         try:
@@ -288,23 +341,23 @@ def create_app() -> FastAPI:
         try:
             # Debug log all request parameters
             logger.warning(f"PUBLIC DEALS ENDPOINT ACCESSED: page={page}, page_size={page_size}, category={category}, price_min={price_min}, price_max={price_max}, sort_by={sort_by}")
-            
+
             # Create direct database session without dependencies
             from sqlalchemy.ext.asyncio import AsyncSession
             from core.models.deal import Deal, DealResponse
             from core.models.enums import DealStatus
-            
+
             async with AsyncSession(async_engine) as db:
                 try:
                     # Build query
                     offset = (page - 1) * page_size
-                    
+
                     # Build the SQL query explicitly
                     stmt = select(Deal).where(
                         Deal.is_active == True,
                         Deal.status == DealStatus.ACTIVE.value.lower()
                     )
-                    
+
                     # Apply filters if provided
                     if category:
                         stmt = stmt.where(Deal.category == category)
@@ -312,7 +365,7 @@ def create_app() -> FastAPI:
                         stmt = stmt.where(Deal.price >= price_min)
                     if price_max is not None:
                         stmt = stmt.where(Deal.price <= price_max)
-                        
+
                     # Apply sorting
                     if sort_by == "price_asc":
                         stmt = stmt.order_by(Deal.price.asc())
@@ -320,19 +373,19 @@ def create_app() -> FastAPI:
                         stmt = stmt.order_by(Deal.price.desc())
                     else:
                         stmt = stmt.order_by(Deal.created_at.desc())
-                        
+
                     # Apply pagination
                     stmt = stmt.offset(offset).limit(page_size)
-                    
+
                     # Log the SQL being executed
                     logger.warning(f"PUBLIC DEALS SQL: {str(stmt)}")
-                    
+
                     # Execute query
                     result = await db.execute(stmt)
                     deals = result.scalars().all()
-                    
+
                     logger.warning(f"Found {len(deals)} public deals")
-                    
+
                     # Convert to response model and return
                     response_deals = []
                     for deal in deals:
@@ -366,7 +419,7 @@ def create_app() -> FastAPI:
                             logger.warning(f"Error converting deal to response model: {str(conversion_error)}")
                             # Skip this deal and continue with others
                             continue
-                    
+
                     # If we have no real deals and are in development mode, generate mock deals
                     if len(response_deals) == 0 and os.environ.get("ENVIRONMENT", "development") == "development":
                         logger.warning("No deals found, generating mock deals for development")
@@ -374,7 +427,7 @@ def create_app() -> FastAPI:
                         from uuid import uuid4
                         from datetime import datetime, timedelta
                         import random
-                        
+
                         # Generate 10 mock deals
                         for i in range(10):
                             created_time = datetime.now() - timedelta(days=random.randint(1, 30))
@@ -382,11 +435,11 @@ def create_app() -> FastAPI:
                             categories = ["electronics", "home", "fashion", "books", "sports"]
                             # Choose from valid source types
                             sources = ["amazon", "walmart", "ebay", "manual", "api"]
-                            
+
                             # Create price history for the mock deal
                             historical_price = Decimal(random.uniform(600, 1000)).quantize(Decimal('0.01'))
                             current_price = Decimal(random.uniform(50, 500)).quantize(Decimal('0.01'))
-                            
+
                             price_history = [
                                 {
                                     "price": float(historical_price),
@@ -401,7 +454,7 @@ def create_app() -> FastAPI:
                                     "source": "current"
                                 }
                             ]
-                            
+
                             mock_deal = DealResponse(
                                 id=str(uuid4()),
                                 title=f"Mock Deal {i+1}",
@@ -441,9 +494,9 @@ def create_app() -> FastAPI:
                                 }
                             )
                             response_deals.append(mock_deal)
-                        
+
                     logger.warning(f"Returning {len(response_deals)} public deals")
-                    
+
                     # Explicitly commit the transaction (although it's a read-only operation)
                     await db.commit()
                     return response_deals
@@ -452,7 +505,7 @@ def create_app() -> FastAPI:
                     await db.rollback()
                     logger.error(f"Database error in public deals endpoint: {str(db_error)}", exc_info=True)
                     raise
-                
+
         except Exception as e:
             logger.error(f"Error in get_public_deals: {str(e)}", exc_info=True)
             # Return empty list instead of an error to avoid breaking the UI
@@ -468,12 +521,17 @@ def create_app() -> FastAPI:
         except (TypeError, ValueError):
             # Fallback to safe default
             cors_origins = ["*"]
-    
-    # Ensure CloudFront domain is in the list
-    cloudfront_domain = "https://d3irpl0o2ddv9y.cloudfront.net"
-    if cloudfront_domain not in cors_origins:
-        cors_origins.append(cloudfront_domain)
-            
+
+    # In development environment, use wildcard for easier local development
+    if settings.APP_ENVIRONMENT.lower() == "development":
+        logger.info("Development environment detected, using localhost origins for CORS")
+        cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000", "https://localhost:3000"]
+    else:
+        # In production, ensure CloudFront domain is in the list
+        cloudfront_domain = "https://d3irpl0o2ddv9y.cloudfront.net"
+        if cloudfront_domain not in cors_origins:
+            cors_origins.append(cloudfront_domain)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -492,17 +550,17 @@ def create_app() -> FastAPI:
     async def startup_event():
         # Set up middleware first
         await setup_middleware(app)
-        
+
         # Initialize AIService at startup to avoid race conditions later
         try:
             logger.info("Initializing AI service during application startup...")
             ai_service = await get_ai_service()
-            
+
             if ai_service is not None and getattr(ai_service, 'is_initialized', False):
                 logger.info("AI service initialized successfully during startup")
             else:
                 logger.warning("AI service initialization returned None or uninitialized instance")
-                
+
         except asyncio.TimeoutError:
             logger.error("AI service initialization timed out - continuing without AI service")
         except Exception as e:
@@ -518,16 +576,25 @@ def create_app() -> FastAPI:
         This is a catch-all handler for OPTIONS requests to support CORS preflight
         requests across the entire API.
         """
-        # Get the origin from the request, or use the specific allowed origin
-        origin = request.headers.get("origin", "https://rebaton.ai")
-        
-        # Instead of using a wildcard, use the specific origin
-        headers = {
-            "Access-Control-Allow-Origin": origin if origin else "https://rebaton.ai",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-            "Access-Control-Allow-Headers": "Content-Type, X-Amz-Date, Authorization, X-Api-Key, X-Amz-Security-Token, X-Requested-With",
-            "Access-Control-Allow-Credentials": "true",
-        }
+        # In development mode, use wildcard for easier local development
+        if settings.APP_ENVIRONMENT.lower() == "development":
+            # Get the origin from the request, defaulting to localhost:3000
+            origin = request.headers.get("origin", "http://localhost:3000")
+            headers = {
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "Content-Type, X-Amz-Date, Authorization, X-Api-Key, X-Amz-Security-Token, X-Requested-With",
+                "Access-Control-Allow-Credentials": "true",
+            }
+        else:
+            # In production, get the origin from the request, or use the specific allowed origin
+            origin = request.headers.get("origin", "https://rebaton.ai")
+            headers = {
+                "Access-Control-Allow-Origin": origin if origin else "https://rebaton.ai",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "Content-Type, X-Amz-Date, Authorization, X-Api-Key, X-Amz-Security-Token, X-Requested-With",
+                "Access-Control-Allow-Credentials": "true",
+            }
         return JSONResponse(content={"detail": "OK"}, headers=headers)
 
     # Direct contact endpoint for bypassing router issues
@@ -540,19 +607,19 @@ def create_app() -> FastAPI:
         try:
             # Get request body
             body = await request.json()
-            
+
             # Log the received data
             logger.info(f"Contact form data received: {body}")
-            
+
             # Process contact form
             from core.services.email import send_contact_form_email
-            
+
             success = await send_contact_form_email(
                 name=body.get("name", ""),
                 email=body.get("email", ""),
                 message=body.get("message", "")
             )
-            
+
             if not success:
                 logger.error(f"Failed to send contact form email from {body.get('email')}")
                 return JSONResponse(
@@ -562,12 +629,12 @@ def create_app() -> FastAPI:
                         "message": "Failed to send contact form email. Please try again later."
                     }
                 )
-                
+
             return {
                 "success": True,
                 "message": "Your message has been sent. We'll get back to you soon!"
             }
-        
+
         except Exception as e:
             logger.exception(f"Error processing contact form: {e}")
             return JSONResponse(
@@ -585,7 +652,7 @@ def create_app() -> FastAPI:
     app.include_router(deals_router, prefix=f"{settings.API_V1_PREFIX}/deals", tags=["Deals"])
     app.include_router(deals_share_router, prefix=f"{settings.API_V1_PREFIX}/deals", tags=["Deals Sharing"])
     app.include_router(simple_share_router, prefix=f"{settings.API_V1_PREFIX}", tags=["Simple Sharing"])
-    
+
     # Changed to directly use the contact_router imported from router module
     app.include_router(contact_router, prefix=f"{settings.API_V1_PREFIX}/contact", tags=["Contact"])
 
@@ -601,7 +668,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router, prefix=f"{settings.API_V1_PREFIX}/health", tags=["System"])
     app.include_router(ai_router, prefix=f"{settings.API_V1_PREFIX}/ai", tags=["AI"])
     app.include_router(analytics_router, prefix=f"{settings.API_V1_PREFIX}/analytics", tags=["Analytics"])
-    
+
     # Include WebSocket router
     app.include_router(websocket_router, tags=["WebSocket"])
 
@@ -644,7 +711,7 @@ def create_app() -> FastAPI:
         """Global exception handler to catch and log unhandled exceptions."""
         # Log the exception
         logger.exception(f"Unhandled exception: {str(exc)}")
-        
+
         # Return a generic error response
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

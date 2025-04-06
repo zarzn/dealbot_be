@@ -7,7 +7,7 @@ import logging
 from redis.asyncio import Redis
 import json
 from fastapi import Depends, HTTPException
-from sqlalchemy import select, and_, or_, func
+from sqlalchemy import select, and_, or_, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -15,6 +15,7 @@ from core.models.user import User
 from core.models.token import Token, TokenTransaction
 from core.models.market import Market
 from core.models.deal import Deal
+from core.models.user_metadata import UserMetadata
 from core.exceptions.base_exceptions import NotFoundError, ValidationError
 from core.utils.logger import get_logger
 from core.services.redis import get_redis_service
@@ -428,66 +429,123 @@ class PromotionService:
         Returns:
             True if the user is eligible for the free promotion, False otherwise
         """
-        # If Redis is not available, we'll use an in-memory flag as a fallback
-        if not self._redis:
+        user_id_str = str(user_id)
+        promotion_key = f"first_analysis_promotion:{user_id}"
+        
+        # Try the Redis cache first if available
+        if self._redis:
             try:
-                # Try to get Redis service dynamically - maybe it's now available
-                from core.services.redis import get_redis_service
-                redis_service = await get_redis_service()
-                if redis_service:
-                    self._redis = redis_service
-                    logger.info("Successfully reconnected to Redis for promotion check")
-                else:
-                    logger.warning("Redis still not available for promotion check, using fallback mechanism")
-            except Exception as e:
-                logger.warning(f"Error reconnecting to Redis: {str(e)}")
-            
-        # If Redis is still not available, use in-memory fallback
-        if not self._redis:
-            # Use a class-level static dictionary to track first-time users
-            if not hasattr(self.__class__, '_first_analysis_users'):
-                self.__class__._first_analysis_users = set()
+                # Check if the user has already used their free analysis
+                promotion_used = await self._redis.exists(promotion_key)
                 
-            # Check if user has already used their free analysis in the current session
-            user_id_str = str(user_id)
-            if user_id_str in self.__class__._first_analysis_users:
-                logger.info(f"User {user_id} has already used first analysis promotion (memory fallback)")
-                return False
-                
-            # Mark as used in memory
-            self.__class__._first_analysis_users.add(user_id_str)
-            logger.info(f"User {user_id} is eligible for first analysis promotion (memory fallback)")
-            return True
-            
-        # If Redis is available, use it as normal    
-        try:
-            promotion_key = f"first_analysis_promotion:{user_id}"
-            
-            # Check if the user has already used their free analysis
-            promotion_used = await self._redis.exists(promotion_key)
-            
-            if not promotion_used:
-                # User hasn't used their free analysis yet
-                # Mark as used with a long expiry time (1 year)
-                try:
+                if not promotion_used:
+                    # User hasn't used their free analysis yet in Redis
+                    # Mark as used with a long expiry time (1 year)
                     await self._redis.setex(promotion_key, 60 * 60 * 24 * 365, "used")
-                    logger.info(f"User {user_id} is eligible for first analysis promotion")
+                    logger.info(f"User {user_id} is eligible for first analysis promotion (Redis)")
+                    
+                    # Now, also update the database flag for persistence
+                    await self._set_db_promotion_flag(user_id)
                     return True
-                except Exception as redis_error:
-                    # If we fail to mark the promotion as used, log and continue
-                    # We'll still return True this time, but note the error
-                    logger.error(f"Failed to mark promotion as used: {str(redis_error)}")
-                    return True
-                
-            logger.info(f"User {user_id} has already used first analysis promotion")
+                    
+                logger.info(f"User {user_id} has already used first analysis promotion (Redis)")
+                return False
+            except Exception as e:
+                # If Redis fails, log the error but continue to database check
+                logger.warning(f"Redis error in promotion check, falling back to database: {str(e)}")
+                # DO NOT return True here as before
+        
+        # If Redis is not available or failed, check the database
+        try:
+            # Query the database to check if user has the promotion flag
+            is_eligible = await self._check_db_promotion_flag(user_id)
+            
+            if is_eligible:
+                # User is eligible, mark promotion as used in database
+                await self._set_db_promotion_flag(user_id)
+                logger.info(f"User {user_id} is eligible for first analysis promotion (Database)")
+                return True
+            
+            logger.info(f"User {user_id} has already used first analysis promotion (Database)")
             return False
+        except Exception as e:
+            # If both Redis and database checks fail, log the error
+            logger.error(f"Both Redis and Database checks failed: {str(e)}")
+            # Default to False (not free) in case of complete failure
+            # This is a change from previous behavior where we defaulted to True
+            return False
+    
+    async def _check_db_promotion_flag(self, user_id: UUID) -> bool:
+        """Check if user has used their first analysis promotion in the database.
+        
+        Args:
+            user_id: The ID of the user
+            
+        Returns:
+            True if user is eligible (hasn't used promotion), False otherwise
+        """
+        try:
+            # Use UserMetadata table to store the flag
+            query = select(UserMetadata).where(
+                and_(
+                    UserMetadata.user_id == user_id,
+                    UserMetadata.key == "first_analysis_used"
+                )
+            )
+            
+            result = await self.db.execute(query)
+            metadata = result.scalars().first()
+            
+            # If no record exists, user is eligible
+            if not metadata:
+                return True
+                
+            # Otherwise, check the value (should be "true" if used)
+            return metadata.value.lower() != "true"
             
         except Exception as e:
-            # For any other Redis issues, log the error but don't fail the operation
-            logger.error(f"Error checking first analysis promotion: {str(e)}")
-            # In case of error, default to eligible (True) to provide better user experience
-            # This is a non-critical feature so prefer user satisfaction over strict enforcement
-            return True
+            logger.error(f"Error checking promotion flag in database: {str(e)}")
+            raise
+    
+    async def _set_db_promotion_flag(self, user_id: UUID) -> None:
+        """Mark first analysis promotion as used in the database.
+        
+        Args:
+            user_id: The ID of the user
+        """
+        try:
+            # Check if record already exists
+            query = select(UserMetadata).where(
+                and_(
+                    UserMetadata.user_id == user_id,
+                    UserMetadata.key == "first_analysis_used"
+                )
+            )
+            
+            result = await self.db.execute(query)
+            metadata = result.scalars().first()
+            
+            if metadata:
+                # Update existing record
+                metadata.value = "true"
+                metadata.updated_at = datetime.utcnow()
+            else:
+                # Create new record
+                new_metadata = UserMetadata(
+                    user_id=user_id,
+                    key="first_analysis_used",
+                    value="true",
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow()
+                )
+                self.db.add(new_metadata)
+            
+            await self.db.commit()
+            
+        except Exception as e:
+            logger.error(f"Error setting promotion flag in database: {str(e)}")
+            await self.db.rollback()
+            raise
     
     async def reset_first_analysis_promotion(self, user_id: UUID) -> bool:
         """Reset the first analysis promotion for a user.
@@ -501,26 +559,39 @@ class PromotionService:
         Returns:
             True if the promotion was reset, False otherwise
         """
-        if not self._redis:
-            logger.warning("Redis not available, cannot reset first analysis promotion")
-            return False
-            
+        success = True
+        
+        # Try to reset in Redis if available
+        if self._redis:
+            try:
+                promotion_key = f"first_analysis_promotion:{user_id}"
+                await self._redis.delete(promotion_key)
+                logger.info(f"Reset first analysis promotion in Redis for user {user_id}")
+            except Exception as e:
+                logger.error(f"Error resetting promotion in Redis: {str(e)}")
+                success = False
+        
+        # Always also reset in the database
         try:
-            promotion_key = f"first_analysis_promotion:{user_id}"
+            query = delete(UserMetadata).where(
+                and_(
+                    UserMetadata.user_id == user_id,
+                    UserMetadata.key == "first_analysis_used"
+                )
+            )
             
-            # Delete the key to reset the promotion
-            result = await self._redis.delete(promotion_key)
+            await self.db.execute(query)
+            await self.db.commit()
+            logger.info(f"Reset first analysis promotion in database for user {user_id}")
             
-            if result:
-                logger.info(f"First analysis promotion reset for user {user_id}")
-                return True
-                
-            logger.warning(f"Failed to reset first analysis promotion for user {user_id}")
-            return False
-            
+            # If Redis failed but database succeeded, overall operation is successful
+            success = True
         except Exception as e:
-            logger.error(f"Error resetting first analysis promotion: {str(e)}")
-            return False
+            logger.error(f"Error resetting promotion in database: {str(e)}")
+            await self.db.rollback()
+            success = False
+            
+        return success
 
 async def get_promotion_service(
     db: AsyncSession = Depends(get_async_db_session),

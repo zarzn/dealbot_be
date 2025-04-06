@@ -4,7 +4,7 @@ This module provides the base DealService class and initialization methods.
 """
 
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from uuid import UUID
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -184,12 +184,22 @@ class DealService(BaseService[Deal, Any, Any], DealTrackingMixin):
 
     def _initialize_scheduler(self) -> None:
         """Initialize scheduled background tasks for deal monitoring"""
-        self.scheduler.add_job(
-            self._monitor_deals,
-            trigger=IntervalTrigger(minutes=MONITORING_INTERVAL_MINUTES),
-            max_instances=1
-        )
-        self.scheduler.start()
+        # Check if scheduler is already running - prevent duplicate schedulers
+        if not hasattr(DealService, '_scheduler_initialized'):
+            logger.info("Initializing deal monitoring scheduler")
+            self.scheduler.add_job(
+                self._monitor_deals,
+                trigger=IntervalTrigger(minutes=MONITORING_INTERVAL_MINUTES),
+                max_instances=1,
+                coalesce=True,  # Combine missed executions
+                misfire_grace_time=300  # Allow 5 minute grace time for misfires
+            )
+            self.scheduler.start()
+            # Set class-level flag to prevent multiple initializations
+            DealService._scheduler_initialized = True
+            logger.info(f"Deal monitoring scheduled every {MONITORING_INTERVAL_MINUTES} minutes")
+        else:
+            logger.info("Deal monitoring scheduler already initialized")
 
     async def _monitor_deals(self) -> None:
         """Background task to monitor deals for changes and notify users.
@@ -200,6 +210,7 @@ class DealService(BaseService[Deal, Any, Any], DealTrackingMixin):
         3. Refresh deal data from sources
         4. Match new deals with user goals
         """
+        # Import the monitor_deals function here to avoid circular imports
         from core.services.deal.search.monitoring import monitor_deals
         from core.database import get_async_db_context
         
@@ -216,6 +227,7 @@ class DealService(BaseService[Deal, Any, Any], DealTrackingMixin):
                     # This avoids issues with the existing session that might be closed or invalid
                     temp_service = copy.copy(self)
                     temp_service.db = session
+                    temp_service._repository = DealRepository(session)
                     
                     # Run the monitoring with the fresh database session
                     logger.info("Starting scheduled deal monitoring")
@@ -238,10 +250,16 @@ class DealService(BaseService[Deal, Any, Any], DealTrackingMixin):
                     
                 # For other errors, just log and continue
                 logger.error(f"Unhandled error in deal monitoring: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
                     
                 # If we've reached the maximum number of retries, log a critical error
                 if retry_count >= max_retries:
                     logger.critical(f"Failed to complete deal monitoring after {max_retries} attempts")
+                    
+            # Add a delay between retries to avoid hammering the database
+            if retry_count > 0 and retry_count < max_retries:
+                await asyncio.sleep(retry_count * 2)  # Exponential backoff
 
     def _setup_rate_limiting(self) -> None:
         """Initialize rate limiting configuration"""
@@ -279,6 +297,43 @@ class DealService(BaseService[Deal, Any, Any], DealTrackingMixin):
         # Create a chain without the RunnablePassthrough wrapping - let the raw variables be passed
         return create_llm_chain(prompt_template)
 
+    async def _fetch_deals_from_api(self, api, goals):
+        """Fetch deals from e-commerce API based on active goals.
+        
+        Args:
+            api: The e-commerce API client instance
+            goals: List of goal data dictionaries
+            
+        Returns:
+            List of deals found from the API
+        """
+        try:
+            deals = []
+            for goal in goals:
+                params = self._build_search_params(goal)
+                api_deals = await api.search_deals(params)
+                deals.extend(api_deals)
+            return deals
+        except Exception as e:
+            logger.error(f"Failed to fetch deals from {api.__class__.__name__}: {str(e)}")
+            return []
+            
+    def _build_search_params(self, goal: Dict) -> Dict:
+        """Build search parameters from goal constraints
+        
+        Args:
+            goal: Goal dictionary with constraints
+            
+        Returns:
+            Dictionary of search parameters
+        """
+        return {
+            'keywords': goal.get('keywords', []),
+            'price_range': (goal.get('min_price'), goal.get('max_price')),
+            'brands': goal.get('brands', []),
+            'categories': goal.get('categories', [])
+        }
+    
     # Import methods from the different modules
     from .core import (
         create_deal,
@@ -300,8 +355,6 @@ class DealService(BaseService[Deal, Any, Any], DealTrackingMixin):
         filter_deals,
         create_deal_from_product,
         monitor_deals,
-        fetch_deals_from_api,
-        build_search_params,
         process_and_store_deals,
         is_valid_market_category,
         discover_deal,
@@ -372,4 +425,48 @@ class DealService(BaseService[Deal, Any, Any], DealTrackingMixin):
     from .cache import (
         _cache_deal,
         _get_cached_deal
-    ) 
+    )
+
+    async def get_deals(
+        self, 
+        user_id=None, 
+        filters=None, 
+        limit=50, 
+        offset=0,
+        include_expired=False
+    ):
+        """Get deals with optional filtering.
+        
+        Args:
+            user_id: Optional user ID to filter deals by user
+            filters: Optional dictionary of filters to apply
+            limit: Maximum number of deals to return
+            offset: Number of deals to skip
+            include_expired: Whether to include expired deals
+            
+        Returns:
+            List of deals matching the criteria
+        """
+        try:
+            # Initialize filters if None
+            if filters is None:
+                filters = {}
+                
+            # Add user_id to filters if provided
+            if user_id:
+                filters['user_id'] = user_id
+                
+            # Get deals from repository
+            deals = await self._repository.get_deals(
+                limit=limit,
+                offset=offset,
+                filters=filters,
+                include_expired=include_expired
+            )
+            
+            # Return the deals
+            return deals
+            
+        except Exception as e:
+            logger.error(f"Failed to get deals: {str(e)}")
+            raise ValueError(f"Failed to get deals: {str(e)}") 

@@ -24,8 +24,6 @@ from core.services.deal.search.deal_creation import (
 # Deal monitoring
 from core.services.deal.search.monitoring import (
     monitor_deals,
-    fetch_deals_from_api,
-    build_search_params,
     process_and_store_deals,
     check_expired_deals
 )
@@ -64,8 +62,6 @@ __all__ = [
     
     # Deal monitoring
     'monitor_deals',
-    'fetch_deals_from_api',
-    'build_search_params',
     'process_and_store_deals',
     'check_expired_deals',
     

@@ -44,11 +44,11 @@ DB_SLOW_QUERY_LOG_SECONDS = 1.0  # Log queries that take more than 1 second
 
 # Optimize pool settings based on environment
 if is_production:
-    # Production pool settings - larger pool, longer recycle time
-    pool_size = settings.DB_POOL_SIZE * 2  # Double pool size for production
-    max_overflow = settings.DB_MAX_OVERFLOW * 2  # Double max overflow for production
-    pool_timeout = settings.DB_POOL_TIMEOUT  # Keep the same timeout
-    pool_recycle = settings.DB_POOL_RECYCLE  # Keep the same recycle time
+    # Production pool settings - reduce pool size to prevent connection exhaustion
+    pool_size = min(settings.DB_POOL_SIZE, 15)  # Reduced from 25 to prevent connection exhaustion
+    max_overflow = min(settings.DB_MAX_OVERFLOW, 10)  # Reduced from 25 to prevent connection exhaustion
+    pool_timeout = max(settings.DB_POOL_TIMEOUT, 30)  # Reduced from 60 to fail faster
+    pool_recycle = min(settings.DB_POOL_RECYCLE, 300)  # Reduced from 600 to recycle connections more aggressively
     pool_pre_ping = True  # Always enable pre-ping in production
     echo = False  # Disable SQL logging in production
     echo_pool = False  # Disable pool logging in production
@@ -63,10 +63,10 @@ elif is_test:
     echo_pool = False  # Disable pool logging in tests
 else:
     # Development environment - optimized to prevent connection exhaustion
-    pool_size = 30  # Increased from 20 to prevent connection exhaustion
-    max_overflow = 50  # Increased from 30 to prevent connection exhaustion
-    pool_timeout = 90  # Increased from 60 to give more time for connection acquisition
-    pool_recycle = 240  # Reduced from 300 to recycle connections more frequently
+    pool_size = 20  # Reduced from 40 to prevent connection exhaustion
+    max_overflow = 20  # Reduced from 60 to prevent connection exhaustion
+    pool_timeout = 30  # Reduced from 90 to fail faster
+    pool_recycle = 180  # Reduced from 240 to recycle connections more aggressively
     pool_pre_ping = True
     echo = settings.DEBUG  # Use debug setting for SQL logging
     echo_pool = False  # Disable pool logging to reduce noise
@@ -87,7 +87,11 @@ engine_options = {
     # Performance optimizations
     "execution_options": {
         "isolation_level": "READ COMMITTED",  # Default isolation level
-        "compiled_cache": None  # Use SQLAlchemy's statement cache
+        "compiled_cache": None,  # Use SQLAlchemy's statement cache
+        "connect_args": {
+            "application_name": "agentic_deals_backend",  # Add application name for better logging
+            "options": "-c statement_timeout=10000"  # 10 seconds statement timeout
+        }
     }
 }
 
@@ -518,14 +522,17 @@ async def cleanup_idle_connections() -> int:
         if 'postgresql' in str(settings.DATABASE_URL).lower():
             session = AsyncSessionLocal()
             # Query to find idle connections for our application
-            # This looks for connections that have been idle for more than 10 minutes (600 seconds)
+            # This looks for connections that have been idle for more than 5 minutes (300 seconds)
+            # Reduced from 600 seconds to be more aggressive
             query = text("""
                 SELECT pid, application_name, state, usename, 
+                       client_addr, backend_start, xact_start, state_change,
                        EXTRACT(EPOCH FROM (now() - state_change)) as idle_seconds
                 FROM pg_stat_activity 
-                WHERE application_name LIKE 'ai-agentic-deals%'
-                  AND state = 'idle'
-                  AND EXTRACT(EPOCH FROM (now() - state_change)) > 600
+                WHERE (application_name LIKE 'agentic_deals%' OR application_name = 'psql')
+                  AND state IN ('idle', 'idle in transaction')
+                  AND EXTRACT(EPOCH FROM (now() - state_change)) > 300
+                ORDER BY idle_seconds DESC
             """)
             
             result = await session.execute(query)
@@ -539,13 +546,35 @@ async def cleanup_idle_connections() -> int:
             for conn in idle_connections:
                 try:
                     # Use pg_terminate_backend to safely terminate the connection
+                    # Log detailed information about the connection being terminated
+                    logger.info(f"Terminating idle connection: pid={conn.pid}, user={conn.usename}, " 
+                                f"addr={conn.client_addr}, state={conn.state}, "
+                                f"idle_time={conn.idle_seconds:.1f}s, "
+                                f"backend_start={conn.backend_start}, state_change={conn.state_change}")
+                    
                     terminate_query = text(f"SELECT pg_terminate_backend({conn.pid})")
                     await session.execute(terminate_query)
-                    logger.info(f"Terminated idle connection: pid={conn.pid}, user={conn.usename}, " 
-                                f"idle_time={conn.idle_seconds:.1f}s")
                     count += 1
                 except Exception as e:
                     logger.error(f"Failed to terminate connection {conn.pid}: {str(e)}")
+            
+            # Find long-running transactions that might be blocking other operations
+            long_tx_query = text("""
+                SELECT pid, application_name, query, state, usename, 
+                       EXTRACT(EPOCH FROM (now() - xact_start)) as tx_seconds
+                FROM pg_stat_activity 
+                WHERE xact_start IS NOT NULL
+                  AND EXTRACT(EPOCH FROM (now() - xact_start)) > 300
+                ORDER BY tx_seconds DESC
+            """)
+            
+            tx_result = await session.execute(long_tx_query)
+            long_txs = tx_result.all()
+            
+            if long_txs:
+                logger.warning(f"Found {len(long_txs)} long-running transactions (>5 min)")
+                for tx in long_txs:
+                    logger.warning(f"Long TX: pid={tx.pid}, user={tx.usename}, time={tx.tx_seconds:.1f}s, query={tx.query[:100]}...")
             
             # Commit the changes
             await session.commit()
@@ -575,4 +604,80 @@ async def cleanup_idle_connections() -> int:
             except Exception as close_error:
                 logger.error(f"Error closing session in cleanup_idle_connections: {str(close_error)}")
 
-__all__ = ['Base', 'async_engine', 'get_session', 'cleanup_idle_connections']
+async def cleanup_all_connections() -> None:
+    """
+    Aggressively clean up all database connections.
+    
+    This function is designed to be called during application shutdown to ensure
+    all database connections are properly closed. It combines various cleanup
+    approaches to maximize the chance of successful cleanup.
+    
+    Returns:
+        None
+    """
+    try:
+        logger.info("Starting aggressive cleanup of all database connections")
+        
+        # First try to use pg_terminate_backend to close idle connections
+        idle_connections_closed = await cleanup_idle_connections()
+        logger.info(f"Cleaned up {idle_connections_closed} idle connections via pg_terminate_backend")
+        
+        # Next, try to dispose the engine pools
+        try:
+            logger.info("Disposing async engine pool")
+            await async_engine.dispose()
+            logger.info("Async engine pool disposed successfully")
+        except Exception as async_error:
+            logger.error(f"Error disposing async engine pool: {str(async_error)}")
+            
+        try:
+            logger.info("Disposing sync engine pool")
+            sync_engine.dispose()
+            logger.info("Sync engine pool disposed successfully")
+        except Exception as sync_error:
+            logger.error(f"Error disposing sync engine pool: {str(sync_error)}")
+            
+        # Direct PostgreSQL cleanup as a last resort
+        if 'postgresql' in str(settings.DATABASE_URL).lower():
+            try:
+                logger.info("Performing direct PostgreSQL connection cleanup")
+                # Create a new session for this cleanup operation
+                session = AsyncSessionLocal()
+                
+                # Get our application's connection count
+                query = text("""
+                    SELECT COUNT(*) as conn_count
+                    FROM pg_stat_activity 
+                    WHERE application_name LIKE '%agentic_deals%'
+                """)
+                
+                result = await session.execute(query)
+                conn_count = result.scalar() or 0
+                
+                logger.info(f"Found {conn_count} connections for this application")
+                
+                # If we still have connections, try to terminate all of them
+                if conn_count > 0:
+                    logger.warning(f"Terminating all {conn_count} remaining connections")
+                    terminate_query = text("""
+                        SELECT pg_terminate_backend(pid) 
+                        FROM pg_stat_activity 
+                        WHERE application_name LIKE '%agentic_deals%'
+                    """)
+                    
+                    await session.execute(terminate_query)
+                    await session.commit()
+                    logger.info("Terminated all application connections")
+                
+                # Close this cleanup session
+                await session.close()
+                
+            except Exception as pg_error:
+                logger.error(f"Error in direct PostgreSQL cleanup: {str(pg_error)}")
+        
+        logger.info("Aggressive database connection cleanup completed")
+        
+    except Exception as e:
+        logger.error(f"Failed during aggressive connection cleanup: {str(e)}")
+        
+__all__ = ['Base', 'async_engine', 'get_session', 'cleanup_idle_connections', 'cleanup_all_connections']

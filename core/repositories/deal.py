@@ -1114,3 +1114,69 @@ class DealRepository(BaseRepository[Deal]):
             logger.error(f"Error updating deal score: {str(e)}")
             await self.db.rollback()
             return False
+
+    async def get_deals(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        filters: Optional[Dict[str, Any]] = None,
+        include_expired: bool = False
+    ) -> List[Deal]:
+        """
+        Get deals with optional filtering.
+        
+        Args:
+            limit: Maximum number of deals to return
+            offset: Number of deals to skip
+            filters: Optional dictionary of filters to apply
+            include_expired: Whether to include expired deals
+            
+        Returns:
+            List of deals matching the criteria
+        """
+        try:
+            from sqlalchemy import select, and_, or_
+            
+            # Start with base query
+            query = select(Deal)
+            
+            # Apply status filter unless including expired deals
+            if not include_expired:
+                query = query.where(Deal.status != 'expired')
+            
+            # Apply additional filters if provided
+            if filters:
+                filter_conditions = []
+                
+                if 'status' in filters:
+                    filter_conditions.append(Deal.status == filters['status'].lower())
+                    
+                if 'source' in filters:
+                    filter_conditions.append(Deal.source == filters['source'])
+                    
+                if 'min_price' in filters:
+                    filter_conditions.append(Deal.price >= filters['min_price'])
+                    
+                if 'max_price' in filters:
+                    filter_conditions.append(Deal.price <= filters['max_price'])
+                    
+                if 'user_id' in filters:
+                    filter_conditions.append(Deal.user_id == filters['user_id'])
+                    
+                # Apply all conditions
+                if filter_conditions:
+                    query = query.where(and_(*filter_conditions))
+            
+            # Add pagination
+            query = query.offset(offset).limit(limit)
+            
+            # Execute query
+            result = await self.db.execute(query)
+            deals = result.scalars().all()
+            
+            logger.debug(f"Retrieved {len(deals)} deals from repository")
+            return deals
+            
+        except Exception as e:
+            logger.error(f"Error retrieving deals: {str(e)}")
+            raise DatabaseError(f"Error retrieving deals: {str(e)}")

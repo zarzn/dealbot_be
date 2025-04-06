@@ -10,8 +10,8 @@ from uuid import uuid4
 import logging
 
 from core.database import get_db, get_session, get_async_db_context
-from core.dependencies import get_current_user
-from core.services.token_service import TokenServiceV2
+from core.dependencies import get_current_user, get_token_service
+from core.services.token_service import TokenServiceV2, TokenService
 from core.services.analytics import AnalyticsService
 from core.models.user import UserInDB
 from core.models.token import (
@@ -45,6 +45,7 @@ async def get_db_session():
 @router.get("/balance", response_model=TokenBalanceResponse)
 async def get_balance(
     db: AsyncSession = Depends(get_db_session),
+    token_service: TokenService = Depends(get_token_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
     """Get token balance for current user"""
@@ -52,11 +53,9 @@ async def get_balance(
         # Get the user's ID as string
         user_id_str = str(current_user.id)
         
-        # Use TokenServiceV2 for database access
-        async with TokenServiceV2() as token_service:
-            # Get balance from database
-            balance_decimal = await token_service.get_balance(user_id_str)
-            logger.info(f"Retrieved balance using TokenServiceV2: {balance_decimal}")
+        # Get balance using injected token service
+        balance_decimal = await token_service.get_balance(user_id_str)
+        logger.info(f"Retrieved balance using TokenService: {balance_decimal}")
         
         # Get the TokenBalance record for additional information
         result = await db.execute(
@@ -127,17 +126,17 @@ async def get_transaction_history(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db_session),
+    token_service: TokenService = Depends(get_token_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
     """Get transaction history for current user"""
     try:
-        # Use TokenServiceV2 to get transaction history
-        async with TokenServiceV2() as token_service:
-            transactions = await token_service.get_transaction_history(
-                str(current_user.id),
-                limit=limit,
-                offset=offset
-            )
+        # Get transaction history using injected token service
+        transactions = await token_service.get_transaction_history(
+            str(current_user.id),
+            limit=limit,
+            offset=offset
+        )
         
         # Convert to response format
         transaction_responses = []
@@ -169,10 +168,10 @@ async def get_transaction_history(
             )
         
         # Get total count (for pagination)
-        from sqlalchemy import func
+        from sqlalchemy import func, select, text
         from core.models.token_transaction import TokenTransaction
         count_result = await db.execute(
-            select(func.count(TokenTransaction.id)).select_from(TokenTransaction).where(
+            select(func.count(TokenTransaction.id)).where(
                 TokenTransaction.user_id == current_user.id
             )
         )
@@ -200,49 +199,48 @@ async def get_transaction_history(
 async def transfer_tokens(
     request: TokenTransferRequest,
     db: AsyncSession = Depends(get_db_session),
+    token_service: TokenService = Depends(get_token_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
     """Transfer tokens to another user"""
     try:
-        # Use TokenServiceV2 to process token transfer
-        async with TokenServiceV2() as token_service:
-            # First check if sender has sufficient balance
-            sender_balance = await token_service.get_balance(str(current_user.id))
-            if sender_balance < request.amount:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST, 
-                    detail="Insufficient balance for transfer"
-                )
-            
-            # Process sender transaction (deduction)
-            sender_tx = await token_service.process_transaction(
-                user_id=str(current_user.id),
-                amount=-request.amount,
-                transaction_type="transfer_out",
-                details={
-                    "recipient": request.to_user_id,
-                    "memo": request.memo
-                }
+        # First check if sender has sufficient balance
+        sender_balance = await token_service.get_balance(str(current_user.id))
+        if sender_balance < request.amount:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, 
+                detail="Insufficient balance for transfer"
             )
-            
-            # Process recipient transaction (addition)
-            recipient_tx = await token_service.process_transaction(
-                user_id=request.to_user_id,
-                amount=request.amount,
-                transaction_type="transfer_in",
-                details={
-                    "sender": str(current_user.id),
-                    "memo": request.memo
-                }
-            )
-            
-            return {
-                "message": "Transfer successful",
-                "transaction_id": str(sender_tx.id),
-                "recipient_transaction_id": str(recipient_tx.id),
-                "amount": request.amount,
-                "new_balance": float(sender_balance - request.amount)
+        
+        # Process sender transaction (deduction)
+        sender_tx = await token_service.process_transaction(
+            user_id=str(current_user.id),
+            amount=-request.amount,
+            transaction_type="transfer_out",
+            details={
+                "recipient": request.to_user_id,
+                "memo": request.memo
             }
+        )
+        
+        # Process recipient transaction (addition)
+        recipient_tx = await token_service.process_transaction(
+            user_id=request.to_user_id,
+            amount=request.amount,
+            transaction_type="transfer_in",
+            details={
+                "sender": str(current_user.id),
+                "memo": request.memo
+            }
+        )
+        
+        return {
+            "message": "Transfer successful",
+            "transaction_id": str(sender_tx.id),
+            "recipient_transaction_id": str(recipient_tx.id),
+            "amount": request.amount,
+            "new_balance": float(sender_balance - request.amount)
+        }
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
@@ -257,6 +255,7 @@ async def transfer_tokens(
 async def mint_tokens(
     request: TokenMintRequest,
     db: AsyncSession = Depends(get_db_session),
+    token_service: TokenService = Depends(get_token_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
     """Mint new tokens (admin only)"""
@@ -268,29 +267,27 @@ async def mint_tokens(
                 detail="Only administrators can mint tokens"
             )
         
-        # Use TokenServiceV2 to process token minting
-        async with TokenServiceV2() as token_service:
-            # Process the mint transaction
-            tx = await token_service.process_transaction(
-                user_id=request.to_user_id,
-                amount=request.amount,
-                transaction_type="mint",
-                details={
-                    "admin_id": str(current_user.id),
-                    "reason": request.reason
-                }
-            )
-            
-            # Get updated balance
-            new_balance = await token_service.get_balance(request.to_user_id)
-            
-            return {
-                "message": "Tokens minted successfully",
-                "transaction_id": str(tx.id),
-                "amount": request.amount,
-                "to_user_id": request.to_user_id,
-                "new_balance": float(new_balance)
+        # Process the mint transaction using injected service
+        tx = await token_service.process_transaction(
+            user_id=request.to_user_id,
+            amount=request.amount,
+            transaction_type="mint",
+            details={
+                "admin_id": str(current_user.id),
+                "reason": request.reason
             }
+        )
+        
+        # Get updated balance
+        new_balance = await token_service.get_balance(request.to_user_id)
+        
+        return {
+            "message": "Tokens minted successfully",
+            "transaction_id": str(tx.id),
+            "amount": request.amount,
+            "to_user_id": request.to_user_id,
+            "new_balance": float(new_balance)
+        }
     except Exception as e:
         logger.error(f"Error minting tokens: {str(e)}")
         raise HTTPException(
@@ -301,11 +298,15 @@ async def mint_tokens(
 @router.get("/pricing", response_model=List[TokenPricingResponse])
 async def get_token_pricing(
     service_type: Optional[str] = None,
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_db_session),
+    token_service: TokenService = Depends(get_token_service)
 ):
     """Get token pricing information"""
-    token_service = TokenServiceV2()
-    return await token_service.get_pricing_info(service_type)
+    try:
+        return await token_service.get_pricing_info(service_type)
+    except Exception as e:
+        logger.error(f"Error getting token pricing: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to get token pricing: {str(e)}")
 
 @router.get("/analytics", response_model=TokenAnalytics)
 async def get_token_analytics(
@@ -328,13 +329,15 @@ async def get_token_analytics(
         }
         start_date = ranges.get(time_range)
         
+        # Use the injected analytics_service that's properly initialized with dependencies
         analytics = await analytics_service.get_token_analytics(
             user_id=current_user.id,
             start_date=start_date
         )
         return analytics
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error in get_token_analytics: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to get token analytics: {str(e)}")
 
 @router.get("/rewards", response_model=List[TokenReward])
 async def get_token_rewards(
@@ -344,18 +347,22 @@ async def get_token_rewards(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db_session),
+    token_service: TokenService = Depends(get_token_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
     """Get token rewards history"""
-    token_service = TokenServiceV2()
-    return await token_service.get_rewards(
-        user_id=current_user.id,
-        start_date=start_date,
-        end_date=end_date,
-        reward_type=reward_type,
-        page=page,
-        page_size=page_size
-    )
+    try:
+        return await token_service.get_rewards(
+            user_id=current_user.id,
+            start_date=start_date,
+            end_date=end_date,
+            reward_type=reward_type,
+            page=page,
+            page_size=page_size
+        )
+    except Exception as e:
+        logger.error(f"Error getting token rewards: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to get token rewards: {str(e)}")
 
 @router.get("/usage", response_model=TokenUsageStats)
 async def get_token_usage(
@@ -390,11 +397,11 @@ async def get_token_usage(
 async def burn_tokens(
     request: TokenBurnRequest,
     db: AsyncSession = Depends(get_db_session),
+    token_service: TokenService = Depends(get_token_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
     """Burn tokens from user's balance"""
     try:
-        token_service = TokenServiceV2()
         result = await token_service.burn_tokens(
             user_id=current_user.id,
             amount=request.amount,
@@ -402,17 +409,18 @@ async def burn_tokens(
         )
         return result
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error burning tokens: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to burn tokens: {str(e)}")
 
 @router.post("/stake")
 async def stake_tokens(
     request: TokenStakeRequest,
     db: AsyncSession = Depends(get_db_session),
+    token_service: TokenService = Depends(get_token_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
     """Stake tokens for rewards"""
     try:
-        token_service = TokenServiceV2()
         result = await token_service.stake_tokens(
             user_id=current_user.id,
             amount=request.amount,
@@ -420,42 +428,46 @@ async def stake_tokens(
         )
         return result
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error staking tokens: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to stake tokens: {str(e)}")
 
 @router.get("/stake/info")
 async def get_stake_info(
     db: AsyncSession = Depends(get_db_session),
+    token_service: TokenService = Depends(get_token_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
     """Get staking information for current user"""
     try:
-        token_service = TokenServiceV2()
         stake_info = await token_service.get_stake_info(current_user.id)
         return stake_info
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error getting stake info: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to get stake info: {str(e)}")
 
 @router.post("/unstake")
 async def unstake_tokens(
     stake_id: UUID,
     db: AsyncSession = Depends(get_db_session),
+    token_service: TokenService = Depends(get_token_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
     """Unstake tokens and claim rewards"""
     try:
-        token_service = TokenServiceV2()
         result = await token_service.unstake_tokens(
             user_id=current_user.id,
             stake_id=stake_id
         )
         return result
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error unstaking tokens: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Failed to unstake tokens: {str(e)}")
 
 @router.get("/test-balance", response_model=Dict[str, Any])
 async def test_balance(
     user_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db_session),
+    token_service: TokenService = Depends(get_token_service),
     current_user: UserInDB = Depends(get_current_user)
 ):
     """Test endpoint to get token balance for current user or specified user (admin only)"""
@@ -465,9 +477,8 @@ async def test_balance(
         # Use the user ID from the request if provided (admin only) or fall back to current user
         target_user_id = user_id if user_id and current_user.role == "admin" else str(current_user.id)
         
-        # First try the TokenService
-        async with TokenServiceV2() as token_service:
-            balance = await token_service.get_balance(target_user_id)
+        # Use the injected token service
+        balance = await token_service.get_balance(target_user_id)
             
         # Get the database record for additional info
         from core.repositories.token import TokenRepository
