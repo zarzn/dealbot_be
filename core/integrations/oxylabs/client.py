@@ -328,7 +328,7 @@ class OxylabsClient:
             query: Search query
             **kwargs: Additional parameters:
                 - country: Country domain (default: "us")
-                - limit: Maximum number of results (default: 20)
+                - limit: Maximum number of results (default: 10)
                 - parse: Whether to parse results (default: True)
                 - cache_ttl: Cache time-to-live in seconds (default: None)
             
@@ -340,7 +340,7 @@ class OxylabsClient:
         try:
             service = self.get_service(MarketType.AMAZON)
             country = kwargs.pop("country", "us")
-            limit = kwargs.pop("limit", kwargs.pop("max_results", 20))
+            limit = kwargs.pop("limit", kwargs.pop("max_results", 10))
             parse = kwargs.pop("parse", True)
             cache_ttl = kwargs.pop("cache_ttl", None)
             
@@ -412,7 +412,7 @@ class OxylabsClient:
         Args:
             query: Search query
             **kwargs: Additional parameters:
-                - limit: Maximum number of results (default: 20)
+                - limit: Maximum number of results (default: 10)
                 - parse: Whether to parse results (default: True)
                 - cache_ttl: Cache time-to-live in seconds (default: None)
             
@@ -423,7 +423,7 @@ class OxylabsClient:
         
         try:
             service = self.get_service(MarketType.WALMART)
-            limit = kwargs.pop("limit", kwargs.pop("max_results", 20))
+            limit = kwargs.pop("limit", kwargs.pop("max_results", 10))
             parse = kwargs.pop("parse", True)
             cache_ttl = kwargs.pop("cache_ttl", None)
             
@@ -491,7 +491,7 @@ class OxylabsClient:
         Args:
             query: Search query
             **kwargs: Additional parameters:
-                - limit: Maximum number of results (default: 20)
+                - limit: Maximum number of results (default: 10)
                 - parse: Whether to parse results (default: True)
                 - cache_ttl: Cache time-to-live in seconds (default: None)
                 - sort_by: Sort order (r=relevance, rv=reviews, p=price asc, pd=price desc)
@@ -505,7 +505,7 @@ class OxylabsClient:
         
         try:
             service = self.get_service(MarketType.GOOGLE_SHOPPING)
-            limit = kwargs.pop("limit", kwargs.pop("max_results", 20))
+            limit = kwargs.pop("limit", kwargs.pop("max_results", 10))
             parse = kwargs.pop("parse", True)
             cache_ttl = kwargs.pop("cache_ttl", None)
             
@@ -573,7 +573,7 @@ class OxylabsClient:
         Args:
             query: Search query
             **kwargs: Additional parameters:
-                - limit: Maximum number of results (default: 20)
+                - limit: Maximum number of results (default: 10)
                 - parse: Whether to parse results (default: True)
                 - geo_location: Geographical location (default: "United States")
                 - cache_ttl: Cache time-to-live in seconds (default: None)
@@ -585,7 +585,7 @@ class OxylabsClient:
         
         try:
             service = self.get_service(MarketType.EBAY)
-            limit = kwargs.pop("limit", kwargs.pop("max_results", 20))
+            limit = kwargs.pop("limit", kwargs.pop("max_results", 10))
             parse = kwargs.pop("parse", True)
             cache_ttl = kwargs.pop("cache_ttl", None)
             

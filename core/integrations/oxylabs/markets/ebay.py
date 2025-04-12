@@ -25,7 +25,7 @@ class EbayOxylabsService(OxylabsBaseService):
     async def search_products(
         self, 
         query: str, 
-        limit: int = 20, 
+        limit: int = 10, 
         parse: bool = True,
         cache_ttl: Optional[int] = None,
         **kwargs

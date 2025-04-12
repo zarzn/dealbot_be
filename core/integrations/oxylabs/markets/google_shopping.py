@@ -29,6 +29,7 @@ class GoogleShoppingOxylabsService(OxylabsBaseService):
         domain: str = "com",
         start_page: int = 1,
         pages: int = 1,
+        limit: int = 10,
         parse: bool = True,
         cache_ttl: Optional[int] = None,
         **kwargs
@@ -40,6 +41,7 @@ class GoogleShoppingOxylabsService(OxylabsBaseService):
             domain: Domain localization for Google (e.g., 'com', 'co.uk')
             start_page: Starting page number
             pages: Number of pages to retrieve
+            limit: Maximum number of results
             parse: Whether to parse the results automatically
             cache_ttl: Cache time-to-live in seconds (None for no caching)
             **kwargs: Additional parameters including:
@@ -61,7 +63,8 @@ class GoogleShoppingOxylabsService(OxylabsBaseService):
             "query": query,
             "parse": parse,
             "start_page": start_page,
-            "pages": pages
+            "pages": pages,
+            "limit": limit
         }
         
         # Build context array for additional parameters

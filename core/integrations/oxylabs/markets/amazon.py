@@ -27,7 +27,7 @@ class AmazonOxylabsService(OxylabsBaseService):
         self, 
         query: str, 
         country: str = "us", 
-        limit: int = 20,
+        limit: int = 10,
         parse: bool = True,
         cache_ttl: Optional[int] = None,
         **kwargs

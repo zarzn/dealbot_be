@@ -544,7 +544,6 @@ class AnalyticsRepository:
                 try:
                     result = await self.session.execute(fallback_query, {"user_id": user_id})
                     tracked_deals = result.all()
-                    logger.info(f"Successfully got {len(tracked_deals)} tracked deals using direct SQL")
                     
                     # Filter deals to only active and completed status if needed
                     # This is done in Python code rather than SQL to avoid enum casting issues
@@ -553,7 +552,6 @@ class AnalyticsRepository:
                         if hasattr(deal, 'status') and deal.status and deal.status.lower() in ['active', 'completed']:
                             relevant_deals.append(deal)
                     
-                    logger.info(f"Found {len(relevant_deals)} tracked deals with active/completed status")
                     total_deal_count = len(relevant_deals)
                 except SQLAlchemyError as e:
                     logger.error(f"Error executing direct SQL query: {str(e)}")
@@ -593,8 +591,6 @@ class AnalyticsRepository:
                     logger.info(
                         f"TRACKED DEAL {deal_id}: status={deal_status}, owner={deal_owner}"
                     )
-                
-                logger.info(f"Using {total_deal_count} tracked and active/completed deals for deal value score calculation")
                 
                 for deal in relevant_deals:
                     # Calculate a score for each deal based on multiple factors
@@ -651,13 +647,6 @@ class AnalyticsRepository:
             # Calculate average deal value score on a 0-100 scale
             if total_deal_count > 0:
                 deal_value_score = min(100, deal_value_score / total_deal_count)
-            
-            logger.info(
-                f"Deal Value Score RESULT: {deal_value_score:.2f}/100, "
-                f"Deals with price drops: {price_drop_count}/{total_deal_count}, "
-                f"Deals better than market: {better_than_market_count}/{total_deal_count}, "
-                f"Based on {total_deal_count} tracked deals"
-            )
             
             # For backward compatibility, still calculate savings but label appropriately
             average_discount = 0.0

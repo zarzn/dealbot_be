@@ -97,10 +97,6 @@ async def format_search_queries_with_ai_batch(
                 result[marketplace] = format_search_query_fallback(query, marketplace)
                 logger.warning(f"Using fallback formatting for {marketplace} due to missing or invalid AI response")
         
-        # Log the formatted queries
-        for marketplace, formatted_query in result.items():
-            logger.info(f"AI formatted query: '{query}' -> '{formatted_query}' for {marketplace}")
-        
         return result
         
     except Exception as e:

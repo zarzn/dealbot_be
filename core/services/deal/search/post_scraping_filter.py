@@ -376,7 +376,6 @@ def calculate_relevance_score(
         except (ValueError, TypeError):
             pass
     
-    logger.debug(f"Relevance score {score:.2f} for '{title}'")
     return score
 
 def normalize_scores(products: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
