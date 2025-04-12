@@ -41,11 +41,14 @@ class GoogleShoppingIntegration(MarketBase):
         self._scraper_client = None  # Will be initialized lazily
         
     async def _get_scraper_client(self):
-        """Get or initialize the ScraperAPI client."""
-        from core.integrations.scraper_api import get_scraper_api
+        """Get or initialize the scraper client."""
+        # Use MarketIntegrationFactory instead of direct ScraperAPI import
+        from core.integrations.market_factory import MarketIntegrationFactory
         
         if not self._scraper_client:
-            self._scraper_client = await get_scraper_api()
+            # Create factory with explicit Oxylabs setting
+            factory = MarketIntegrationFactory(scraper_type="oxylabs")
+            self._scraper_client = await factory.get_scraper_service()
         
         return self._scraper_client
         

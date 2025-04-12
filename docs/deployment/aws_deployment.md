@@ -4,15 +4,16 @@ This comprehensive guide provides detailed instructions for deploying the AI Age
 
 ## Table of Contents
 1. [Prerequisites](#prerequisites)
-2. [AWS Infrastructure Overview](#aws-infrastructure-overview)
-3. [Environment Configuration](#environment-configuration)
-4. [Backend Deployment](#backend-deployment)
-5. [Frontend Deployment](#frontend-deployment)
-6. [Monitoring and Logging](#monitoring-and-logging)
-7. [Security Best Practices](#security-best-practices)
-8. [Maintenance and Updates](#maintenance-and-updates)
-9. [Troubleshooting](#troubleshooting)
-10. [Cost Optimization](#cost-optimization)
+2. [AWS Configuration Details](#aws-configuration-details)
+3. [AWS Infrastructure Overview](#aws-infrastructure-overview)
+4. [Environment Configuration](#environment-configuration)
+5. [Backend Deployment](#backend-deployment)
+6. [Frontend Deployment](#frontend-deployment)
+7. [Monitoring and Logging](#monitoring-and-logging)
+8. [Security Best Practices](#security-best-practices)
+9. [Maintenance and Updates](#maintenance-and-updates)
+10. [Troubleshooting](#troubleshooting)
+11. [Cost Optimization](#cost-optimization)
 
 ## Prerequisites
 
@@ -25,6 +26,58 @@ Before deploying to AWS, ensure you have:
 - Appropriate IAM permissions for required services
 - Domain name (if using custom domain for frontend)
 - API keys for external services (DeepSeek, OpenAI, etc.)
+
+## AWS Configuration Details
+
+### AWS Credentials
+
+For deployment, we use a dedicated IAM user with appropriate permissions:
+
+- **User**: `agentic-deals-deployment`
+- **Region**: `us-east-1`
+- **Access Method**: AWS Access Key and Secret Access Key
+
+This user has the following permission policies:
+- `AmazonECR-FullAccess`
+- `AmazonECS-FullAccess`
+- `AmazonRDS-FullAccess`
+- `AmazonS3-FullAccess`
+- `CloudFrontFullAccess`
+- `AmazonAPIGatewayAdministrator`
+- `CloudWatchLogsFullAccess`
+
+### ECS Configuration
+
+The ECS configuration includes:
+
+- **Cluster**: `agentic-deals-cluster`
+- **Service**: `agentic-deals-service`
+- **Task Definition**: `agentic-deals-task-definition`
+- **Task**: `agentic-deals-task`
+- **Launch Type**: FARGATE
+- **CPU**: 1 vCPU
+- **Memory**: 2GB
+
+### CloudWatch Log Groups
+
+Key log groups for monitoring:
+
+- `/aws/apigateway/1ze1jsv3qg` - API Gateway general logs
+- `/aws/apigateway/1ze1jsv3qg/prod` - API Gateway production stage logs
+- `/aws/rds/instance/agentic-deals-db/postgresql` - RDS database logs
+- `/ecs/agentic-deals-container` - ECS container logs
+- `API-Gateway-Execution-Logs_7oxq7ujcmc/prod` - API Gateway execution logs
+
+### Resource ARNs
+
+Important resource ARNs for reference:
+
+- **ECS Cluster**: `arn:aws:ecs:us-east-1:123456789012:cluster/agentic-deals-cluster`
+- **ECS Service**: `arn:aws:ecs:us-east-1:123456789012:service/agentic-deals-cluster/agentic-deals-service`
+- **Task Definition**: `arn:aws:ecs:us-east-1:123456789012:task-definition/agentic-deals-task-definition`
+- **RDS Instance**: `arn:aws:rds:us-east-1:123456789012:db:agentic-deals-db`
+- **S3 Frontend Bucket**: `arn:aws:s3:::agentic-deals-frontend`
+- **CloudFront Distribution**: `arn:aws:cloudfront::123456789012:distribution/EDFDVBD632BHDS5`
 
 ## AWS Infrastructure Overview
 

@@ -181,51 +181,98 @@ The system is divided into three main layers:
 
 ### LLM Configuration
 
-The system uses multiple Large Language Models (LLMs) with the following configuration:
+The AI Agentic Deals System uses multiple large language models (LLMs) with specific configurations:
 
-1. **Primary Model**
-   - DeepSeek R1
-   - Used for main production workloads
-   - Configured for optimal performance/cost balance
+1. **Production Environment**
+   - Primary Model: DeepSeek R1
+   - API Key: DEEPSEEK_API_KEY
+   - Use Case: Main production model for deal analysis, recommendations, and natural language processing
+   - Configuration: Temperature of 0.2-0.7 depending on the task, with appropriate token limits
 
-2. **Fallback Model**
-   - GPT-4
-   - Used when primary model fails or is unavailable
-   - Configured with compatible parameters
+2. **Fallback Configuration**
+   - Model: GPT-4
+   - API Key: OPENAI_API_KEY
+   - Use Case: Backup when primary model fails or for specialized tasks
+   - Activation: Automatic failover when primary model returns errors or times out
 
 3. **Test Environment**
-   - Mock LLM for testing
-   - No API key required
-   - Used for unit tests and CI/CD
+   - Model: Mock LLM
+   - No API Key required
+   - Use Case: Unit tests and CI/CD pipeline testing
+   - Configuration: Deterministic responses for reliable testing
 
 ### AI Processing Pipeline
 
-1. **Request Preprocessing**
-   - Context preparation
-   - Prompt engineering
-   - Parameter configuration
+The AI processing pipeline consists of the following stages:
+
+1. **Input Preparation**
+   - User input validation and sanitization
+   - Context gathering from relevant data sources
+   - System prompt construction with appropriate instructions
 
 2. **Model Selection**
-   - Dynamic selection based on:
-     - Task requirements
-     - Model availability
-     - Cost considerations
-     - Performance metrics
+   - Routing to appropriate model based on task requirements
+   - Load balancing across API keys and rate limits
+   - Fallback mechanism activation when needed
 
-3. **Request Execution**
-   - API call to selected model
-   - Timeout and retry handling
-   - Error management
+3. **Request Processing**
+   - Asynchronous API calls to LLM providers
+   - Timeout and retry mechanisms
+   - Response validation and error handling
 
 4. **Response Processing**
-   - Response validation
-   - Content filtering
-   - Formatting and structuring
+   - Parsing and validation of LLM responses
+   - Extraction of structured data from LLM outputs
+   - Application of business rules and constraints
 
-5. **Feedback Loop**
-   - Model performance tracking
-   - Response quality evaluation
-   - Continuous improvement mechanisms
+5. **Result Integration**
+   - Storing analysis results in the database
+   - Updating relevant user interfaces
+   - Triggering downstream processes based on analysis
+
+### Agent Architecture
+
+The system employs a multi-agent architecture for complex tasks:
+
+1. **Controller Agent**
+   - Orchestrates the overall process
+   - Delegates tasks to specialized agents
+   - Maintains context and state
+   - Makes final decisions based on agent inputs
+
+2. **Research Agent**
+   - Gathers information about products and deals
+   - Evaluates source credibility
+   - Extracts relevant product details
+
+3. **Analysis Agent**
+   - Evaluates deal quality and value
+   - Compares prices across markets
+   - Identifies historical trends
+
+4. **Recommendation Agent**
+   - Personalizes recommendations based on user preferences
+   - Prioritizes deals based on relevance and value
+   - Generates natural language explanations
+
+### Prompt Engineering
+
+The system uses carefully designed prompts with the following characteristics:
+
+1. **Structured Formatting**
+   - Clear sections for context, instructions, and examples
+   - Consistent formatting for predictable parsing
+   - Version control for prompt templates
+
+2. **Context Management**
+   - Dynamic inclusion of relevant user history
+   - Adaptive context sizing based on token limits
+   - Prioritization of critical information
+
+3. **Output Control**
+   - Explicit formatting instructions
+   - JSON schema specifications
+   - Validation rules and constraints
 
 ## Database Schema
 

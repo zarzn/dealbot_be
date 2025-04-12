@@ -8,11 +8,14 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-your_redis_password}
+    command: redis-server --appendonly yes --requirepass your_redis_password
+    environment:
+      - REDIS_PASSWORD=your_redis_password
+    restart: always
     networks:
       - deals_network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "your_redis_password", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -49,6 +52,13 @@ services:
       - POSTGRES_HOST=deals_postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=agentic_deals
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=your_redis_password
+      - REDIS_URL=redis://redis:6379/0
+      - HOST=redis
+      - HOSTS=["redis"]
+    restart: always
     ports:
       - "8000:8000"
     depends_on:

@@ -178,9 +178,34 @@ def get_llm_instance():
                 environment = getattr(settings, "ENVIRONMENT", "development")
                 testing = getattr(settings, "TESTING", False)
                 
-                # Check if API keys are available
-                openai_key_available = "OPENAI_API_KEY" in os.environ
-                deepseek_key_available = "DEEPSEEK_API_KEY" in os.environ
+                # Check if API keys are available - try both environment variables and settings
+                openai_key = None
+                if "OPENAI_API_KEY" in os.environ and os.environ.get("OPENAI_API_KEY"):
+                    openai_key = os.environ.get("OPENAI_API_KEY")
+                    logger.info("Found OpenAI API key in environment variables")
+                elif hasattr(settings, "OPENAI_API_KEY") and settings.OPENAI_API_KEY:
+                    try:
+                        openai_key = settings.OPENAI_API_KEY.get_secret_value()
+                        logger.info("Found OpenAI API key in settings")
+                    except:
+                        openai_key = str(settings.OPENAI_API_KEY)
+                        logger.info("Found OpenAI API key in settings (not secret)")
+                        
+                deepseek_key = None
+                if "DEEPSEEK_API_KEY" in os.environ and os.environ.get("DEEPSEEK_API_KEY"):
+                    deepseek_key = os.environ.get("DEEPSEEK_API_KEY")
+                    logger.info("Found DeepSeek API key in environment variables")
+                elif hasattr(settings, "DEEPSEEK_API_KEY") and settings.DEEPSEEK_API_KEY:
+                    try:
+                        deepseek_key = settings.DEEPSEEK_API_KEY.get_secret_value()
+                        logger.info("Found DeepSeek API key in settings")
+                    except:
+                        deepseek_key = str(settings.DEEPSEEK_API_KEY)
+                        logger.info("Found DeepSeek API key in settings (not secret)")
+                
+                # Check if keys were found
+                openai_key_available = openai_key is not None
+                deepseek_key_available = deepseek_key is not None
                 
                 # Log environment info for debugging
                 logger.info(f"Initializing LLM (attempt {retry_count+1}/{max_retries+1}) - Environment: {environment}, Testing: {testing}")

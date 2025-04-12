@@ -21,6 +21,7 @@ import asyncio
 from core.models.deal import Deal
 from core.services.base import BaseService
 from core.repositories.deal import DealRepository
+from core.repositories.market import MarketRepository
 from core.utils.redis import get_redis_client
 from core.utils.llm import create_llm_chain
 from core.utils.ecommerce import AmazonAPI, WalmartAPI
@@ -56,6 +57,8 @@ class DealService(BaseService[Deal, Any, Any], DealTrackingMixin):
         """
         super().__init__(session=session, redis_service=redis_service)
         self._repository = DealRepository(session)
+        self._market_repository = MarketRepository(session)
+        self._current_user_id = None
         self.session = session  # Explicitly set the session attribute
         self.llm_chain = self._initialize_llm_chain()
         self.scheduler = AsyncIOScheduler()
@@ -166,6 +169,14 @@ class DealService(BaseService[Deal, Any, Any], DealTrackingMixin):
             background_tasks: FastAPI BackgroundTasks instance
         """
         self._background_tasks = background_tasks
+
+    def set_current_user_id(self, user_id: Optional[UUID]) -> None:
+        """Set the current user ID.
+        
+        Args:
+            user_id: The current user's UUID
+        """
+        self._current_user_id = user_id
 
     def add_background_task(self, func: Any, *args: Any, **kwargs: Any) -> None:
         """Add a task to be executed in the background.

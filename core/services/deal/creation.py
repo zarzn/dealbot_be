@@ -7,11 +7,16 @@ import logging
 from typing import List, Optional, Dict, Any, Union
 from uuid import UUID
 from decimal import Decimal, InvalidOperation
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, and_
+import json
+import uuid
+import hashlib
 
 from core.models.deal import Deal, DealStatus
+from core.models.enums import MarketType
 from core.exceptions import InvalidDealDataError
+from core.utils.validation import Validator
 
 logger = logging.getLogger(__name__)
 
@@ -68,144 +73,181 @@ async def create_deal_from_dict(self, deal_data: Dict[str, Any]) -> Deal:
         raise InvalidDealDataError(f"Invalid deal data: {str(e)}")
 
 async def _create_deal_from_scraped_data(self, deal_data: Dict[str, Any]) -> Optional[Deal]:
-    """Create a deal from scraped data.
+    """Create a Deal object from scraped product data.
     
     Args:
-        deal_data: Dictionary containing deal data from scraping
+        deal_data: Product data from scraper
         
     Returns:
-        Created Deal object or None if creation failed
+        Created Deal object or None if validation fails
     """
     try:
-        # Check if a deal with this URL already exists
-        existing_deal_query = select(Deal).where(Deal.url == deal_data['url'])
-        existing_result = await self.db.execute(existing_deal_query)
-        existing_deal = existing_result.scalar_one_or_none()
+        logger.debug(f"Creating deal from scraped data: {deal_data.get('title', 'Unknown')[:30]}...")
         
-        if existing_deal:
-            logger.info(f"Deal with URL {deal_data['url']} already exists, skipping creation")
-            return existing_deal
+        # Basic validation
+        required_fields = ['title', 'url', 'source']
+        for field in required_fields:
+            if not deal_data.get(field):
+                logger.warning(f"Scraped product missing required field: {field}")
+                return None
+                
+        # Validate price - must be a positive value
+        price = deal_data.get('price')
+        if price is None or not isinstance(price, (float, int, Decimal)) or price <= 0:
+            logger.warning(f"Scraped product has invalid price: {price}, skipping")
+            return None
             
-        # Use system admin user ID if no user ID is provided
-        if not deal_data.get('user_id'):
-            # Get system admin user ID from settings
-            from core.config import settings
-            system_user_id = settings.SYSTEM_USER_ID
-            deal_data['user_id'] = UUID(system_user_id)
-            logger.info(f"No user ID provided, using system admin user ID: {system_user_id}")
-
-        # Ensure seller_info contains rating and reviews if available
-        if 'seller_info' not in deal_data:
-            deal_data['seller_info'] = {}
+        # Convert price to Decimal if it's not already
+        if not isinstance(price, Decimal):
+            try:
+                price_decimal = Decimal(str(price))
+                if price_decimal <= Decimal('0'):
+                    logger.warning(f"Scraped product has zero or negative price: {price}, skipping")
+                    return None
+                deal_data['price'] = price_decimal
+            except (ValueError, TypeError, InvalidOperation):
+                logger.warning(f"Could not convert price to Decimal: {price}, skipping")
+                return None
+                
+        # Extract market ID based on source
+        market_id = None
+        source = deal_data.get('source', '').lower()
         
-        # If seller_info doesn't have a rating but the product has one, use that
-        if 'seller_info' in deal_data and (
-            'rating' not in deal_data['seller_info'] or 
-            not deal_data['seller_info']['rating']
-        ):
-            # Check for rating in deal_metadata
-            if 'deal_metadata' in deal_data and deal_data['deal_metadata']:
-                if 'rating' in deal_data['deal_metadata']:
-                    try:
-                        rating = deal_data['deal_metadata']['rating']
-                        # Convert string ratings to float
-                        if isinstance(rating, str):
-                            rating = float(rating)
-                        deal_data['seller_info']['rating'] = rating
-                        logger.info(f"Using rating from deal_metadata: {rating}")
-                    except (ValueError, TypeError):
-                        logger.warning(f"Failed to parse rating from deal_metadata: {deal_data['deal_metadata'].get('rating')}")
-            # Check for rating directly in deal_data
-            elif 'rating' in deal_data:
-                try:
-                    rating = deal_data['rating']
-                    if isinstance(rating, str):
-                        rating = float(rating)
-                    deal_data['seller_info']['rating'] = rating
-                    logger.info(f"Using rating from deal_data: {rating}")
-                except (ValueError, TypeError):
-                    logger.warning(f"Failed to parse rating from deal_data: {deal_data.get('rating')}")
-        
-        # Similar for reviews count
-        if 'seller_info' in deal_data and (
-            'reviews' not in deal_data['seller_info'] or 
-            not deal_data['seller_info'].get('reviews')
-        ):
-            # Check for review_count in deal_metadata
-            if 'deal_metadata' in deal_data and deal_data['deal_metadata']:
-                if 'review_count' in deal_data['deal_metadata']:
-                    try:
-                        reviews = deal_data['deal_metadata']['review_count']
-                        # Convert string to int
-                        if isinstance(reviews, str):
-                            reviews = int(reviews)
-                        deal_data['seller_info']['reviews'] = reviews
-                        logger.info(f"Using reviews from deal_metadata: {reviews}")
-                    except (ValueError, TypeError):
-                        logger.warning(f"Failed to parse reviews from deal_metadata: {deal_data['deal_metadata'].get('review_count')}")
-            # Check for reviews directly in deal_data
-            elif 'review_count' in deal_data:
-                try:
-                    reviews = deal_data['review_count']
-                    if isinstance(reviews, str):
-                        reviews = int(reviews)
-                    deal_data['seller_info']['reviews'] = reviews
-                    logger.info(f"Using reviews from deal_data: {reviews}")
-                except (ValueError, TypeError):
-                    logger.warning(f"Failed to parse reviews from deal_data: {deal_data.get('review_count')}")
+        # Get market by type if available
+        try:
+            # Try to find the market type in various ways
+            market_type = None
             
-        # Validate and fix price to ensure it's positive (meets ch_positive_price constraint)
-        if 'price' in deal_data:
-            # Convert to Decimal if it's not already
-            if not isinstance(deal_data['price'], Decimal):
-                try:
-                    deal_data['price'] = Decimal(str(deal_data['price']))
-                except (ValueError, TypeError, InvalidOperation):
-                    logger.warning(f"Invalid price value: {deal_data['price']}, setting to minimum price")
-                    deal_data['price'] = Decimal('0.01')
-
-            # Ensure price is positive (satisfies ch_positive_price constraint)
-            if deal_data['price'] <= Decimal('0'):
-                logger.warning(f"Price {deal_data['price']} is not positive, setting to minimum price")
-                deal_data['price'] = Decimal('0.01')  # Set minimum valid price
-        else:
-            # If no price is provided, set a default minimum price
-            deal_data['price'] = Decimal('0.01')
-            logger.warning("No price provided for deal, setting to minimum price")
-
-        # Create new deal
-        logger.info(f"Creating new deal from scraped data: {deal_data['title']}")
-        logger.info(f"Description available: {bool(deal_data.get('description'))}")
-        if deal_data.get('description'):
-            logger.info(f"Description length: {len(deal_data['description'])}")
-            logger.info(f"Description preview: {deal_data['description'][:100]}")
-        else:
-            logger.warning("No description available for scraped deal")
+            # 1. Direct MarketType enum match
+            for mt in MarketType:
+                if mt.value.lower() == source:
+                    market_type = mt
+                    logger.info(f"Found direct market type match: {source} -> {market_type}")
+                    break
             
-        new_deal = Deal(
-            user_id=deal_data['user_id'],
-            market_id=deal_data['market_id'],
-            title=deal_data['title'],
-            description=deal_data.get('description', ''),
-            url=deal_data['url'],
-            price=deal_data['price'],
-            original_price=deal_data.get('original_price'),
-            currency=deal_data['currency'],
-            source=deal_data['source'],
-            image_url=deal_data.get('image_url'),
-            category=deal_data['category'],
-            seller_info=deal_data.get('seller_info'),
-            deal_metadata=deal_data.get('deal_metadata'),
-            found_at=datetime.utcnow(),
-            status=DealStatus.ACTIVE
-        )
+            # 2. Check for partial matches if no direct match found
+            if market_type is None:
+                # Check for partial matches or prefixes
+                for mt in MarketType:
+                    if source.startswith(mt.value.lower()):
+                        market_type = mt
+                        logger.info(f"Found partial market type match: {source} -> {market_type}")
+                        break
+                    
+            # 3. Try specific source matches if still no match
+            if market_type is None:
+                specific_mappings = {
+                    "amazon_search": MarketType.AMAZON,
+                    "walmart_search": MarketType.WALMART,
+                    "google_shopping": MarketType.GOOGLE_SHOPPING,
+                    "google_shopping_search": MarketType.GOOGLE_SHOPPING,
+                    "ebay_search": MarketType.EBAY
+                }
+                
+                if source in specific_mappings:
+                    market_type = specific_mappings[source]
+                    logger.info(f"Found specific market type mapping: {source} -> {market_type}")
+                    
+            if market_type:
+                market = await self._market_repository.get_by_type(market_type)
+                if market:
+                    if isinstance(market, list) and market:
+                        market_id = market[0].id
+                        logger.info(f"Using market ID from list: {market_id}, market type: {market_type}")
+                    else:
+                        market_id = market.id
+                        logger.info(f"Using market ID: {market_id}, market type: {market_type}")
+        except Exception as e:
+            logger.warning(f"Error retrieving market by type {source}: {str(e)}")
+            
+        # If market ID not found, try to use a default market or create a new one
+        if not market_id:
+            try:
+                # Log the original source for debugging
+                logger.info(f"Trying fallback market resolution for source: {source}")
+                
+                # Try to get a default market with fallbacks
+                default_markets = await self._market_repository.list()
+                
+                if default_markets:
+                    # First try to match by source name or prefix to be more flexible
+                    for m in default_markets:
+                        market_type_value = getattr(m, 'type', '').lower()
+                        
+                        # Try exact match first
+                        if market_type_value == source:
+                            market_id = m.id
+                            logger.info(f"Using market ID with exact source match: {market_id} ({market_type_value})")
+                            break
+                            
+                        # Then try prefix match
+                        if source.startswith(market_type_value) or market_type_value.startswith(source):
+                            market_id = m.id
+                            logger.info(f"Using market ID with prefix match: {market_id} ({market_type_value})")
+                            break
+                    
+                    # If still not found, use the first active market
+                    if not market_id:
+                        active_markets = [m for m in default_markets if getattr(m, 'is_active', False)]
+                        if active_markets:
+                            market = active_markets[0]
+                            market_id = market.id
+                            logger.warning(f"Using fallback active market {getattr(market, 'type', 'unknown')} for source {source}")
+                        else:
+                            # No active markets, use the first market
+                            market = default_markets[0]
+                            market_id = market.id
+                            logger.warning(f"Using first available market {getattr(market, 'type', 'unknown')} for source {source} (no active markets found)")
+                                
+                # If still no market, create a UUID specifically for unidentified markets
+                if not market_id:
+                    # Generate a deterministic UUID based on the source for consistency
+                    source_hash = hashlib.md5(source.encode()).hexdigest()
+                    market_id = UUID(f"00000000-0000-4000-a000-{source_hash[:12]}")
+                    logger.warning(f"No suitable market found for source {source}, using generated fallback ID: {market_id}")
+            except Exception as e:
+                logger.error(f"Error finding suitable market for deal: {str(e)}")
+                # Generate an emergency fallback UUID
+                market_id = UUID('00000000-0000-4000-a000-000000000000')
+                logger.error(f"Using emergency fallback market ID due to error: {market_id}")
         
-        self.db.add(new_deal)
-        await self.db.commit()
-        await self.db.refresh(new_deal)
+        # Standardize data for deal creation
+        create_data = {
+            'user_id': self._current_user_id,
+            'market_id': market_id,
+            'goal_id': None,  # No specific goal for scraped data
+            'title': deal_data.get('title', ''),
+            'description': deal_data.get('description', ''),
+            'url': deal_data.get('url', ''),
+            'price': deal_data.get('price'),
+            'original_price': deal_data.get('original_price'),
+            'currency': deal_data.get('currency', 'USD'),
+            'source': source,
+            'image_url': deal_data.get('image_url', ''),
+            'category': deal_data.get('category', 'other'),
+            'seller_info': deal_data.get('seller_info', {}),
+            'availability': deal_data.get('availability', {}),
+            'found_at': datetime.now(),
+            'expires_at': datetime.now() + timedelta(days=30),  # Default expiry
+            'status': 'active',
+            'deal_metadata': {
+                'search_query': deal_data.get('search_query', ''),
+                'external_id': str(uuid.uuid4())
+            }
+        }
         
-        logger.info(f"Created new deal from scraped data: {new_deal.id}")
-        return new_deal
+        # Validate the data before creating the deal
+        validated_data = await self.validate_deal_data(create_data)
+        
+        # Final check for price after validation
+        if not validated_data.get('price') or Decimal(str(validated_data['price'])) <= 0:
+            logger.warning(f"Deal has invalid price after validation: {validated_data.get('price')}, skipping")
+            return None
+            
+        # Create the deal
+        deal = await self._repository.create(validated_data)
+        logger.info(f"Successfully created deal: {deal.title[:30]}... from scraped data")
+        return deal
         
     except Exception as e:
         logger.error(f"Failed to create deal from scraped data: {str(e)}")
@@ -293,7 +335,7 @@ def _convert_to_response(self, deal, user_id: Optional[UUID] = None, include_ai_
             "expires_at": deal.expires_at.isoformat() if deal.expires_at else None,
             "market_name": market_name,
             "seller_info": seller_info,
-            "availability": {"in_stock": True},  # Default availability
+            "availability": deal.availability if hasattr(deal, 'availability') and deal.availability else {"in_stock": True},
             "created_at": deal.created_at.isoformat() if hasattr(deal, "created_at") and deal.created_at else datetime.utcnow().isoformat(),
             "updated_at": deal.updated_at.isoformat() if hasattr(deal, "updated_at") and deal.updated_at else datetime.utcnow().isoformat(),
             # Add required fields for DealResponse model
@@ -440,3 +482,124 @@ def _convert_to_response(self, deal, user_id: Optional[UUID] = None, include_ai_
             "latest_score": None,
             "error": f"Error generating complete response: {str(e)}"
         } 
+
+async def create_deal(
+        self,
+        user_id: UUID,
+        goal_id: Optional[UUID],
+        market_id: UUID,
+        title: str,
+        description: Optional[str],
+        price: Union[Decimal, float, str],
+        original_price: Optional[Union[Decimal, float, str]] = None,
+        currency: str = "USD",
+        source: Optional[str] = None,
+        url: str = None,
+        image_url: Optional[str] = None,
+        category: Optional[str] = None,
+        seller_info: Optional[Dict[str, Any]] = None,
+        availability: Optional[Dict[str, Any]] = None,
+        found_at: Optional[datetime] = None,
+        expires_at: Optional[datetime] = None,
+        status: Optional[str] = DealStatus.ACTIVE.value,
+        deal_metadata: Optional[Dict[str, Any]] = None,
+        price_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Deal:
+        """Create a new deal.
+        
+        Args:
+            user_id: User ID
+            goal_id: Optional goal ID
+            market_id: Market ID
+            title: Deal title
+            description: Deal description
+            price: Current price
+            original_price: Original price
+            currency: Currency code
+            source: Deal source
+            url: Deal URL
+            image_url: Image URL
+            category: Deal category
+            seller_info: Seller information
+            availability: Availability information
+            found_at: When the deal was found
+            expires_at: When the deal expires
+            status: Deal status
+            deal_metadata: Deal metadata
+            price_metadata: Price metadata
+            
+        Returns:
+            Created deal
+        """
+        if not user_id:
+            raise ValueError("User ID is required")
+        
+        if not market_id:
+            raise ValueError("Market ID is required")
+            
+        if not title:
+            raise ValueError("Title is required")
+            
+        if not url:
+            raise ValueError("URL is required")
+            
+        if not price:
+            raise ValueError("Price is required")
+            
+        # Normalize URL
+        normalized_url = Validator.normalize_url(url, source=source)
+        
+        # Convert price to Decimal
+        if not isinstance(price, Decimal):
+            price = Decimal(str(price))
+            
+        # Convert original price to Decimal if provided
+        if original_price and not isinstance(original_price, Decimal):
+            original_price = Decimal(str(original_price))
+
+        # Construct deal_data dictionary from function parameters
+        deal_data = {
+            "user_id": user_id,
+            "goal_id": goal_id,
+            "market_id": market_id,
+            "title": title,
+            "description": description,
+            "price": price,
+            "original_price": original_price,
+            "currency": currency,
+            "source": source,
+            "url": normalized_url,  # Use the normalized URL
+            "image_url": image_url,
+            "category": category,
+            "seller_info": seller_info,
+            "availability": availability,
+            "found_at": found_at or datetime.now(timezone.utc),
+            "expires_at": expires_at,
+            "status": status,
+            "deal_metadata": deal_metadata,
+            "price_metadata": price_metadata
+        }
+
+        # Check for existing deal with same URL and goal_id to prevent unique constraint violation
+        if goal_id is not None:
+            query = select(Deal).where(
+                and_(
+                    Deal.url == normalized_url,
+                    Deal.goal_id == goal_id
+                )
+            )
+            result = await self._repository.db.execute(query)
+            existing_deal = result.scalar_one_or_none()
+            
+            if existing_deal:
+                logger.info(f"Deal with URL {normalized_url} and goal_id {goal_id} already exists")
+                return existing_deal
+
+        # Create deal using the repository
+        deal = await self._repository.create(deal_data)
+        
+        # Cache deal
+        await self._cache_deal(deal)
+        
+        logger.info(f"Deal created successfully: {deal.id}")
+        return deal 

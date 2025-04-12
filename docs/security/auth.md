@@ -1,338 +1,674 @@
-# Authentication & Authorization
+# Authentication and Security
 
 ## Overview
-The AI Agentic Deals System implements a robust security system using JWT tokens, role-based access control, and secure session management. All authentication and token management code is centralized in the `backend/core/services/auth.py` module.
 
-## Authentication Service
+This document outlines the authentication and security mechanisms implemented in the AI Agentic Deals System. It covers user authentication, authorization, token management, data protection, and security best practices enforced throughout the system.
 
-### Location
-```
-backend/core/services/auth.py
-```
+## Authentication System
 
-### Responsibilities
-- User authentication
-- Token generation and validation
-- Token blacklisting
-- Token balance management
-- OAuth2 configuration
-- Session management
+### Authentication Flow
 
-## Token Management
+1. **User Registration**
+   - Users register with email and password
+   - Passwords are hashed using Argon2id with appropriate work factors
+   - Email verification is required to activate accounts
 
-### JWT Configuration
+2. **Login Process**
+   - User submits credentials through secure endpoint
+   - System validates credentials against stored hash
+   - JWT tokens (access and refresh) are issued upon successful authentication
+   - Failed attempts are logged and rate-limited
+
+3. **Token-Based Authentication**
+   - **Access Token**: Short-lived (15 minutes), used for API requests
+   - **Refresh Token**: Longer-lived (7 days), used to obtain new access tokens
+   - All tokens are cryptographically signed with RS256 algorithm
+   - Claims include user ID, scope, and expiration
+
+### Authentication Service
+
+The `AuthService` class in `core/services/auth.py` manages all authentication-related functionality:
+
 ```python
-JWT_SETTINGS = {
-    "algorithm": "HS256",
-    "access_token_expire_minutes": 30,
-    "refresh_token_expire_days": 7,
-    "token_type": "bearer"
-}
+class AuthService:
+    """Authentication service handling user auth and token management."""
+    
+    async def authenticate_user(self, email: str, password: str) -> User:
+        """Authenticate a user with email and password."""
+        
+    async def create_tokens(self, user_id: str) -> TokenPair:
+        """Create access and refresh tokens for a user."""
+        
+    async def refresh_tokens(self, refresh_token: str) -> TokenPair:
+        """Create a new token pair using a refresh token."""
+        
+    async def revoke_token(self, token: str) -> bool:
+        """Revoke a token by adding it to the blacklist."""
+        
+    async def verify_token(self, token: str, token_type: TokenType) -> dict:
+        """Verify a token's validity and return its payload."""
 ```
 
-### Token Types
-1. **Access Token**
-   - Short-lived (30 minutes)
-   - Used for API access
-   - Contains user claims
+### Token Lifecycle Management
 
-2. **Refresh Token**
-   - Long-lived (7 days)
-   - Used to obtain new access tokens
-   - Rotated on use
+1. **Token Generation**
+   - Generated using `jose` library with RSA keys (2048-bit)
+   - Access tokens include user permissions and roles
+   - Rotation of signing keys scheduled quarterly
 
-### Token Format
-```json
-{
-    "sub": "user_id",
-    "exp": 1234567890,
-    "iat": 1234567890,
-    "type": "access",
-    "scope": "full",
-    "jti": "unique_token_id"
-}
-```
+2. **Token Storage and Management**
+   - Active tokens tracked in Redis with TTL matching token expiration
+   - Token revocation implemented via blacklist in Redis
+   - Blacklist entries automatically expire after token would have expired
 
-## Security Implementation
+3. **Token Refresh Strategy**
+   - Sliding window approach with automatic refresh when expiration approaches
+   - Absolute maximum lifetime enforced (30 days)
+   - Device fingerprinting used to detect anomalous refresh attempts
 
-### Password Hashing
+## Authorization System
+
+### Role-Based Access Control (RBAC)
+
+The system implements RBAC with the following roles:
+
+1. **Anonymous**: Unauthenticated users with minimal access
+2. **User**: Standard authenticated users
+3. **Premium**: Users with premium subscription
+4. **Admin**: System administrators with access to management features
+5. **System**: Internal service-to-service communication
+
+Roles are defined in the `core/models/enums.py` file:
+
 ```python
-from passlib.context import CryptContext
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
-
-def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+class UserRole(str, Enum):
+    """User role enum."""
+    
+    ANONYMOUS = "anonymous"
+    USER = "user"
+    PREMIUM = "premium"
+    ADMIN = "admin"
+    SYSTEM = "system"
 ```
 
-### Token Generation
+### Permission System
+
+Permissions are granular and composable:
+
 ```python
-async def create_access_token(user_id: UUID) -> str:
-    expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    data = {
-        "sub": str(user_id),
-        "exp": datetime.utcnow() + expires_delta,
-        "type": "access",
-        "jti": str(uuid4())
+class Permission(str, Enum):
+    """Permission enum for access control."""
+    
+    # Deal permissions
+    DEALS_READ = "deals:read"
+    DEALS_CREATE = "deals:create"
+    DEALS_UPDATE = "deals:update"
+    DEALS_DELETE = "deals:delete"
+    
+    # User permissions
+    USERS_READ = "users:read"
+    USERS_CREATE = "users:create"
+    USERS_UPDATE = "users:update"
+    USERS_DELETE = "users:delete"
+    
+    # Admin permissions
+    ADMIN_ACCESS = "admin:access"
+    ADMIN_USERS = "admin:users"
+    ADMIN_DEALS = "admin:deals"
+    
+    # Token permissions
+    TOKENS_READ = "tokens:read"
+    TOKENS_TRANSFER = "tokens:transfer"
+    TOKENS_ADMIN = "tokens:admin"
+```
+
+### Role-Permission Mapping
+
+Roles are mapped to permissions in the `core/services/auth.py` file:
+
+```python
+ROLE_PERMISSIONS = {
+    UserRole.ANONYMOUS: {
+        Permission.DEALS_READ
+    },
+    UserRole.USER: {
+        Permission.DEALS_READ,
+        Permission.DEALS_CREATE,
+        Permission.USERS_READ,
+        Permission.TOKENS_READ,
+        Permission.TOKENS_TRANSFER
+    },
+    UserRole.PREMIUM: {
+        Permission.DEALS_READ,
+        Permission.DEALS_CREATE,
+        Permission.DEALS_UPDATE,
+        Permission.USERS_READ,
+        Permission.TOKENS_READ,
+        Permission.TOKENS_TRANSFER
+    },
+    UserRole.ADMIN: {
+        Permission.DEALS_READ,
+        Permission.DEALS_CREATE,
+        Permission.DEALS_UPDATE,
+        Permission.DEALS_DELETE,
+        Permission.USERS_READ,
+        Permission.USERS_CREATE,
+        Permission.USERS_UPDATE,
+        Permission.ADMIN_ACCESS,
+        Permission.ADMIN_USERS,
+        Permission.ADMIN_DEALS,
+        Permission.TOKENS_READ,
+        Permission.TOKENS_TRANSFER,
+        Permission.TOKENS_ADMIN
     }
-    return jwt.encode(data, settings.JWT_SECRET, algorithm=JWT_SETTINGS["algorithm"])
+}
 ```
 
-### Token Validation
+### Authorization Implementation
+
+Authorization is enforced at two levels:
+
+1. **API Level**: Through FastAPI dependencies
+2. **Service Level**: Through explicit permission checks
+
+#### API Level Authorization
+
 ```python
-async def verify_token(token: str) -> dict:
+# core/api/dependencies.py
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+
+from core.services.auth import get_auth_service
+from core.models.enums import Permission
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    """Get the current user from a token."""
+    auth_service = get_auth_service()
     try:
-        payload = jwt.decode(
-            token,
-            settings.JWT_SECRET,
-            algorithms=[JWT_SETTINGS["algorithm"]]
-        )
-        if await is_token_blacklisted(payload["jti"]):
-            raise InvalidTokenError("Token is blacklisted")
+        payload = await auth_service.verify_token(token, TokenType.ACCESS)
         return payload
-    except JWTError:
-        raise InvalidTokenError("Invalid token")
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+async def require_permission(
+    permission: Permission,
+    current_user: dict = Depends(get_current_user)
+):
+    """Check if the current user has the required permission."""
+    user_permissions = current_user.get("permissions", [])
+    if permission not in user_permissions:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
 ```
 
-## Authentication Flow
+#### Usage in API Endpoints
 
-### 1. User Registration
 ```python
-async def register_user(user_data: UserCreate) -> User:
-    # Validate email uniqueness
-    if await get_user_by_email(user_data.email):
-        raise UserExistsError("Email already registered")
-    
-    # Create user with hashed password
-    user_data.password = get_password_hash(user_data.password)
-    user = await create_user(user_data)
-    
-    # Send verification email
-    await send_verification_email(user)
-    
-    return user
+# core/api/endpoints/deals.py
+from fastapi import APIRouter, Depends
+
+from core.api.dependencies import get_current_user, require_permission
+from core.models.enums import Permission
+
+router = APIRouter()
+
+@router.get("/deals/")
+async def get_deals(current_user: dict = Depends(get_current_user)):
+    """Get all deals. Available to all authenticated users."""
+    # Implementation...
+
+@router.post("/deals/")
+async def create_deal(
+    deal: DealCreate,
+    _: None = Depends(require_permission(Permission.DEALS_CREATE))
+):
+    """Create a new deal. Requires DEALS_CREATE permission."""
+    # Implementation...
+
+@router.delete("/deals/{deal_id}")
+async def delete_deal(
+    deal_id: str,
+    _: None = Depends(require_permission(Permission.DEALS_DELETE))
+):
+    """Delete a deal. Requires DEALS_DELETE permission."""
+    # Implementation...
 ```
 
-### 2. User Login
+## Data Protection
+
+### Data Encryption
+
+1. **Data at Rest**
+   - Database encryption using PostgreSQL's encryption features
+   - Sensitive fields encrypted using `cryptography` library (AES-256-GCM)
+   - Encryption keys stored in AWS KMS, rotated quarterly
+
+2. **Data in Transit**
+   - All communications secured via TLS 1.3
+   - HTTP Strict Transport Security (HSTS) enabled
+   - Certificate pinning implemented in mobile clients
+
+### Personally Identifiable Information (PII) Handling
+
+1. **PII Minimization**
+   - Only essential PII collected
+   - Data retention periods enforced
+   - User consent required for all data collection
+
+2. **PII Storage and Access**
+   - PII stored in encrypted format
+   - Access to PII logged and audited
+   - Field-level encryption for highly sensitive data
+
+### Implementation Examples
+
 ```python
-async def login_user(email: str, password: str) -> TokenResponse:
-    # Verify user credentials
-    user = await authenticate_user(email, password)
-    if not user:
-        raise InvalidCredentialsError()
-    
-    # Generate tokens
-    access_token = await create_access_token(user.id)
-    refresh_token = await create_refresh_token(user.id)
-    
-    return TokenResponse(
-        access_token=access_token,
-        refresh_token=refresh_token,
-        token_type="bearer"
-    )
+# core/utils/encryption.py
+from cryptography.fernet import Fernet
+from core.config import settings
+
+def get_encryption_key():
+    """Get encryption key from AWS KMS or settings."""
+    # Implementation fetches the key from KMS or settings
+
+def encrypt_sensitive_data(data: str) -> str:
+    """Encrypt sensitive data with Fernet (AES-128-CBC)."""
+    key = get_encryption_key()
+    f = Fernet(key)
+    return f.encrypt(data.encode()).decode()
+
+def decrypt_sensitive_data(encrypted_data: str) -> str:
+    """Decrypt sensitive data with Fernet (AES-128-CBC)."""
+    key = get_encryption_key()
+    f = Fernet(key)
+    return f.decrypt(encrypted_data.encode()).decode()
 ```
 
-### 3. Token Refresh
+## API Security
+
+### Request Validation
+
+1. **Input Validation**
+   - Schema-based validation using Pydantic
+   - Type checking and constraint enforcement
+   - Custom validators for business rules
+
+2. **Request Sanitization**
+   - HTML sanitization for user-generated content
+   - XSS protection through context-aware escaping
+   - SQLi prevention through parameterized queries
+
+### Rate Limiting and Throttling
+
+1. **Rate Limiting Strategy**
+   - IP-based rate limiting
+   - User-based rate limiting
+   - Endpoint-specific limits
+
+2. **Implementation**
+   - Redis-based sliding window counter
+   - Gradual backoff for repeated violations
+   - Clear rate limit headers in responses
+
 ```python
-async def refresh_access_token(refresh_token: str) -> TokenResponse:
-    # Verify refresh token
-    payload = await verify_token(refresh_token)
-    if payload["type"] != "refresh":
-        raise InvalidTokenError("Not a refresh token")
+# core/api/middleware/rate_limit.py
+from fastapi import Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware
+from core.services.redis import get_redis_service
+import time
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Rate limiting middleware using Redis."""
     
-    # Blacklist used refresh token
-    await blacklist_token(payload["jti"])
-    
-    # Generate new tokens
-    user_id = UUID(payload["sub"])
-    new_access_token = await create_access_token(user_id)
-    new_refresh_token = await create_refresh_token(user_id)
-    
-    return TokenResponse(
-        access_token=new_access_token,
-        refresh_token=new_refresh_token,
-        token_type="bearer"
-    )
+    async def dispatch(self, request: Request, call_next):
+        # Get client identifier (IP or user ID)
+        client_id = self._get_client_id(request)
+        
+        # Calculate rate limit
+        rate_limit_key = f"ratelimit:{client_id}:{request.scope['path']}"
+        
+        # Check if rate limit exceeded
+        redis = get_redis_service()
+        current = await redis.incr(rate_limit_key)
+        
+        # Set expiry if first request
+        if current == 1:
+            await redis.expire(rate_limit_key, 60)  # 60 second window
+            
+        # Set headers
+        response = await call_next(request)
+        response.headers["X-RateLimit-Limit"] = "100"
+        response.headers["X-RateLimit-Remaining"] = str(max(0, 100 - current))
+        
+        # If exceeded, return 429
+        if current > 100:
+            return Response(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+                media_type="application/json"
+            )
+            
+        return response
 ```
 
-## Token Blacklist Management
+## Cross-Site Request Forgery (CSRF) Protection
 
-### Redis Implementation
-```python
-async def blacklist_token(token_id: str) -> None:
-    """Add token to blacklist with expiration."""
-    redis = await get_redis_client()
-    await redis.setex(
-        f"blacklist:{token_id}",
-        settings.TOKEN_BLACKLIST_TTL,
-        "1"
-    )
+1. **CSRF Strategy**
+   - Double Submit Cookie pattern
+   - Same-Site cookie attribute set to Lax
+   - Origin validation on state-changing requests
 
-async def is_token_blacklisted(token_id: str) -> bool:
-    """Check if token is blacklisted."""
-    redis = await get_redis_client()
-    return await redis.exists(f"blacklist:{token_id}")
-```
-
-## Session Management
-
-### Session Storage
-- Use Redis for session storage
-- Session TTL: 24 hours
-- Secure session ID generation
-- Session data encryption
-
-### Session Operations
-```python
-async def create_session(user_id: UUID, data: dict) -> str:
-    session_id = generate_secure_session_id()
-    await store_session(session_id, user_id, data)
-    return session_id
-
-async def get_session(session_id: str) -> Optional[dict]:
-    return await retrieve_session(session_id)
-
-async def invalidate_session(session_id: str) -> None:
-    await delete_session(session_id)
-```
-
-## Security Middleware
-
-### 1. Authentication Middleware
-```python
-async def authenticate_request(request: Request) -> Optional[User]:
-    token = extract_token_from_header(request)
-    if not token:
-        return None
-    
-    try:
-        payload = await verify_token(token)
-        user = await get_user_by_id(UUID(payload["sub"]))
-        return user
-    except (InvalidTokenError, UserNotFoundError):
-        return None
-```
-
-### 2. Rate Limiting Middleware
-```python
-async def rate_limit_middleware(request: Request):
-    client_ip = request.client.host
-    endpoint = request.url.path
-    
-    if await is_rate_limited(client_ip, endpoint):
-        raise RateLimitExceededError()
-```
+2. **Implementation in Frontend**
+   - CSRF token included in all forms
+   - Token validated on backend
 
 ## Security Best Practices
 
-### 1. Password Requirements
-- Minimum length: 8 characters
-- Must contain: uppercase, lowercase, number, special character
-- Password history: prevent reuse of last 5 passwords
-- Maximum age: 90 days
+### Password Management
 
-### 2. Rate Limiting
-- Standard endpoints: 100 requests/minute
-- Authentication endpoints: 10 requests/minute
-- Token operations: 50 requests/minute
-- IP-based and user-based limits
+1. **Password Policy**
+   - Minimum 12 characters with complexity requirements
+   - Password breach detection via HaveIBeenPwned API
+   - Maximum password age (90 days)
+   - Password history enforcement (no reuse of last 5 passwords)
 
-### 3. Input Validation
-- Validate all input parameters
-- Sanitize user input
-- Prevent SQL injection
-- Validate file uploads
+2. **Password Storage**
+   - Argon2id with appropriate work factors
+   - Salted hashes with unique per-user salt
+   - Regular updates to work factors as hardware improves
 
-### 4. Error Handling
-- Don't expose sensitive information
-- Log security events
-- Implement proper error responses
-- Monitor failed attempts
-
-## Monitoring and Logging
-
-### Security Events
-- Failed login attempts
-- Token invalidations
-- Rate limit violations
-- Suspicious activities
-
-### Audit Logging
 ```python
-async def log_security_event(
-    event_type: str,
-    user_id: Optional[UUID],
-    details: dict
-) -> None:
-    await create_audit_log(
-        event_type=event_type,
-        user_id=user_id,
-        details=details,
-        ip_address=request.client.host,
-        timestamp=datetime.utcnow()
-    )
+# core/utils/security.py
+from passlib.context import CryptContext
+
+# Configure password hashing
+pwd_context = CryptContext(
+    schemes=["argon2"],
+    deprecated="auto",
+    argon2__memory_cost=65536,
+    argon2__time_cost=3,
+    argon2__parallelism=4
+)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against a hash."""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    """Generate a password hash."""
+    return pwd_context.hash(password)
 ```
 
-## Security Headers
+### Account Security
 
-### HTTP Security Headers
+1. **Account Recovery**
+   - Secure account recovery process
+   - Time-limited recovery tokens
+   - Multi-channel verification
+
+2. **Multi-Factor Authentication (MFA)**
+   - TOTP-based MFA using Google Authenticator compatible algorithm
+   - Recovery codes for backup access
+   - Notification on MFA changes
+
+3. **Session Management**
+   - Session timeout after inactivity
+   - Single session per user (optional)
+   - Device tracking and abnormal login detection
+
+## Monitoring and Detection
+
+### Security Logging
+
+1. **Authentication Events**
+   - Login attempts (successful and failed)
+   - Password changes
+   - Account lockouts
+
+2. **Authorization Events**
+   - Access denied events
+   - Permission changes
+   - Privilege escalation
+
+3. **System Events**
+   - Configuration changes
+   - Service starts/stops
+   - Deployment events
+
+### Audit Logs
+
+Audit logs are collected for all security-relevant actions:
+
 ```python
-SECURITY_HEADERS = {
-    "X-Frame-Options": "DENY",
-    "X-Content-Type-Options": "nosniff",
-    "X-XSS-Protection": "1; mode=block",
-    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
-    "Content-Security-Policy": "default-src 'self'",
-    "Referrer-Policy": "strict-origin-when-cross-origin"
-}
+# core/services/audit_log.py
+from datetime import datetime
+from core.models.enums import AuditAction
+from core.database import get_db_session
+
+async def log_audit_event(
+    user_id: str,
+    action: AuditAction,
+    resource_type: str,
+    resource_id: str,
+    details: dict = None
+):
+    """Log an audit event to the database."""
+    async with get_db_session() as session:
+        audit_log = AuditLog(
+            user_id=user_id,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            details=details or {},
+            timestamp=datetime.utcnow()
+        )
+        session.add(audit_log)
+        await session.commit()
 ```
 
-## Error Responses
+### Intrusion Detection
 
-### Authentication Errors
-```json
-{
-    "status": "error",
-    "error": {
-        "code": "AUTH_001",
-        "message": "Authentication failed",
-        "details": {
-            "reason": "Invalid credentials"
-        }
-    }
-}
+1. **Anomaly Detection**
+   - User behavior analytics
+   - Traffic pattern monitoring
+   - Authentication anomalies
+
+2. **Alerting**
+   - Real-time alerts for suspicious activities
+   - Escalation procedures
+   - Incident response integration
+
+## Secure Development Practices
+
+### Security Testing
+
+1. **Static Application Security Testing (SAST)**
+   - Source code scanning with Bandit
+   - Dependency vulnerability scanning
+   - Regular security code reviews
+
+2. **Dynamic Application Security Testing (DAST)**
+   - Automated scanning with OWASP ZAP
+   - Regular penetration testing
+   - API security testing
+
+3. **Security Regression Testing**
+   - Security tests in CI/CD pipeline
+   - Security issues tracked as bugs
+   - No deployment with open security issues
+
+### Dependency Management
+
+1. **Dependency Policy**
+   - Only approved packages
+   - Regular dependency updates
+   - Vulnerability monitoring and notification
+
+2. **Implementation**
+   - Automated dependency scanning
+   - Dependency lock files committed
+   - Security patches prioritized
+
+## Incident Response
+
+### Security Incident Process
+
+1. **Detection**
+   - Automated detection through monitoring
+   - User-reported incidents
+   - Third-party notifications
+
+2. **Containment**
+   - Account suspension
+   - Token revocation
+   - Network isolation
+
+3. **Eradication**
+   - Vulnerability patching
+   - Malicious content removal
+   - Compromised credential reset
+
+4. **Recovery**
+   - Service restoration
+   - Data integrity verification
+   - Communication with affected users
+
+5. **Lessons Learned**
+   - Incident documentation
+   - Process improvement
+   - Training updates
+
+## Compliance
+
+### Regulatory Compliance
+
+1. **GDPR Compliance**
+   - Data protection assessments
+   - Privacy by design
+   - Right to be forgotten implementation
+
+2. **SOC 2 Compliance**
+   - Security controls documentation
+   - Regular security assessments
+   - Continuous monitoring
+
+### Compliance Implementation
+
+1. **Data Deletion**
+   - Complete user data removal on request
+   - Audit trail of deletion requests
+   - Data retention policy enforcement
+
+2. **Data Export**
+   - Complete user data export functionality
+   - Machine-readable format
+   - Secure delivery mechanism
+
+## Reference Architecture
+
+### Security Components
+
+1. **Frontend Security**
+   - CSP headers
+   - XSS protection
+   - CSRF tokens
+
+2. **API Gateway Security**
+   - WAF integration
+   - Request validation
+   - Rate limiting
+
+3. **Application Security**
+   - Authentication service
+   - Authorization checks
+   - Data encryption
+
+4. **Database Security**
+   - Encryption at rest
+   - Access controls
+   - Audit logging
+
+## Appendix
+
+### Security Configuration Examples
+
+#### CORS Configuration
+
+```python
+# main.py
+from fastapi.middleware.cors import CORSMiddleware
+
+origins = [
+    "https://app.example.com",
+    "https://api.example.com",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["*"],
+)
 ```
 
-### Token Errors
-```json
-{
-    "status": "error",
-    "error": {
-        "code": "TOKEN_001",
-        "message": "Invalid token",
-        "details": {
-            "reason": "Token has expired"
-        }
-    }
-}
+#### Security Headers
+
+```python
+# core/api/middleware/security_headers.py
+from fastapi import FastAPI
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to all responses."""
+    
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        
+        # Security headers
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'"
+        
+        return response
+
+# Adding the middleware to the application
+app = FastAPI()
+app.add_middleware(SecurityHeadersMiddleware)
 ```
 
-## Security Testing
+### Security Checklists
 
-### Test Cases
-1. Authentication flows
-2. Token validation
-3. Password policies
-4. Rate limiting
-5. Input validation
-6. Error handling
-7. Session management
+#### Deployment Security Checklist
 
-### Security Scans
-- Regular vulnerability scans
-- Dependency checks
-- Code security analysis
-- Penetration testing 
+- [ ] All secrets stored in secure storage (AWS Secrets Manager)
+- [ ] Debug mode disabled in production
+- [ ] All unused ports and services disabled
+- [ ] TLS certificates valid and up to date
+- [ ] WAF rules reviewed and updated
+- [ ] Security scanning performed pre-deployment
+- [ ] Monitoring and alerting verified
+- [ ] Backup/restore procedures verified
+
+#### API Security Checklist
+
+- [ ] Authentication required for protected endpoints
+- [ ] Authorization checks on all secured resources
+- [ ] Input validation on all parameters
+- [ ] Rate limiting configured
+- [ ] Response headers properly set
+- [ ] Error messages don't leak sensitive info
+- [ ] Sensitive data properly encrypted
+- [ ] Audit logging enabled for sensitive operations 

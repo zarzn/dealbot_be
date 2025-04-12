@@ -229,9 +229,8 @@ async def lifespan(app: FastAPI):
         
         # Initialize market integrations
         try:
-            # Instead of calling a non-existent function, just create an instance
-            # of MarketIntegrationFactory which will initialize the base structures
-            market_factory = MarketIntegrationFactory()
+            # Setup market factory
+            market_factory = MarketIntegrationFactory(scraper_type="oxylabs")
             logger.info("Market integrations factory initialized successfully")
         except Exception as e:
             logger.error(f"Market integrations initialization failed: {str(e)}")

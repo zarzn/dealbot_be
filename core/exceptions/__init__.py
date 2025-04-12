@@ -325,6 +325,15 @@ from .recommendation_exceptions import (
     RecommendationRetrievalError
 )
 
+# Import payment exceptions
+from .payment_exceptions import (
+    PaymentError,
+    PaymentValidationError,
+    PaymentMethodNotSupportedError,
+    PaymentRequiredError,
+    PaymentDeclinedError
+)
+
 # New exceptions
 class WebSocketError(BaseError):
     """WebSocket error."""
@@ -596,5 +605,12 @@ __all__ = [
     'ResourceExistsError',
     'ServiceUnavailableError',
     'ThirdPartyError',
-    'RedisError'
+    'RedisError',
+
+    # Payment exceptions
+    'PaymentError',
+    'PaymentValidationError',
+    'PaymentMethodNotSupportedError',
+    'PaymentRequiredError',
+    'PaymentDeclinedError'
 ]

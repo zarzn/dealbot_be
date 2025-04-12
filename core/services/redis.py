@@ -13,6 +13,7 @@ from contextvars import ContextVar
 import inspect
 import traceback
 import time
+from enum import Enum
 
 from core.config import settings
 from core.exceptions import RedisError
@@ -206,6 +207,53 @@ class UUIDEncoder(json.JSONEncoder):
             
         return result
 
+def _encode_complex_type(obj):
+    """Helper function to encode complex types for JSON serialization.
+    
+    This is used as the 'default' parameter for json.dumps() to handle types
+    that aren't natively supported by the JSON encoder.
+    
+    Args:
+        obj: The object to encode
+        
+    Returns:
+        A JSON serializable version of the object
+    """
+    # Handle UUID
+    if isinstance(obj, UUID):
+        return str(obj)
+        
+    # Handle datetime
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+        
+    # Handle Decimal
+    if isinstance(obj, Decimal):
+        return float(obj)
+        
+    # Handle Enum
+    if isinstance(obj, Enum):
+        return obj.value
+        
+    # Handle sets
+    if isinstance(obj, (set, frozenset)):
+        return list(obj)
+        
+    # Handle Pydantic models
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if hasattr(obj, "dict") and callable(obj.dict):
+        return obj.dict()
+        
+    # Handle objects with __dict__
+    if hasattr(obj, "__dict__"):
+        # Filter out private attributes and callables
+        return {k: v for k, v in obj.__dict__.items() 
+                if not k.startswith("_") and not callable(v)}
+                
+    # Default fallback
+    return str(obj)
+
 # RedisService class - delegates to functional API
 class RedisService:
     """Redis service for centralized Redis operations.
@@ -316,146 +364,181 @@ class RedisService:
             return default
     
     async def set(self, key: str, value: Any, ex: Optional[int] = None, nx: bool = False, xx: bool = False):
-        """Set a key-value pair in Redis with optional expiration.
+        """Set a key-value pair in Redis.
         
         Args:
-            key: The key to set
-            value: The value to set (will be JSON serialized)
-            ex: Optional expiration time in seconds
-            nx: Only set if the key does not exist
-            xx: Only set if the key already exists
-        
+            key: Redis key
+            value: Value to store (will be serialized)
+            ex: Expiration time in seconds
+            nx: Only set if key does not exist
+            xx: Only set if key exists
+            
         Returns:
-            True if the operation was successful, False otherwise
+            True if successful, False otherwise
         """
         try:
-            if self._client is None:
-                await self.init()
-            
-            # Safely serialize value to JSON
-            try:
-                # For simple values, use direct serialization
-                if isinstance(value, (str, int, float, bool)) or value is None:
-                    serialized = value
+            # Get Redis client
+            redis = await get_redis_client()
+            if not redis:
+                return False
+                
+            # Prepare value for storage
+            if value is None:
+                # Store None as an empty string with special marker
+                redis_value = "__null__"
+            else:
+                try:
+                    # Simplify complex objects for serialization
+                    simplified = await self._simplify_object(value, max_depth=5, current_depth=0)
+                    
+                    # Convert to JSON
+                    redis_value = json.dumps(simplified, cls=UUIDEncoder)
+                except Exception as e:
+                    logger.warning(f"Error serializing value for Redis: {e}")
+                    # Fallback to string representation with error info
+                    redis_value = json.dumps({
+                        "__error__": f"Serialization error: {str(e)}",
+                        "__type__": str(type(value)),
+                        "__str__": str(value)[:1000]  # Limit length
+                    })
+                    
+            # Set with appropriate options
+            if ex is not None:
+                if nx:
+                    return await redis.set(key, redis_value, ex=ex, nx=True)
+                elif xx:
+                    return await redis.set(key, redis_value, ex=ex, xx=True)
                 else:
-                    # First try with normal encoding depth to preserve structure when possible
-                    max_depth = _max_encoding_depth.get()
-                    try:
-                        _max_encoding_depth.set(0)  # Reset the counter
-                        serialized = json.dumps(value, cls=UUIDEncoder)
-                    except (RecursionError, TypeError, ValueError, json.JSONDecodeError, OverflowError) as json_error:
-                        # If normal encoding fails due to recursion, retry with lower max depth
-                        logger.warning(f"Initial serialization failed for key {key}, retrying with simplified encoding: {str(json_error)}")
-                        _max_encoding_depth.set(0)  # Reset the counter
-                        try:
-                            # For extremely complex objects, use a more aggressive simplification
-                            # Create a simplified representation of the object
-                            simple_value = self._simplify_object(value)
-                            serialized = json.dumps(simple_value, cls=UUIDEncoder)
-                        except Exception as inner_e:
-                            logger.error(f"Simplified serialization also failed for key {key}: {str(inner_e)}")
-                            # As a last resort, convert to string representation
-                            serialized = str(value)
-                    finally:
-                        # Reset the depth counter to its original value
-                        _max_encoding_depth.set(max_depth)
-            except Exception as e:
-                logger.error(f"Failed to serialize value for key {key}: {str(e)}")
-                # Fall back to string representation if serialization fails
-                serialized = str(value)
-            
-            return await self._client.set(key, serialized, ex=ex, nx=nx, xx=xx)
+                    return await redis.set(key, redis_value, ex=ex)
+            else:
+                if nx:
+                    return await redis.set(key, redis_value, nx=True)
+                elif xx:
+                    return await redis.set(key, redis_value, xx=True)
+                else:
+                    return await redis.set(key, redis_value)
+                    
         except Exception as e:
-            logger.error(f"Failed to set key {key} in Redis: {str(e)}")
+            logger.warning(f"Error setting value in Redis: {e}")
             return False
     
-    async def _simplify_object(self, obj: Any) -> Any:
-        """Create a simplified representation of an object suitable for serialization.
+    async def _simplify_object(self, obj: Any, max_depth: int = 3, current_depth: int = 0) -> Any:
+        """Recursively simplify a complex object for serialization.
         
-        This is a more aggressive simplification than the UUIDEncoder provides.
-        It's used as a fallback for very complex objects.
+        This handles:
+        - Nested dicts/lists
+        - Pydantic models
+        - UUID objects
+        - Datetime objects
+        - Enum values
+        - Custom objects with __dict__
+        
+        Args:
+            obj: Object to simplify
+            max_depth: Maximum recursion depth
+            current_depth: Current recursion depth
+            
+        Returns:
+            Simplified value suitable for JSON serialization
         """
-        if obj is None or isinstance(obj, (str, int, float, bool)):
+        # Prevent potential infinite recursion by checking recursion depth
+        if current_depth >= max_depth:
+            # Return a string representation for deeply nested objects
+            if isinstance(obj, (dict, list)):
+                return f"{type(obj).__name__}[truncated at depth {max_depth}]"
+            return str(obj)
+            
+        # Handle None
+        if obj is None:
+            return None
+            
+        # Handle basic types that can be serialized directly
+        if isinstance(obj, (str, int, float, bool)):
             return obj
             
-        if isinstance(obj, (list, tuple)):
-            # Limit list/tuple size and simplify each item
-            simplified = []
-            for i, item in enumerate(obj):
-                if i >= 20:  # Aggressive limit
-                    simplified.append(f"<{len(obj) - 20} more items>")
-                    break
-                simplified.append(self._simplify_object(item))
-            return simplified
-            
-        if isinstance(obj, dict):
-            # For dictionaries, simplify keys and values
-            simplified = {}
-            for i, (key, value) in enumerate(obj.items()):
-                if i >= 20:  # Aggressive limit
-                    simplified['...'] = f"<{len(obj) - 20} more items>"
-                    break
-                    
-                # Skip private keys and callable values
-                if isinstance(key, str) and key.startswith('_'):
-                    continue
-                if callable(value):
-                    continue
-                    
-                # Use string representation for non-primitive keys
-                if not isinstance(key, (str, int, float, bool)):
-                    str_key = str(key)
-                else:
-                    str_key = key
-                    
-                # Simplify the value
-                simplified[str_key] = self._simplify_object(value)
-            return simplified
-            
+        # Handle UUID
         if isinstance(obj, UUID):
             return str(obj)
             
-        if isinstance(obj, Decimal):
-            return float(obj)
-            
+        # Handle datetime
         if isinstance(obj, (datetime, date)):
             return obj.isoformat()
             
-        if isinstance(obj, (set, frozenset)):
-            return list(obj)
+        # Handle Pydantic models
+        if hasattr(obj, "model_dump"):
+            try:
+                model_data = obj.model_dump()
+                # Use iterative approach for dictionaries
+                return await self._simplify_object(model_data, max_depth, current_depth + 1)
+            except Exception as e:
+                logger.error(f"Error dumping Pydantic model: {e}")
+                return str(obj)
+                
+        if hasattr(obj, "dict") and callable(obj.dict):
+            try:
+                dict_data = obj.dict()
+                return await self._simplify_object(dict_data, max_depth, current_depth + 1)
+            except Exception as e:
+                logger.error(f"Error converting object to dict: {e}")
+                return str(obj)
             
-        if inspect.isasyncgen(obj) or inspect.iscoroutine(obj) or inspect.isawaitable(obj):
-            return f"<{type(obj).__name__} object>"
+        # Handle enums
+        if isinstance(obj, Enum):
+            return obj.value
             
-        if inspect.isgenerator(obj) or inspect.isgeneratorfunction(obj):
-            return f"<{type(obj).__name__} object>"
-            
-        if hasattr(obj, '__dict__') and not isinstance(obj, type):
-            # For objects with __dict__, create a simplified dictionary
-            simplified = {}
-            simplified['__type__'] = type(obj).__name__
-            # Add a few key attributes for identification
-            for key in list(obj.__dict__.keys())[:10]:
-                if key.startswith('_'):
+        # Handle dictionaries - avoid recursive calls for each key-value pair 
+        # by using a simplified approach for deeper levels
+        if isinstance(obj, dict):
+            result = {}
+            for key, value in obj.items():
+                # Skip private attributes
+                if isinstance(key, str) and key.startswith('_'):
                     continue
-                try:
-                    value = getattr(obj, key)
-                    if callable(value):
-                        continue
-                    if isinstance(value, (str, int, float, bool, type(None))):
-                        simplified[key] = value
-                    else:
-                        # Just use type name for complex values
-                        simplified[key] = f"<{type(value).__name__}>"
-                except Exception:
-                    continue
-            return simplified
+                    
+                # Convert key to string if it's not a basic type
+                if not isinstance(key, (str, int, float, bool)):
+                    simple_key = str(key)
+                else:
+                    simple_key = key
+                    
+                # For deeper levels, use simplified serialization
+                if current_depth + 1 >= max_depth:
+                    result[simple_key] = str(value)
+                else:
+                    try:
+                        result[simple_key] = await self._simplify_object(value, max_depth, current_depth + 1)
+                    except Exception as e:
+                        # If we can't simplify the value, store an error message
+                        result[simple_key] = f"Error: {str(e)}"
+            return result
             
-        # Final fallback - just return the string representation
-        try:
-            return f"<{type(obj).__name__}: {str(obj)[:100]}>"
-        except Exception:
-            return f"<{type(obj).__name__}>"
+        # Handle lists with similar approach to dictionaries
+        if isinstance(obj, (list, set, tuple)):
+            result = []
+            for item in obj:
+                if current_depth + 1 >= max_depth:
+                    result.append(str(item))
+                else:
+                    try:
+                        result.append(await self._simplify_object(item, max_depth, current_depth + 1))
+                    except Exception as e:
+                        result.append(f"Error: {str(e)}")
+            return result
+            
+        # Handle objects with a __dict__ attribute
+        if hasattr(obj, "__dict__"):
+            try:
+                obj_dict = obj.__dict__
+                # Skip if the __dict__ is the same object (self-reference)
+                if id(obj_dict) == id(obj):
+                    return str(obj)
+                return await self._simplify_object(obj_dict, max_depth, current_depth + 1)
+            except Exception as e:
+                logger.error(f"Error accessing __dict__: {e}")
+                return str(obj)
+            
+        # If all else fails, convert to string
+        return str(obj)
     
     async def delete(self, key: str) -> bool:
         """Delete a key from Redis.
@@ -486,7 +569,7 @@ class RedisService:
     
     async def setex(self, key: str, seconds: int, value: Any) -> bool:
         """Set key with expiration."""
-        return await set(key, value, ex=seconds)
+        return await self.set(key, value, ex=seconds)
     
     async def hset(self, key: str, field: str, value: Any) -> bool:
         """Set hash field."""
@@ -593,7 +676,7 @@ async def get_redis_pool() -> Optional[ConnectionPool]:
         # Try creating from explicit parameters first
         try:
             # Extract components from settings
-            host = settings.REDIS_HOST
+            host = getattr(settings, "REDIS_HOST", "redis")  # Use "redis" as default
             
             # Ensure port is an integer
             try:
@@ -613,8 +696,9 @@ async def get_redis_pool() -> Optional[ConnectionPool]:
             password = None
             if hasattr(settings, "REDIS_PASSWORD") and settings.REDIS_PASSWORD:
                 password = settings.REDIS_PASSWORD
-                if password in ["your_redis_password", "your_production_redis_password"]:
+                if password in ["your_production_redis_password"]:
                     password = None
+                # We're keeping "your_redis_password" as valid since it's used in Docker compose
 
             # Set up connection parameters
             pool_kwargs = {
@@ -680,108 +764,91 @@ async def get_redis_client() -> Optional[Redis]:
     
     # Return existing client if already initialized, even if it's None
     if _initialized:
+        logger.debug("Redis client already initialized - returning existing client")
         return _redis_client
     
-    # Check for recursion to prevent infinite loops
+    # Add a flag to prevent recursion
     if getattr(get_redis_client, "_in_progress", False):
-        logger.debug("Recursion detected in get_redis_client() call")
+        logger.warning("Detected potential recursion in Redis initialization, returning None to break cycle")
         return None
         
-    # Set recursion guard
-    get_redis_client._in_progress = True
+    # Set in-progress flag
+    setattr(get_redis_client, "_in_progress", True)
     
     try:
-        # In testing mode, return None without trying to connect
-        if getattr(settings, "TESTING", False):
-            logger.debug("In testing mode - returning None for Redis client")
-            _initialized = True
-            return None
-        
-        # Check if Redis is disabled in configuration
-        redis_disabled = getattr(settings, "REDIS_DISABLED", False)
-        if redis_disabled:
-            logger.debug("Redis is disabled in configuration - returning None")
-            _initialized = True
-            return None
-            
-        # Try to get Redis configuration
-        redis_host = getattr(settings, "REDIS_HOST", None)
+        # Get Redis configuration from settings
+        redis_host = getattr(settings, "REDIS_HOST", "redis")
         redis_port = getattr(settings, "REDIS_PORT", 6379)
         redis_db = getattr(settings, "REDIS_DB", 0)
         
-        # If we don't have a host, we can't connect
-        if not redis_host:
-            logger.debug("No Redis host configured, Redis will be disabled")
-            _initialized = True
-            return None
+        # Force use of 'redis' host when running in Docker
+        if settings.APP_ENVIRONMENT != "local" and redis_host == "localhost":
+            logger.warning("Overriding 'localhost' to 'redis' for Docker compatibility")
+            redis_host = "redis"
             
-        # Get password, handling default values
-        password = getattr(settings, "REDIS_PASSWORD", None)
-        if password in ["your_redis_password", "your_production_redis_password", None, ""]:
-            # Use None for password if it's not set or is a default value
-            password = None
+        logger.info(f"Redis host being used: {redis_host}")
         
-        # Use the pool if it exists, otherwise create a new one
+        # Handle authentication properly
+        password = getattr(settings, "REDIS_PASSWORD", None)
+        if password in ["your_production_redis_password", None, ""]:
+            # Use None for password if it's not set or is a placeholder
+            # We're keeping "your_redis_password" as valid since it's used in Docker compose
+            password = None
+            
+        # Only create a new pool & client if we don't have one yet or if the settings have changed
         if _redis_pool is None:
-            # Create connection pool with best practice configurations
+            logger.info(f"Creating new Redis connection pool to {redis_host}:{redis_port}/{redis_db}")
+            
+            # Prepare connection options
+            socket_timeout = getattr(settings, "REDIS_SOCKET_TIMEOUT", 5)
+            socket_connect_timeout = getattr(settings, "REDIS_SOCKET_CONNECT_TIMEOUT", 5)
+            socket_keepalive = getattr(settings, "REDIS_SOCKET_KEEPALIVE", True)
+            
+            # Create pool with proper security and performance settings
             _redis_pool = ConnectionPool(
                 host=redis_host,
-                port=int(redis_port),  # Ensure port is an integer
-                db=int(redis_db),      # Ensure db is an integer
+                port=int(redis_port),
+                db=int(redis_db),
                 password=password,
-                max_connections=getattr(settings, "REDIS_MAX_CONNECTIONS", 10),
-                socket_timeout=getattr(settings, "REDIS_SOCKET_TIMEOUT", 5),
-                socket_connect_timeout=getattr(settings, "REDIS_SOCKET_CONNECT_TIMEOUT", 5),
-                retry_on_timeout=getattr(settings, "REDIS_RETRY_ON_TIMEOUT", True),
-                health_check_interval=getattr(settings, "REDIS_HEALTH_CHECK_INTERVAL", 30),
-                decode_responses=True,
-                encoding="utf-8"
+                socket_timeout=socket_timeout,
+                socket_connect_timeout=socket_connect_timeout,
+                socket_keepalive=socket_keepalive,
+                health_check_interval=30,
+                retry_on_timeout=True,
+                max_connections=int(getattr(settings, "REDIS_MAX_CONNECTIONS", 10)),
+                retry_on_error=[RedisError]
             )
-        
-        # Create Redis client with the pool
-        _redis_client = Redis(connection_pool=_redis_pool)
-        
-        # Test the connection with a timeout to avoid hanging
-        try:
-            ping_result = await asyncio.wait_for(_redis_client.ping(), timeout=2.0)
-            if ping_result:
-                logger.info("Successfully connected to Redis")
-            else:
-                logger.warning("Redis ping returned False, connection may not be working properly")
+            
+            # Create Redis client with connection pool
+            _redis_client = Redis(connection_pool=_redis_pool, decode_responses=True)
+            
+            # Test the connection
+            try:
+                logger.info("Testing Redis connection")
+                async_redis = _redis_client
+                # Don't use ping() here directly as it would cause another call to this function
+                pong = await async_redis.execute_command("PING")
+                if pong:
+                    logger.info("Successfully connected to Redis")
+                else:
+                    logger.error("Failed to connect to Redis: PING returned unexpected response")
+                    _redis_client = None
+            except RedisError as e:
+                logger.error(f"Failed to connect to Redis: {str(e)}")
                 _redis_client = None
-        except (asyncio.TimeoutError, ConnectionError) as e:
-            logger.warning(f"Redis connection failed: {str(e)}")
-            _redis_client = None
-        except Exception as e:
-            logger.warning(f"Error testing Redis connection: {str(e)}")
-            _redis_client = None
-            
-        # Mark as initialized even if connection failed, to avoid repeated attempts
+                _redis_pool = None
+        
+        # Mark as initialized to prevent further initialization attempts
+        # Even if initialization failed, we don't want to keep trying
         _initialized = True
         
-        # Only log this message once
-        if _redis_client is None and not hasattr(get_redis_client, "_warned_no_redis"):
-            logger.info("Continuing without Redis functionality")
-            get_redis_client._warned_no_redis = True
-            
         return _redis_client
-            
-    except ImportError:
-        if not hasattr(get_redis_client, "_warned_import_error"):
-            logger.warning("Redis package not installed - Redis functionality will be disabled")
-            get_redis_client._warned_import_error = True
-        _initialized = True
-        return None
-        
     except Exception as e:
-        if not hasattr(get_redis_client, "_warned_general_error"):
-            logger.warning(f"Error initializing Redis client: {str(e)}")
-            get_redis_client._warned_general_error = True
-        _initialized = True
+        logger.error(f"Error initializing Redis client: {str(e)}")
         return None
     finally:
-        # Always reset recursion guard
-        get_redis_client._in_progress = False
+        # Always clear the in-progress flag
+        setattr(get_redis_client, "_in_progress", False)
 
 async def close_redis() -> None:
     """Close Redis connections."""
@@ -958,27 +1025,51 @@ async def hmset(key: str, mapping: Dict[str, Any], ex: Union[int, timedelta] = N
         return False
 
 async def json_set(key: str, value: Any, ex: Union[int, timedelta] = None) -> bool:
-    """Set JSON value in Redis."""
-    client = await get_redis_client()
+    """Set a JSON value in Redis.
     
-    if client is None:
-        return False
+    Args:
+        key: Redis key
+        value: Value to store (will be serialized to JSON)
+        ex: Expiration time in seconds or timedelta
         
+    Returns:
+        True if successful, False otherwise
+    """
     try:
-        # Convert value to JSON string
-        json_value = json.dumps(value, cls=UUIDEncoder)
-        
-        # Set value in Redis
-        result = await client.set(key, json_value)
-        
-        # Set expiration if provided
-        if ex is not None and result:
-            seconds = ex if isinstance(ex, int) else int(ex.total_seconds())
-            await client.expire(key, seconds)
+        # Convert timedelta to seconds if needed
+        if isinstance(ex, timedelta):
+            ex = int(ex.total_seconds())
             
-        return bool(result)
+        # Get Redis client
+        redis = await get_redis_client()
+        if not redis:
+            return False
+            
+        # Prepare value for storage
+        if value is None:
+            # Store None as a special marker
+            redis_value = "__null__"
+        else:
+            try:
+                # Serialize value with safety limits
+                redis_value = json.dumps(value, cls=UUIDEncoder, default=_encode_complex_type)
+            except (RecursionError, TypeError, ValueError, json.JSONDecodeError) as e:
+                logger.warning(f"Error serializing complex value for Redis: {e}")
+                # Fall back to simple string representation
+                redis_value = json.dumps({
+                    "__error__": f"Serialization error: {str(e)}",
+                    "__type__": str(type(value)),
+                    "__str__": str(value)[:1000]  # Limit string length
+                })
+                
+        # Set the value with expiration if provided
+        if ex is not None:
+            return await redis.set(key, redis_value, ex=ex)
+        else:
+            return await redis.set(key, redis_value)
+            
     except Exception as e:
-        logger.error(f"Error setting Redis JSON value for {key}: {str(e)}")
+        logger.warning(f"Error setting JSON in Redis: {e}")
         return False
 
 async def sadd(key: str, *members: Any) -> int:
@@ -1084,81 +1175,28 @@ async def sismember(key: str, member: Any) -> bool:
 async def get_redis_service():
     """Get Redis service instance.
     
-    This function follows the singleton pattern to ensure only
-    one Redis service is created. It includes error handling,
-    logging, and fallback mechanisms.
-    
-    Returns:
-        RedisService: Configured Redis service instance
+    Returns a singleton instance of the Redis service.
+    If Redis is not available, returns a null-safe implementation.
     """
-    # Static variables to track warning states and last attempt
-    if not hasattr(get_redis_service, "_warned_no_redis"):
-        get_redis_service._warned_no_redis = False
+    # Use a flag to prevent recursion
+    if getattr(get_redis_service, "_in_progress", False):
+        logger.warning("Detected potential recursion in Redis service initialization, returning null-safe implementation")
+        return create_null_safe_redis_service()
         
-    if not hasattr(get_redis_service, "_last_init_attempt"):
-        get_redis_service._last_init_attempt = 0
-    
-    # Rate limit initialization attempts (once every 5 seconds max)
-    current_time = time.time()
-    if (current_time - get_redis_service._last_init_attempt) < 5:
-        # Return existing instance or minimal working instance silently
-        try:
-            service = await RedisService.get_instance()
-            if service._client is None:
-                # Create a fallback service that handles None client gracefully
-                logger.debug("Creating fallback Redis service with null client handling")
-                service = create_null_safe_redis_service()
-            return service
-        except Exception:
-            # If the instance retrieval fails, return a minimal working instance
-            logger.debug("Instance retrieval failed, returning null-safe fallback")
-            return create_null_safe_redis_service()
-    
-    # Record the attempt time
-    get_redis_service._last_init_attempt = current_time
+    # Set in-progress flag
+    setattr(get_redis_service, "_in_progress", True)
     
     try:
-        # Try to get a Redis client first to ensure connection is available
-        redis_client = await get_redis_client()
-        
-        # Get or create the instance through the class method
-        service = await RedisService.get_instance()
-        
-        # Verify Redis is working, but only log a warning once
-        if service._client is None:
-            if not get_redis_service._warned_no_redis:
-                logger.warning("Redis client not initialized, using fallback implementation with null handling")
-                get_redis_service._warned_no_redis = True
-            
-            # Try to re-initialize with fresh client
-            if redis_client is not None:
-                try:
-                    await service.init(client=redis_client)
-                    logger.info("Successfully re-initialized Redis service")
-                    get_redis_service._warned_no_redis = False
-                    return service
-                except Exception as reinit_error:
-                    logger.warning(f"Failed to re-initialize Redis service: {str(reinit_error)}")
-            
-            # If still null after reinit attempt, return null-safe version
-            logger.debug("Creating fallback Redis service after failed initialization")
-            return create_null_safe_redis_service()
-        else:
-            # Successfully initialized with working client
-            if get_redis_service._warned_no_redis:
-                logger.info("Redis service is now working properly")
-                get_redis_service._warned_no_redis = False
-        
-        return service
+        # Try to get a Redis service instance
+        return await RedisService.get_instance()
     except Exception as e:
-        # Log error but provide a minimal working instance (only log once)
-        if not get_redis_service._warned_no_redis:
-            logger.warning(f"Error getting Redis service: {str(e)}")
-            get_redis_service._warned_no_redis = True
-        
-        # Create and return a null-safe fallback service
-        logger.debug("Creating fallback Redis service after exception")
+        # Log the error and return a null-safe implementation
+        logger.warning(f"Failed to get Redis service: {str(e)}")
+        logger.warning("Using null-safe Redis implementation as fallback")
         return create_null_safe_redis_service()
+    finally:
+        # Always clear the in-progress flag
+        setattr(get_redis_service, "_in_progress", False)
 
 def create_null_safe_redis_service():
     """Create a minimal working Redis service instance that handles null client operations safely.

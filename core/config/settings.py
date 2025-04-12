@@ -154,7 +154,7 @@ class Settings(BaseSettings):
         default=None,  # Will be built by validator based on environment
         description="Redis URL"
     )
-    REDIS_HOST: str = Field(default="localhost")
+    REDIS_HOST: str = Field(default="redis")
     REDIS_PORT: int = Field(default=6379)
     REDIS_DB: int = Field(default=0)
     REDIS_PASSWORD: str = Field(default="your_redis_password")
@@ -312,6 +312,25 @@ class Settings(BaseSettings):
     EMAIL_TIMEOUT: int = Field(default=30, description="Email timeout in seconds")
     EMAIL_RETRY_COUNT: int = Field(default=3, description="Number of times to retry sending email")
     EMAIL_RETRY_DELAY: int = Field(default=1, description="Delay between retries in seconds")
+    
+    # AWS SES Email Settings
+    AWS_SES_REGION: str = Field(default="us-east-1", description="AWS SES region")
+    AWS_ACCESS_KEY_ID: Optional[str] = Field(default=None, description="AWS access key ID for SES")
+    AWS_SECRET_ACCESS_KEY: Optional[SecretStr] = Field(default=None, description="AWS secret access key for SES")
+    AWS_SESSION_TOKEN: Optional[SecretStr] = Field(default=None, description="AWS session token for SES (if using temporary credentials)")
+    AWS_SES_SOURCE_ARN: Optional[str] = Field(default=None, description="ARN of the identity to use for sending (optional)")
+    AWS_SES_CONFIGURATION_SET: Optional[str] = Field(default=None, description="SES configuration set name (optional)")
+
+    # Oxylabs Settings
+    OXYLABS_USERNAME: str = Field(default="", description="Oxylabs API username")
+    OXYLABS_PASSWORD: SecretStr = Field(default="", description="Oxylabs API password")
+    OXYLABS_BASE_URL: str = Field(default="https://realtime.oxylabs.io", description="Oxylabs API base URL")
+    OXYLABS_CONCURRENT_LIMIT: int = Field(default=15, description="Maximum concurrent Oxylabs requests")
+    OXYLABS_REQUESTS_PER_SECOND: int = Field(default=5, description="Oxylabs requests per second limit")
+    OXYLABS_MONTHLY_LIMIT: int = Field(default=100000, description="Oxylabs monthly request limit")
+
+    # Scraper Configuration
+    SCRAPER_TYPE: str = Field(default="oxylabs", description="Default scraper type to use (scraper_api, oxylabs)")
 
     # Performance settings
     SLOW_REQUEST_THRESHOLD: float = Field(default=1.0)  # seconds
@@ -465,6 +484,40 @@ class Settings(BaseSettings):
         description="Maximum number of messages per FCM batch"
     )
 
+    # Stripe Payment Settings
+    STRIPE_SECRET_KEY: SecretStr = Field(
+        default="sk_test_example",
+        description="Stripe secret API key"
+    )
+    STRIPE_PUBLISHABLE_KEY: str = Field(
+        default="pk_test_example",
+        description="Stripe publishable API key"
+    )
+    STRIPE_WEBHOOK_SECRET: SecretStr = Field(
+        default="whsec_example",
+        description="Stripe webhook secret for signature verification"
+    )
+    STRIPE_API_VERSION: str = Field(
+        default="2023-10-16",
+        description="Stripe API version"
+    )
+    STRIPE_PAYMENT_METHODS: List[str] = Field(
+        default=["card"],
+        description="Supported Stripe payment methods"
+    )
+    STRIPE_CURRENCY: str = Field(
+        default="usd",
+        description="Default currency for Stripe payments"
+    )
+    STRIPE_PAYMENT_SUCCESS_URL: Optional[str] = Field(
+        default=None,
+        description="URL to redirect after successful payment"
+    )
+    STRIPE_PAYMENT_CANCEL_URL: Optional[str] = Field(
+        default=None,
+        description="URL to redirect after cancelled payment"
+    )
+
     @model_validator(mode='before')
     @classmethod
     def build_database_url(cls, values: Dict[str, Any]) -> Dict[str, Any]:
@@ -565,154 +618,47 @@ class Settings(BaseSettings):
     @classmethod
     def build_redis_url(cls, values: Dict[str, Any]) -> Dict[str, Any]:
         """Build Redis URL from components if not provided."""
-        print("DEBUG: Starting Redis URL validation")
-        
-        # Check if we're running in AWS
-        is_aws = False
-        if values.get("APP_ENVIRONMENT") == "production":
-            is_aws = True
-            print("DEBUG: Running in production environment")
-        
-        # Check if REDIS_URL is already provided
-        if values.get("REDIS_URL"):
-            print("DEBUG: Using pre-configured REDIS_URL")
+        if values.get("REDIS_URL") is None:
+            # Define a function to clean URL components
+            def clean_component(s):
+                """Clean special characters from URL components."""
+                if not s:
+                    return ""
+                import urllib.parse
+                return urllib.parse.quote(str(s), safe='')
+                
+            # Get components
+            redis_host = values.get("REDIS_HOST", "localhost")
+            redis_port = values.get("REDIS_PORT", 6379)
+            redis_db = values.get("REDIS_DB", 0)
+            redis_password = values.get("REDIS_PASSWORD")
             
-            # Check if the URL contains default passwords and remove them
-            redis_url = str(values.get("REDIS_URL"))
-            if "your_redis_password" in redis_url or "your_production_redis_password" in redis_url:
-                print("DEBUG: Removing default password from REDIS_URL")
-                # Parse the URL and remove the password
-                from urllib.parse import urlparse, urlunparse
-                parsed_url = urlparse(redis_url)
-                
-                # Extract host and port from netloc
-                netloc_parts = parsed_url.netloc.split("@")
-                if len(netloc_parts) > 1:
-                    # There's an auth part, remove it
-                    netloc = netloc_parts[1]
+            # Build password part of URL if provided
+            password_part = ""
+            if redis_password:
+                if isinstance(redis_password, str):
+                    # Clean special characters from password for URL
+                    password = clean_component(redis_password)
+                    password_part = f":{password}@"
+                    # For "your_redis_password", keep it as is (used in Docker)
+                    if redis_password == "your_redis_password":
+                        password_part = f":{redis_password}@"
                 else:
-                    netloc = netloc_parts[0]
-                
-                # Reconstruct URL without password
-                values["REDIS_URL"] = urlunparse((
-                    parsed_url.scheme,
-                    netloc,
-                    parsed_url.path,
-                    parsed_url.params,
-                    parsed_url.query,
-                    parsed_url.fragment
-                ))
-                print("DEBUG: Modified REDIS_URL to remove default password")
-            
-            # Force redis host to be set from URL to avoid confusion
-            try:
-                from urllib.parse import urlparse
-                parsed_url = urlparse(values["REDIS_URL"])
-                
-                # Extract host from netloc
-                netloc_parts = parsed_url.netloc.split("@")
-                if len(netloc_parts) > 1:
-                    # There's an auth part
-                    host_port = netloc_parts[1].split(":")
-                else:
-                    host_port = netloc_parts[0].split(":")
-                
-                # Set REDIS_HOST
-                values["REDIS_HOST"] = host_port[0]
-                print("DEBUG: Extracted REDIS_HOST from URL")
-                
-                # Set REDIS_PORT if present
-                if len(host_port) > 1:
+                    # Handle other types (like SecretStr)
                     try:
-                        values["REDIS_PORT"] = int(host_port[1].split("/")[0])
-                        print("DEBUG: Extracted REDIS_PORT from URL")
-                    except (ValueError, IndexError):
-                        pass
-                
-                # Set REDIS_DB if present
-                if "/" in values["REDIS_URL"]:
-                    try:
-                        db_part = values["REDIS_URL"].split("/")[-1]
-                        values["REDIS_DB"] = int(db_part)
-                        print("DEBUG: Extracted REDIS_DB from URL")
-                    except (ValueError, IndexError):
-                        pass
-                
-            except Exception as e:
-                print("DEBUG: Error parsing Redis URL components")
+                        if hasattr(redis_password, "get_secret_value"):
+                            password = clean_component(redis_password.get_secret_value())
+                            password_part = f":{password}@"
+                    except Exception as e:
+                        logger.warning(f"Error handling Redis password: {e}")
             
-            return values
+            # Make sure port is a string
+            redis_port = str(redis_port)
             
-        if not values.get("REDIS_URL"):
-            try:
-                # Prioritize Redis host from environment variables
-                redis_host = values.get("REDIS_HOST")
-                if not redis_host:
-                    # Check environment directly in case it's set but not loaded in values yet
-                    redis_host = os.environ.get("REDIS_HOST")
-                    if redis_host:
-                        print("DEBUG: Found REDIS_HOST in environment")
-                        values["REDIS_HOST"] = redis_host
-                
-                # If still no host, use default
-                if not redis_host:
-                    # Use "localhost" in AWS instead of "deals_redis" to avoid DNS errors
-                    redis_host = "localhost" if is_aws else "redis"
-                    print("DEBUG: Using default Redis host")
-                
-                # Ensure port is an integer
-                try:
-                    redis_port = int(values.get("REDIS_PORT", 6379))
-                except (ValueError, TypeError):
-                    print("DEBUG: Invalid Redis port value, using default 6379")
-                    redis_port = 6379
-                
-                # Ensure DB is an integer
-                try:
-                    redis_db = int(values.get("REDIS_DB", 0))
-                except (ValueError, TypeError):
-                    print("DEBUG: Invalid Redis DB value, using default 0")
-                    redis_db = 0
-                
-                # Get password from environment or settings
-                redis_password = values.get("REDIS_PASSWORD", "")
-                if not redis_password:
-                    redis_password = os.environ.get("REDIS_PASSWORD", "")
-                    if redis_password:
-                        print("DEBUG: Using Redis password from environment")
-                        values["REDIS_PASSWORD"] = redis_password
-                
-                # Check if password is a default value and skip it
-                if redis_password in ["your_redis_password", "your_production_redis_password"]:
-                    print("DEBUG: Ignoring default Redis password")
-                    redis_password = ""
-                
-                print("DEBUG: Building Redis URL with configured parameters")
-                
-                # Store the components for later use
-                values["REDIS_HOST"] = redis_host
-                values["REDIS_PORT"] = redis_port
-                values["REDIS_DB"] = redis_db
-                
-                # Build Redis URL based on whether password is provided
-                if redis_password and redis_password not in ["your_redis_password", "your_production_redis_password"]:
-                    # Simple URL construction without URL encoding to avoid issues
-                    values["REDIS_URL"] = f"redis://:{redis_password}@{redis_host}:{redis_port}/{redis_db}"
-                else:
-                    values["REDIS_URL"] = f"redis://{redis_host}:{redis_port}/{redis_db}"
-                
-                print("DEBUG: Redis URL successfully built")
-                
-            except Exception as e:
-                print("DEBUG: Error building Redis URL")
-                # Provide a fallback URL for development
-                if is_aws:
-                    print("DEBUG: Using fallback Redis URL for AWS")
-                    values["REDIS_URL"] = "redis://localhost:6379/0"
-                else:
-                    print("DEBUG: Using fallback Redis URL for development")
-                    values["REDIS_URL"] = "redis://redis:6379/0"
-                
+            # Build the Redis URL
+            redis_url = f"redis://{password_part}{redis_host}:{redis_port}/{redis_db}"
+            values["REDIS_URL"] = redis_url
+            
         return values
 
     @computed_field
@@ -772,7 +718,8 @@ class Settings(BaseSettings):
     def set_environment_specific_values(self) -> 'Settings':
         """Set environment-specific values after validation."""
         # Set environment-specific CORS settings
-        if self.APP_ENVIRONMENT.lower() == "development":
+        app_env = self.APP_ENVIRONMENT
+        if isinstance(app_env, str) and app_env.lower() == "development":
             # In development, use wildcard for CORS
             self.CORS_ORIGINS = ["*"]
         
@@ -815,7 +762,8 @@ class Settings(BaseSettings):
 
                     # Use mock Redis for tests if not explicitly set
                     if "REDIS_URL" in settings_dict and settings_dict["REDIS_URL"] and os.environ.get("TEST_REDIS_URL") is None:
-                        settings_dict["REDIS_HOST"] = "localhost"
+                        # Use "redis" as host in Docker environment (default to "redis" which is the Docker service name)
+                        settings_dict["REDIS_HOST"] = "redis"
                         settings_dict["REDIS_PORT"] = 6379
                         settings_dict["REDIS_DB"] = 1  # Use different DB for tests
                         settings_dict["REDIS_URL"] = f"redis://{settings_dict['REDIS_HOST']}:{settings_dict['REDIS_PORT']}/{settings_dict['REDIS_DB']}"

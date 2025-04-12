@@ -108,17 +108,25 @@ async def get_market_service(db: AsyncSession = Depends(get_db_session)) -> Mark
     """Get market service instance."""
     return MarketService(MarketRepository(db))
 
-async def get_deal_service(db: AsyncSession = Depends(get_db_session)) -> DealService:
+async def get_deal_service(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: Optional[User] = Depends(get_optional_user)
+) -> DealService:
     """Get deal service instance."""
     service = DealService(session=db)
     await service.initialize()
+    if current_user:
+        service.set_current_user_id(current_user.id)
     return service
 
 async def get_market_search_service(
     db: AsyncSession = Depends(get_db_session)
 ) -> MarketSearchService:
     """Get market search service instance."""
-    return MarketSearchService(db)
+    from core.integrations.market_factory import MarketIntegrationFactory
+    market_repository = MarketRepository(db)
+    integration_factory = MarketIntegrationFactory(scraper_type="oxylabs", db=db)
+    return MarketSearchService(market_repository=market_repository, integration_factory=integration_factory, db=db)
 
 async def get_deal_analysis_service(
     db: AsyncSession = Depends(get_db_session),

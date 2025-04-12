@@ -79,6 +79,7 @@ def upgrade() -> None:
             DROP TYPE IF EXISTS tokentype;
             DROP TYPE IF EXISTS currency;
             DROP TYPE IF EXISTS userstatus;
+            DROP TYPE IF EXISTS paymentmethod;
         """))
         logger.info("Existing enum types dropped")
 
@@ -118,6 +119,13 @@ def upgrade() -> None:
             DO $$ 
             BEGIN
                 CREATE TYPE marketstatus AS ENUM ('active', 'inactive', 'maintenance', 'rate_limited', 'error');
+            EXCEPTION 
+                WHEN duplicate_object THEN NULL;
+            END $$;
+
+            DO $$ 
+            BEGIN
+                CREATE TYPE paymentmethod AS ENUM ('phantom', 'stripe');
             EXCEPTION 
                 WHEN duplicate_object THEN NULL;
             END $$;

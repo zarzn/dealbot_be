@@ -822,4 +822,171 @@ The API uses URL versioning to ensure backward compatibility:
 - Current version: `/v1/`
 - Future versions: `/v2/`, `/v3/`, etc.
 
-When a new version is released, the previous version will remain available for a deprecation period (typically 6 months). 
+When a new version is released, the previous version will remain available for a deprecation period (typically 6 months).
+
+## Error Handling Patterns
+
+The API implements consistent error handling patterns to ensure predictable behavior and easy troubleshooting:
+
+### Error Response Structure
+```json
+{
+  "status": "error",
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "User-friendly error message",
+    "details": {
+      "field_name": "Field-specific error information",
+      "technical_info": "Additional technical context"
+    },
+    "request_id": "unique_request_id"
+  }
+}
+```
+
+### Error Categories
+
+1. **Authentication Errors (AUTH_XXX)**
+   - `AUTH_001`: Authentication failed
+   - `AUTH_002`: Token expired
+   - `AUTH_003`: Invalid token
+   - `AUTH_004`: Insufficient permissions
+   - `AUTH_005`: Account locked
+
+2. **Validation Errors (VAL_XXX)**
+   - `VAL_001`: Invalid input format
+   - `VAL_002`: Missing required field
+   - `VAL_003`: Value out of range
+   - `VAL_004`: Invalid enum value
+
+3. **Resource Errors (RES_XXX)**
+   - `RES_001`: Resource not found
+   - `RES_002`: Resource already exists
+   - `RES_003`: Resource locked
+   - `RES_004`: Resource unavailable
+
+4. **System Errors (SYS_XXX)**
+   - `SYS_001`: Internal server error
+   - `SYS_002`: Service unavailable
+   - `SYS_003`: Database error
+   - `SYS_004`: External service error
+
+5. **Business Logic Errors (BIZ_XXX)**
+   - `BIZ_001`: Operation not allowed
+   - `BIZ_002`: Business rule violation
+   - `BIZ_003`: State transition invalid
+
+### Error Handling Best Practices
+
+1. Always return appropriate HTTP status codes
+2. Include a unique request ID for troubleshooting
+3. Provide user-friendly error messages
+4. Include technical details for debugging (in non-production)
+5. Log errors with contextual information
+
+## Additional Endpoints
+
+### Deal Sharing
+- `POST /deals/{deal_id}/share` - Create a shareable link
+- `GET /deals/shared/{share_id}` - Access a shared deal
+- `DELETE /deals/{deal_id}/share/{share_id}` - Revoke a shared link
+- `GET /deals/shares/outgoing` - List deals you've shared
+- `GET /deals/shares/incoming` - List deals shared with you
+- `POST /deals/shares/{share_id}/accept` - Accept a shared deal
+
+### Deal Comparison
+- `POST /deals/compare` - Create a comparison between deals
+- `GET /deals/comparisons` - List your comparisons
+- `GET /deals/comparisons/{comparison_id}` - Get a specific comparison
+- `PUT /deals/comparisons/{comparison_id}` - Update a comparison
+- `DELETE /deals/comparisons/{comparison_id}` - Delete a comparison
+
+### Social Features
+- `POST /deals/{deal_id}/like` - Like a deal
+- `DELETE /deals/{deal_id}/like` - Unlike a deal
+- `GET /deals/{deal_id}/likes` - Get likes for a deal
+- `POST /deals/{deal_id}/comments` - Comment on a deal
+- `GET /deals/{deal_id}/comments` - Get comments for a deal
+- `PUT /deals/{deal_id}/comments/{comment_id}` - Update a comment
+- `DELETE /deals/{deal_id}/comments/{comment_id}` - Delete a comment
+
+### Export Features
+- `POST /deals/export` - Export deals to various formats
+- `GET /exports` - List your exports
+- `GET /exports/{export_id}` - Download a specific export
+
+## API Monitoring
+
+### Metrics Collection
+
+The API collects the following metrics:
+
+1. **Request Metrics**
+   - Request count by endpoint
+   - Success/failure rates
+   - Response times (p50, p90, p99)
+   - Payload sizes
+
+2. **Error Metrics**
+   - Error rates by category
+   - Most frequent errors
+   - Error trends over time
+
+3. **User Metrics**
+   - Active users
+   - Requests per user
+   - Error rates per user
+
+4. **Performance Metrics**
+   - Database query times
+   - External service call times
+   - Cache hit/miss ratios
+   - Resource utilization
+
+### Monitoring Tools
+
+1. **AWS CloudWatch**
+   - Main monitoring service
+   - Custom dashboards
+   - Metric alarms
+   - Log analysis
+
+2. **Prometheus and Grafana**
+   - Specialized metric collection
+   - Custom visualization
+   - Advanced alerting
+
+3. **X-Ray**
+   - Distributed tracing
+   - Service map
+   - Bottleneck identification
+
+### Alerting Strategy
+
+1. **Alert Levels**
+   - Critical: Immediate response required
+   - Warning: Investigation needed
+   - Info: For awareness
+
+2. **Alert Channels**
+   - Email for non-urgent issues
+   - SMS for urgent issues
+   - PagerDuty for critical issues
+   - Slack for team awareness
+
+3. **Alert Thresholds**
+   - Error rate > 1% (Warning)
+   - Error rate > 5% (Critical)
+   - p99 latency > 1s (Warning)
+   - p99 latency > 2s (Critical)
+   - Success rate < 99% (Warning)
+   - Success rate < 95% (Critical)
+
+### Health Checks
+
+Comprehensive health check endpoints:
+- `GET /health` - Basic application health
+- `GET /health/detailed` - Detailed component health
+- `GET /health/db` - Database connectivity
+- `GET /health/cache` - Cache service
+- `GET /health/external` - External dependencies 

@@ -47,8 +47,8 @@ class DealMatch(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=expression.text("CURRENT_TIMESTAMP"))
 
     # Relationships
-    goal = relationship("Goal", back_populates="matched_deals", lazy="selectin")
-    deal = relationship("Deal", back_populates="goal_matches", lazy="selectin")
+    goal = relationship("Goal", back_populates="matched_deals", lazy="raise")
+    deal = relationship("Deal", back_populates="goal_matches", lazy="raise")
 
     def __repr__(self) -> str:
         """String representation."""

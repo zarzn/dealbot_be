@@ -37,7 +37,7 @@ The system uses multiple Language Models (LLMs) for different environments:
 ## Documentation Structure
 
 ### 1. Architecture
-- [System Architecture](architecture/system_architecture.md)
+- [System Architecture](architecture/architecture.md)
 - [Component Diagram](architecture/component_diagram.md)
 - [Data Flow](architecture/data_flow.md)
 - [Integration Points](architecture/integration_points.md)
@@ -59,9 +59,10 @@ The system uses multiple Language Models (LLMs) for different environments:
 - [Schema](database/schema.md)
 - [Migrations](database/migrations.md)
 - [Query Optimization](database/optimization.md)
-- [Connection Management](database/connections.md)
+- [Connection Management](database/connection_management.md)
 
-### 5. Agents
+### 5. AI Components
+- [AI Processing Pipeline](ai/processing_pipeline.md)
 - [Agent System Overview](agents/overview.md)
 - [Goal Analysis Agent](agents/goal_analysis.md)
 - [Deal Search Agent](agents/deal_search.md)
@@ -81,6 +82,7 @@ The system uses multiple Language Models (LLMs) for different environments:
 - [Performance Tests](testing/performance_tests.md)
 
 ### 8. Deployment
+- [AWS Deployment Guide](deployment/aws_deployment.md)
 - [Deployment Guide](deployment/guide.md)
 - [Docker Configuration](deployment/docker.md)
 - [CI/CD Pipeline](deployment/cicd.md)
@@ -92,15 +94,42 @@ The system uses multiple Language Models (LLMs) for different environments:
 - [Alerting](monitoring/alerting.md)
 - [Performance Monitoring](monitoring/performance.md)
 
-### 10. Compliance
+### 10. Token System
+- [Token System Overview](token/system.md)
+- [Token Wallet](token/wallet.md)
+- [Token Balance Management](token/balance.md)
+- [Token Transactions](token/transactions.md)
+- [Smart Contract Integration](token/smart_contract.md)
+
+### 11. Features
+- [Deal Sharing](features/sharing.md)
+- [Deal Comparison](features/comparison.md)
+- [Social Features](features/social.md)
+- [Export Functionality](features/export.md)
+
+### 12. Compliance
 - [GDPR Compliance](compliance/gdpr.md)
 - [CCPA Compliance](compliance/ccpa.md)
 - [Security Policies](compliance/security_policies.md)
 - [Data Retention](compliance/data_retention.md)
 
+## Frontend Documentation
+
+The frontend documentation is available in MDX format and can be found in `frontend/src/markdown/docs/`. Key documents include:
+
+- [Getting Started](../frontend/src/markdown/docs/getting-started.mdx)
+- [Understanding Deal Analysis](../frontend/src/markdown/docs/understanding-deal-analysis.mdx)
+- [Tracking Deals](../frontend/src/markdown/docs/tracking-deals.mdx)
+- [Token System](../frontend/src/markdown/docs/token-system.mdx)
+- [Sharing Deals](../frontend/src/markdown/docs/sharing-deals.mdx)
+- [Searching Deals](../frontend/src/markdown/docs/searching-deals.mdx)
+- [Deal Goals](../frontend/src/markdown/docs/deal-goals.mdx)
+- [Troubleshooting](../frontend/src/markdown/docs/troubleshooting.mdx)
+- [FAQ](../frontend/src/markdown/docs/faq.mdx)
+
 ## Quick Links
-- [Getting Started](development/getting_started.md)
-- [API Reference](api/reference.md)
+- [Getting Started](development/setup_guide.md)
+- [API Reference](api/overview.md)
 - [Troubleshooting](development/troubleshooting.md)
 - [Contributing Guide](development/contributing.md)
 - [Change Log](CHANGELOG.md)

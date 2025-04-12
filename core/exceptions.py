@@ -977,6 +977,70 @@ class CacheError(BaseAppException):
             details=error_details
         )
 
+class PaymentError(BaseAppException):
+    """Exception raised when payment processing fails."""
+    
+    def __init__(
+        self,
+        message: str = "Payment processing error",
+        payment_id: Optional[str] = None,
+        payment_method: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        """Initialize PaymentError.
+        
+        Args:
+            message: Error message
+            payment_id: ID of the payment that failed
+            payment_method: Payment method that was used
+            details: Additional error details
+        """
+        error_details = details or {}
+        
+        if payment_id:
+            error_details["payment_id"] = payment_id
+            
+        if payment_method:
+            error_details["payment_method"] = payment_method
+            
+        super().__init__(
+            message=message,
+            status_code=status.HTTP_400_BAD_REQUEST,
+            error_code="payment_error",
+            details=error_details
+        )
+
+class PaymentValidationError(PaymentError):
+    """Exception raised when payment validation fails."""
+    
+    def __init__(
+        self,
+        message: str = "Payment validation error",
+        field: Optional[str] = None,
+        reason: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None
+    ):
+        """Initialize PaymentValidationError.
+        
+        Args:
+            message: Error message
+            field: Field that failed validation
+            reason: Reason for validation failure
+            details: Additional error details
+        """
+        error_details = details or {}
+        
+        if field:
+            error_details["field"] = field
+            
+        if reason:
+            error_details["reason"] = reason
+            
+        super().__init__(
+            message=message,
+            details=error_details
+        )
+
 def http_exception_handler(exc: HTTPException) -> Dict[str, Any]:
     """Convert FastAPI HTTP exception to standard format."""
     return {

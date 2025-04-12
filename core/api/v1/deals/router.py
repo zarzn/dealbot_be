@@ -8,10 +8,11 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import logging
 import time
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator, AnyHttpUrl, field_validator
 import os
 import random
 import uuid
+import json
 
 from core.database import get_async_db_context
 from core.models.deal import (
@@ -57,6 +58,7 @@ from core.services.user import get_user_service, UserService
 from core.services.notification import get_notification_service, NotificationService
 from core.services.promotion import get_promotion_service, PromotionService
 from core.exceptions.analytics_exceptions import AnalyticsError
+from core.utils.validation import DealValidator
 
 logger = logging.getLogger(__name__)
 
@@ -705,7 +707,7 @@ async def get_deal_recommendations(
                         id=uuid.uuid4(),
                         title=f"Mock Recommendation {i}",
                         price=round(random.uniform(10, 100), 2),
-                        category=category or "electronics",
+                        category=category or "other",
                         match_score=round(random.uniform(0.7, 0.98), 2),
                         created_at=datetime.utcnow() - timedelta(hours=random.randint(1, 24))
                     )
@@ -1208,7 +1210,7 @@ async def create_deal(
                 "source": deal_data.get("source", "test_source"),
                 "image_url": deal_data.get("image_url", "https://test.com/image.jpg"),
                 "status": deal_data.get("status", "active"),
-                "category": deal_data.get("category", "electronics"),
+                "category": deal_data.get("category", "other"),
                 "market_id": deal_data.get("market_id", str(UUID(int=2000))),
                 "user_id": str(current_user.id),
                 "created_at": datetime.utcnow().isoformat(),
@@ -1240,21 +1242,25 @@ async def create_deal(
 
 @router.get("", response_model=List[DealResponse])
 async def list_deals(
-    filters: Optional[DealFilter] = None,
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    category: Optional[str] = None,
+    price_min: Optional[float] = None,
+    price_max: Optional[float] = None,
     current_user: User = Depends(get_current_user),
-    deal_service: DealService = Depends(get_deal_service)
+    db: AsyncSession = Depends(get_db_session)
 ):
     """
     List deals for the current user with optional filtering.
     
     Args:
-        filters: Optional filters to apply to the deals query
         page: Page number (1-indexed)
         page_size: Number of items per page
+        category: Optional category filter
+        price_min: Optional minimum price filter
+        price_max: Optional maximum price filter
         current_user: Current authenticated user
-        deal_service: Deal service instance
+        db: Database session
         
     Returns:
         List of deals matching the criteria
@@ -1263,61 +1269,89 @@ async def list_deals(
         # Calculate offset from page and page_size
         offset = (page - 1) * page_size
         
-        # Get deals using the service
-        deals = await deal_service.get_deals(
-            user_id=current_user.id,
-            filters=filters,
-            limit=page_size,
-            offset=offset
-        )
+        # Get deals without attempting to load relationships
+        from sqlalchemy import select, and_
+        from core.models.deal import Deal
+        from datetime import datetime, timedelta
+        from uuid import UUID
         
-        # Ensure all required fields are present in each deal
-        enhanced_deals = []
+        # Build base query
+        query = select(Deal).where(Deal.user_id == current_user.id)
+        
+        # Apply filters if provided
+        if category:
+            query = query.filter(Deal.category == category)
+                
+        if price_min is not None:
+            query = query.filter(Deal.price >= price_min)
+                
+        if price_max is not None:
+            query = query.filter(Deal.price <= price_max)
+        
+        # Exclude expired deals by default
+        query = query.filter(Deal.status != 'expired')
+        
+        # Add pagination
+        query = query.order_by(Deal.created_at.desc())
+        query = query.offset(offset).limit(page_size)
+        
+        # Execute query safely
+        result = await db.execute(query)
+        deals = result.scalars().all()
+        
+        # Convert to response objects
+        response_deals = []
         for deal in deals:
-            # Convert to dict if it's an object
-            if hasattr(deal, '__dict__'):
-                deal_dict = {
-                    key: getattr(deal, key) 
-                    for key in dir(deal) 
-                    if not key.startswith('_') and not callable(getattr(deal, key))
-                }
-            else:
-                deal_dict = deal.copy()
-            
-            # Add required fields if missing
-            if "goal_id" not in deal_dict or not deal_dict.get("goal_id"):
-                deal_dict["goal_id"] = str(UUID('00000000-0000-0000-0000-000000000000'))
-                
-            if "found_at" not in deal_dict or not deal_dict.get("found_at"):
-                deal_dict["found_at"] = datetime.utcnow().isoformat()
-                
-            if "seller_info" not in deal_dict or not deal_dict.get("seller_info"):
-                deal_dict["seller_info"] = {"name": "Test Seller", "rating": 4.5}
-                
-            if "availability" not in deal_dict or not deal_dict.get("availability"):
-                deal_dict["availability"] = {"in_stock": True, "quantity": 10}
-                
-            if "latest_score" not in deal_dict or not deal_dict.get("latest_score"):
-                deal_dict["latest_score"] = 85.0
-                
-            if "price_history" not in deal_dict or not deal_dict.get("price_history"):
-                price = Decimal(deal_dict.get("price", "100.00"))
-                deal_dict["price_history"] = [
+            # Create a dictionary with only scalar attributes
+            deal_dict = {
+                "id": deal.id,
+                "user_id": deal.user_id,
+                "goal_id": deal.goal_id or None,
+                "market_id": deal.market_id,
+                "title": deal.title,
+                "description": deal.description or "",
+                "url": deal.url,
+                "price": deal.price,
+                "original_price": deal.original_price,
+                "currency": deal.currency,
+                "source": deal.source,
+                "image_url": deal.image_url,
+                "category": deal.category or "other",
+                "seller_info": deal.seller_info or {"name": "Test Seller", "rating": 4.5},
+                "availability": deal.availability or {"in_stock": True, "quantity": 10},
+                "found_at": deal.found_at or datetime.utcnow(),
+                "expires_at": deal.expires_at,
+                "status": deal.status,
+                "created_at": deal.created_at,
+                "updated_at": deal.updated_at,
+                "is_active": deal.is_active if hasattr(deal, "is_active") else True,
+                "latest_score": float(deal.score) if deal.score else 85.0,
+                # Default price history if needed
+                "price_history": [
                     {
-                        "price": str(price * Decimal("1.1")),
+                        "price": str(float(deal.price) * 1.1),
                         "timestamp": (datetime.utcnow() - timedelta(days=7)).isoformat(),
                         "source": "historical"
                     },
                     {
-                        "price": str(price),
+                        "price": str(deal.price),
                         "timestamp": datetime.utcnow().isoformat(),
                         "source": "current"
                     }
                 ]
+            }
             
-            enhanced_deals.append(deal_dict)
+            # Use model_validate (or create_model in case of older pydantic versions)
+            from pydantic import BaseModel
+            try:
+                deal_response = DealResponse.model_validate(deal_dict)
+            except AttributeError:
+                # For older pydantic versions
+                deal_response = DealResponse(**deal_dict)
+                
+            response_deals.append(deal_response)
         
-        return enhanced_deals
+        return response_deals
     except Exception as e:
         logger.error(f"Error in list_deals: {str(e)}")
         raise HTTPException(
@@ -1396,7 +1430,7 @@ async def refresh_deal(
                 "source": updated_deal.source,
                 "image_url": updated_deal.image_url,
                 "status": updated_deal.status,
-                "category": getattr(updated_deal, 'category', 'electronics'),
+                "category": getattr(updated_deal, 'category', 'other'),
                 "market_id": updated_deal.market_id,
                 "user_id": updated_deal.user_id,
                 "created_at": updated_deal.created_at,
@@ -1608,6 +1642,28 @@ class DealCreate(BaseModel):
     goal_id: UUID
     market_id: UUID
 
+    @field_validator('url')
+    def validate_url(cls, v):
+        """Validate and sanitize URL field"""
+        if not v:
+            return v
+        try:
+            # Use our standardized validator
+            is_valid, sanitized_url = DealValidator.validate_and_sanitize_deal_url(v)
+            if not is_valid:
+                raise ValueError("Invalid URL format")
+            return sanitized_url
+        except Exception as e:
+            raise ValueError(str(e))
+    
+    @field_validator('original_price')
+    def validate_original_price(cls, v, values):
+        """Validate that original price is greater than price if provided"""
+        if v is not None and 'price' in values.data and values.data['price'] is not None:
+            if v <= values.data['price']:
+                raise ValueError("Original price must be greater than current price")
+        return v
+
 class FlashDealCreate(BaseModel):
     """Flash deal creation model with high urgency and limited time."""
     title: str = Field(..., min_length=3, max_length=255)
@@ -1625,6 +1681,28 @@ class FlashDealCreate(BaseModel):
     notify_users: bool = Field(True, description="Whether to send notifications to users")
     max_notifications: int = Field(100, ge=1, le=1000, description="Maximum number of notifications to send")
     deal_metadata: Optional[Dict[str, Any]] = Field(None)
+
+    @field_validator('url')
+    def validate_url(cls, v):
+        """Validate and sanitize URL field"""
+        if not v:
+            return v
+        try:
+            # Use our standardized validator
+            is_valid, sanitized_url = DealValidator.validate_and_sanitize_deal_url(v)
+            if not is_valid:
+                raise ValueError("Invalid URL format")
+            return sanitized_url
+        except Exception as e:
+            raise ValueError(str(e))
+    
+    @field_validator('original_price')
+    def validate_original_price(cls, v, values):
+        """Validate that original price is greater than price if provided"""
+        if v is not None and 'price' in values.data and values.data['price'] is not None:
+            if v <= values.data['price']:
+                raise ValueError("Original price must be greater than current price")
+        return v
 
 @router.post("/flash-deals", response_model=DealResponse)
 async def create_flash_deal(

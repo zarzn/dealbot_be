@@ -16,6 +16,7 @@ from core.exceptions import (
     InvalidDealDataError,
     ExternalServiceError
 )
+from core.utils.validation import Validator, DealValidator
 
 logger = logging.getLogger(__name__)
 
@@ -63,16 +64,31 @@ async def validate_deal(
         
         # Determine which validations to perform
         if validation_type == "all" or validation_type == "url" or validate_url:
-            # Validate URL
-            url_valid = await self._validate_url(deal.url)
+            # Validate URL format
+            is_valid_format, _ = DealValidator.validate_and_sanitize_deal_url(deal.url)
+            
+            # Check URL accessibility if format is valid
+            url_accessible = False
+            if is_valid_format:
+                url_accessible = await self._validate_url(deal.url)
+                
+            # Store results
             validation_results["validations"]["url"] = {
-                "is_valid": url_valid,
+                "is_valid": is_valid_format and url_accessible,
+                "format_valid": is_valid_format,
+                "is_accessible": url_accessible,
                 "checked_url": deal.url
             }
             
-            if not url_valid:
+            # Add fields for backward compatibility
+            validation_results["url_accessible"] = url_accessible
+            
+            if not is_valid_format:
                 validation_results["is_valid"] = False
-                validation_results["issues"].append("Deal URL is invalid or unreachable")
+                validation_results["issues"].append("Deal URL has invalid format")
+            elif not url_accessible:
+                validation_results["is_valid"] = False
+                validation_results["issues"].append("Deal URL is unreachable")
                 
         if validation_type == "all" or validation_type == "price" or validate_price:
             # Validate price
@@ -177,7 +193,8 @@ async def validate_deal_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         InvalidDealDataError: If data is invalid
     """
     try:
-        validated_data = data.copy()
+        # Use our centralized DealValidator
+        validated_data = DealValidator.validate_deal_data(data.copy())
         
         # Check required fields for new deals
         if "id" not in data:  # Only for new deals
@@ -185,17 +202,6 @@ async def validate_deal_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
             missing_fields = [field for field in required_fields if field not in data or not data[field]]
             if missing_fields:
                 raise InvalidDealDataError(f"Missing required fields: {', '.join(missing_fields)}")
-                
-        # Validate URL format
-        if "url" in data and data["url"]:
-            url = data["url"]
-            # Simple URL validation
-            if not url.startswith(("http://", "https://")):
-                validated_data["url"] = f"https://{url}"
-                
-            # Check URL length
-            if len(validated_data["url"]) > 2048:  # Max URL length
-                raise InvalidDealDataError("URL is too long (max 2048 characters)")
                 
         # Validate price
         if "price" in data:
@@ -208,7 +214,7 @@ async def validate_deal_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
                     logger.warning(f"Adjusted zero or negative price to 0.01")
                 else:
                     validated_data["price"] = price  # Store as Decimal
-            except (ValueError, TypeError, InvalidOperation):
+            except (ValueError, TypeError) as e:
                 raise InvalidDealDataError(f"Invalid price format: {data['price']}")
                 
         # Validate original price
@@ -228,7 +234,7 @@ async def validate_deal_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
                     # Swap them if original is lower than current
                     validated_data["original_price"], validated_data["price"] = validated_data["price"], validated_data["original_price"]
                     logger.warning(f"Swapped price and original_price because original was lower")
-            except (ValueError, TypeError, InvalidOperation):
+            except (ValueError, TypeError) as e:
                 validated_data["original_price"] = None
                 logger.warning(f"Removed invalid original price: {data['original_price']}")
                 
@@ -292,6 +298,12 @@ async def _validate_url(self, url: str) -> bool:
         return False
         
     try:
+        # First validate the URL format
+        is_valid_format, _ = DealValidator.validate_and_sanitize_deal_url(url)
+        if not is_valid_format:
+            return False
+            
+        # Then check if it's accessible
         async with aiohttp.ClientSession() as session:
             async with session.head(url, allow_redirects=True, timeout=10) as response:
                 return response.status < 400  # Valid if status code is not an error

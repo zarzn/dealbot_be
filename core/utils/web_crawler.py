@@ -20,6 +20,7 @@ from core.exceptions import (
     InvalidDealDataError
 )
 from core.config import settings
+from core.utils.validation import Validator, DealValidator
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,16 @@ class WebCrawler:
         if not self.session:
             raise RuntimeError("WebCrawler must be used as a context manager")
 
+        # First validate and sanitize the URL
+        is_valid, sanitized_url = Validator.validate_and_sanitize_url(url)
+        if not is_valid:
+            raise MarketConnectionError(
+                market="unknown",
+                message=f"Invalid URL format: {url}"
+            )
+            
+        # Use the sanitized URL for further operations
+        url = sanitized_url
         domain = urlparse(url).netloc
         await self._enforce_rate_limit(domain)
 
@@ -169,12 +180,21 @@ class WebCrawler:
         Raises:
             InvalidDealDataError: If required product data cannot be extracted
         """
-        html = await self.get_page(url)
+        # Validate and sanitize URL before proceeding
+        is_valid, sanitized_url = DealValidator.validate_and_sanitize_deal_url(url)
+        if not is_valid:
+            raise InvalidDealDataError(
+                message="Invalid product URL",
+                details={'url': url}
+            )
+            
+        # Use sanitized URL for fetching
+        html = await self.get_page(sanitized_url)
         soup = BeautifulSoup(html, 'html.parser')
         
         data = {
-            'url': url,
-            'source': urlparse(url).netloc,
+            'url': sanitized_url,  # Use sanitized URL
+            'source': urlparse(sanitized_url).netloc,
             'crawled_at': datetime.now().isoformat()
         }
 
@@ -240,12 +260,22 @@ class WebCrawler:
                 data['description'] = desc_elem.get_text().strip()
                 break
 
+        # For image URLs, ensure they are properly sanitized
+        if 'image_url' in data and data['image_url']:
+            try:
+                # Sanitize image URL (validating as a URL but not as strictly as deal URL)
+                is_valid, sanitized_img_url = Validator.validate_and_sanitize_url(data['image_url'])
+                if is_valid:
+                    data['image_url'] = sanitized_img_url
+            except Exception as e:
+                logger.warning(f"Failed to sanitize image URL: {str(e)}")
+        
         # Validate required fields
         if not all(k in data for k in ['title', 'price']):
             raise InvalidDealDataError(
                 message="Failed to extract required product data",
                 details={
-                    'url': url,
+                    'url': sanitized_url,
                     'extracted_fields': list(data.keys())
                 }
             )

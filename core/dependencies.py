@@ -1,37 +1,33 @@
-from typing import AsyncGenerator, Optional
-from fastapi import Depends, HTTPException, status, BackgroundTasks
-from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt, ExpiredSignatureError
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from datetime import datetime, timezone
-import os
+from fastapi import HTTPException, Depends, status, Request
+from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
+from typing import Optional, List, Dict, Any, Callable, AsyncGenerator, Tuple
+from uuid import UUID
+import re
 import logging
 import uuid
+from datetime import datetime, timedelta
+from jose import JWTError
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+import json
 
-from core.database import AsyncSessionLocal, get_async_db_context
+from core.config import settings, Settings
+from core.database import get_db, get_session, get_async_db_context
+from core.services.redis import get_redis_service, Redis
 from core.models.user import User
 from core.services.auth import AuthService, get_jwt_secret_key, create_mock_user_for_test, TokenType
+# Import TokenService (not TokenServiceV2 which doesn't exist)
 from core.services.token import TokenService
 from core.services.analytics import AnalyticsService
 from core.services.market import MarketService
 from core.services.deal import DealService
-from core.services.goal import GoalService
 from core.services.market_search import MarketSearchService
 from core.services.deal_analysis import DealAnalysisService
-from core.services.redis import get_redis_service
-from core.config import settings, Settings
-from core.exceptions import (
-    AuthenticationError,
-    TokenError,
-    DatabaseError
-)
-
+from core.services.goal import GoalService
 from core.repositories.market import MarketRepository
 from core.repositories.deal import DealRepository
-from core.repositories.goal import GoalRepository
-from core.repositories.token import TokenRepository
-from core.repositories.analytics import AnalyticsRepository
+from core.services.agent import AgentService
+from core.services.stripe_service import StripeService, get_stripe_service
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -44,14 +40,6 @@ oauth2_scheme_optional = OAuth2PasswordBearer(
     auto_error=False
 )
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Get database session."""
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
-
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """Get DB session using the async context manager to prevent connection leaks."""
     async with get_async_db_context() as db:
@@ -61,9 +49,12 @@ async def get_settings() -> Settings:
     """Get application settings."""
     return settings
 
-async def get_token_service(db: AsyncSession = Depends(get_db_session)) -> TokenService:
+async def get_token_service(
+    db: AsyncSession = Depends(get_db_session),
+    redis_service = Depends(get_redis_service)
+) -> TokenService:
     """Get token service instance."""
-    return TokenService(TokenRepository(db))
+    return TokenService(db=db, redis_service=redis_service)
 
 async def get_auth_service(
     db: AsyncSession = Depends(get_db_session),

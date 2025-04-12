@@ -1,885 +1,736 @@
 # Database Schema Documentation
 
 ## Overview
-The database schema is designed to support the AI Agentic Deals System's core functionalities, including user management, goal tracking, deal monitoring, and token operations. The schema uses PostgreSQL with proper indexing, constraints, and relationships.
 
-## Schema Diagram
-[Include Entity Relationship Diagram here]
+This document provides a comprehensive overview of the database schema used in the AI Agentic Deals System. The system uses PostgreSQL as its primary relational database, following SQLAlchemy 2.0 style for ORM mapping. The schema is designed to support the core functionality of deal discovery, analysis, user management, and token-based transactions.
 
-## Enum Types
+## Database Architecture
 
-### User Related
-- `userstatus`: 'active', 'inactive', 'suspended', 'deleted'
-- `notificationpriority`: 'critical', 'high', 'medium', 'low'
-- `notificationstatus`: 'pending', 'sent', 'delivered', 'read', 'failed'
-- `notificationtype`: 'system', 'deal', 'goal', 'price_alert', 'token', 'security', 'market'
+### Database Technology
 
-### Market Related
-- `marketcategory`: 'electronics', 'fashion', 'home', 'books', 'toys', 'sports', 'automotive', 'health', 'beauty', 'grocery', 'other'
-- `markettype`: 'amazon', 'walmart', 'ebay', 'target', 'bestbuy'
-- `marketstatus`: 'active', 'inactive', 'maintenance', 'rate_limited', 'error'
+- **PostgreSQL 14+**: Primary relational database for structured data
+- **SQLAlchemy 2.0**: ORM framework for database interactions
+- **Alembic**: Database migration tool
 
-### Goal and Deal Related
-- `goalstatus`: 'active', 'paused', 'completed', 'cancelled', 'failed', 'expired', 'error'
-- `goalpriority`: 'high', 'medium', 'low'
-- `dealstatus`: 'pending', 'active', 'expired', 'sold_out', 'invalid', 'deleted'
-- `dealsource`: 'amazon', 'walmart', 'ebay', 'target', 'bestbuy', 'manual', 'api', 'scraper', 'user', 'agent'
+### Database Design Principles
 
-### Token Related
-- `tokentype`: 'access', 'refresh', 'reset'
-- `tokenstatus`: 'active', 'expired', 'revoked'
-- `tokenscope`: 'full', 'limited', 'read'
-- `transactiontype`: 'deduction', 'reward', 'refund'
-- `transactionstatus`: 'pending', 'completed', 'failed', 'cancelled'
-- `balancechangetype`: 'deduction', 'reward', 'refund'
+1. **Normalization**: Tables are designed to follow 3NF (Third Normal Form) to minimize redundancy
+2. **Referential Integrity**: Foreign key constraints enforce data consistency
+3. **Performance Optimization**: Strategic indexing and query optimization
+4. **Data Type Precision**: Appropriate data types selected for each column
+5. **Soft Deletion**: Logical deletion instead of physical where appropriate
 
-### Chat Related
-- `messagerole`: 'user', 'assistant', 'system'
-
-## Tables
+## Core Tables
 
 ### Users
+
+Stores user account information and authentication details.
+
 ```sql
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) NOT NULL UNIQUE,
+    hashed_password VARCHAR(255) NOT NULL,
     name VARCHAR(255),
-    password TEXT NOT NULL,
-    sol_address VARCHAR(44) UNIQUE,
-    referral_code VARCHAR(10) UNIQUE,
-    referred_by UUID REFERENCES users(id) ON DELETE SET NULL,
-    token_balance NUMERIC(18,8) NOT NULL DEFAULT 0,
-    preferences JSONB NOT NULL DEFAULT '{}',
-    status userstatus NOT NULL DEFAULT 'active',
-    notification_channels JSONB NOT NULL DEFAULT '["in_app"]',
-    email_verified BOOLEAN NOT NULL DEFAULT false,
-    social_provider VARCHAR(50),
-    social_id VARCHAR(255),
-    last_payment_at TIMESTAMP WITH TIME ZONE,
-    last_login_at TIMESTAMP WITH TIME ZONE,
-    active_goals_count INTEGER NOT NULL DEFAULT 0,
-    total_deals_found INTEGER NOT NULL DEFAULT 0,
-    success_rate NUMERIC(5,4) NOT NULL DEFAULT 0,
-    total_tokens_spent NUMERIC(18,8) NOT NULL DEFAULT 0,
-    total_rewards_earned NUMERIC(18,8) NOT NULL DEFAULT 0,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+    verification_token VARCHAR(255),
+    role VARCHAR(50) NOT NULL DEFAULT 'user',
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_role ON users(role);
 ```
-**Indexes:**
-- `ix_users_email_status` on (email, status)
-- `ix_users_wallet` on (sol_address)
-- `ix_users_referral` on (referral_code)
 
-**Constraints:**
-- `ch_positive_balance`: Ensures token balance is non-negative
-- `uq_user_email`: Unique email addresses
-- `uq_user_wallet`: Unique wallet addresses
-- `uq_user_referral`: Unique referral codes
+### User Preferences
 
-### Auth Tokens
+Stores user-specific preferences for deal discovery and notifications.
+
 ```sql
-CREATE TABLE auth_tokens (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token TEXT NOT NULL,
-    token_type tokentype NOT NULL,
-    status tokenstatus NOT NULL DEFAULT 'active',
-    scope tokenscope NOT NULL DEFAULT 'full',
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    meta_data JSONB NOT NULL DEFAULT '{}'
+CREATE TABLE user_preferences (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    notification_email BOOLEAN NOT NULL DEFAULT TRUE,
+    notification_push BOOLEAN NOT NULL DEFAULT TRUE,
+    theme VARCHAR(50) DEFAULT 'light',
+    deal_categories JSONB,
+    preferred_markets JSONB,
+    min_discount_percentage INTEGER,
+    max_price NUMERIC(10, 2),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 ```
-**Indexes:**
-- `ix_auth_tokens_user` on (user_id)
-- `ix_auth_tokens_token` on (token)
-- `ix_auth_tokens_status` on (status)
-
-### Goals
-```sql
-CREATE TABLE goals (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    title VARCHAR(255) NOT NULL,
-    description TEXT,
-    category marketcategory NOT NULL,
-    constraints JSONB NOT NULL DEFAULT '{}',
-    status goalstatus NOT NULL DEFAULT 'active',
-    priority goalpriority NOT NULL DEFAULT 'medium',
-    start_date TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    end_date TIMESTAMP WITH TIME ZONE,
-    max_budget NUMERIC(10,2),
-    min_discount_percent NUMERIC(5,2),
-    target_price NUMERIC(10,2),
-    notification_threshold NUMERIC(5,2),
-    auto_buy_threshold NUMERIC(5,2),
-    max_matches INTEGER,
-    max_tokens NUMERIC(18,8),
-    total_tokens_spent NUMERIC(18,8) NOT NULL DEFAULT 0,
-    total_matches_found INTEGER NOT NULL DEFAULT 0,
-    last_checked_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    meta_data JSONB NOT NULL DEFAULT '{}'
-);
-```
-**Indexes:**
-- `ix_goals_user_status` on (user_id, status)
-- `ix_goals_category` on (category)
-- `ix_goals_priority` on (priority)
-
-### Markets
-```sql
-CREATE TABLE markets (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(255) NOT NULL,
-    type markettype NOT NULL,
-    status marketstatus NOT NULL DEFAULT 'active',
-    base_url TEXT NOT NULL,
-    api_endpoint TEXT,
-    api_key TEXT,
-    rate_limit INTEGER,
-    rate_limit_window INTEGER,
-    current_rate INTEGER NOT NULL DEFAULT 0,
-    last_rate_reset TIMESTAMP WITH TIME ZONE,
-    error_count INTEGER NOT NULL DEFAULT 0,
-    last_error_at TIMESTAMP WITH TIME ZONE,
-    last_error TEXT,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    meta_data JSONB NOT NULL DEFAULT '{}'
-);
-```
-**Indexes:**
-- `ix_markets_type_status` on (type, status)
-- `ix_markets_name` on (name)
 
 ### Deals
+
+Stores deal information scraped from various sources.
+
 ```sql
 CREATE TABLE deals (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    goal_id UUID NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
-    market_id UUID NOT NULL REFERENCES markets(id) ON DELETE CASCADE,
     title VARCHAR(255) NOT NULL,
     description TEXT,
+    original_price NUMERIC(10, 2) NOT NULL,
+    current_price NUMERIC(10, 2) NOT NULL,
+    discount_percentage NUMERIC(5, 2) NOT NULL,
     url TEXT NOT NULL,
     image_url TEXT,
-    current_price NUMERIC(10,2) NOT NULL,
-    original_price NUMERIC(10,2),
-    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
-    discount_percent NUMERIC(5,2),
-    category marketcategory NOT NULL,
-    source dealsource NOT NULL,
-    status dealstatus NOT NULL DEFAULT 'active',
-    seller_name VARCHAR(255),
-    seller_rating NUMERIC(3,2),
-    availability_status VARCHAR(50),
-    shipping_info JSONB,
-    product_specs JSONB,
-    found_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    market_id UUID NOT NULL REFERENCES markets(id),
+    category_id UUID REFERENCES categories(id),
+    source_id UUID NOT NULL REFERENCES sources(id),
     expires_at TIMESTAMP WITH TIME ZONE,
-    last_checked_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    meta_data JSONB NOT NULL DEFAULT '{}'
+    status VARCHAR(50) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    ai_analysis JSONB,
+    metadata JSONB,
+    CONSTRAINT positive_prices CHECK (original_price > 0 AND current_price > 0),
+    CONSTRAINT valid_discount CHECK (discount_percentage >= 0 AND discount_percentage <= 100)
 );
-```
-**Indexes:**
-- `ix_deals_goal_status` on (goal_id, status)
-- `ix_deals_market_status` on (market_id, status)
-- `ix_deals_category` on (category)
-- `ix_deals_source` on (source)
-- `ix_deals_url` on (url)
 
-### Price Tracking
+CREATE INDEX idx_deals_market ON deals(market_id);
+CREATE INDEX idx_deals_category ON deals(category_id);
+CREATE INDEX idx_deals_source ON deals(source_id);
+CREATE INDEX idx_deals_status ON deals(status);
+CREATE INDEX idx_deals_created_at ON deals(created_at);
+CREATE INDEX idx_deals_expires_at ON deals(expires_at);
+CREATE INDEX idx_deals_discount_percentage ON deals(discount_percentage);
+CREATE INDEX idx_deals_current_price ON deals(current_price);
+```
+
+### Markets
+
+Stores information about e-commerce marketplaces.
+
 ```sql
-CREATE TABLE price_tracking (
+CREATE TABLE markets (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    deal_id UUID NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
-    price NUMERIC(10,2) NOT NULL,
-    currency VARCHAR(3) NOT NULL DEFAULT 'USD',
-    source dealsource NOT NULL,
-    tracked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    meta_data JSONB NOT NULL DEFAULT '{}'
+    name VARCHAR(100) NOT NULL UNIQUE,
+    url TEXT,
+    logo_url TEXT,
+    status VARCHAR(50) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
-```
-**Indexes:**
-- `ix_price_tracking_deal` on (deal_id)
-- `ix_price_tracking_source` on (source)
 
-### Chat Messages
+CREATE INDEX idx_markets_status ON markets(status);
+```
+
+### Categories
+
+Stores product categories for deal classification.
+
 ```sql
-CREATE TABLE chat_messages (
+CREATE TABLE categories (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL,
+    parent_id UUID REFERENCES categories(id),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CONSTRAINT unique_name_per_parent UNIQUE (name, parent_id)
+);
+
+CREATE INDEX idx_categories_parent ON categories(parent_id);
+```
+
+### Sources
+
+Stores information about deal data sources.
+
+```sql
+CREATE TABLE sources (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL UNIQUE,
+    type VARCHAR(50) NOT NULL,
+    configuration JSONB,
+    status VARCHAR(50) NOT NULL DEFAULT 'active',
+    reliability_score NUMERIC(3, 2) NOT NULL DEFAULT 1.0,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CONSTRAINT valid_reliability_score CHECK (reliability_score >= 0 AND reliability_score <= 1)
+);
+
+CREATE INDEX idx_sources_type ON sources(type);
+CREATE INDEX idx_sources_status ON sources(status);
+```
+
+### Saved Deals
+
+Maps users to their saved deals.
+
+```sql
+CREATE TABLE saved_deals (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    deal_id UUID NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    saved_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    notes TEXT,
+    PRIMARY KEY (user_id, deal_id)
+);
+
+CREATE INDEX idx_saved_deals_user ON saved_deals(user_id);
+CREATE INDEX idx_saved_deals_deal ON saved_deals(deal_id);
+CREATE INDEX idx_saved_deals_saved_at ON saved_deals(saved_at);
+```
+
+### User Goals
+
+Stores user-defined deal search goals.
+
+```sql
+CREATE TABLE user_goals (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    goal_id UUID REFERENCES goals(id) ON DELETE SET NULL,
-    role messagerole NOT NULL,
-    content TEXT NOT NULL,
-    tokens_used INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    meta_data JSONB NOT NULL DEFAULT '{}'
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    parameters JSONB NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'active',
+    progress_metrics JSONB,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    target_date TIMESTAMP WITH TIME ZONE,
+    completion_date TIMESTAMP WITH TIME ZONE,
+    priority INTEGER NOT NULL DEFAULT 5
 );
+
+CREATE INDEX idx_user_goals_user ON user_goals(user_id);
+CREATE INDEX idx_user_goals_status ON user_goals(status);
+CREATE INDEX idx_user_goals_priority ON user_goals(priority);
 ```
-**Indexes:**
-- `ix_chat_messages_user` on (user_id)
-- `ix_chat_messages_goal` on (goal_id)
-- `ix_chat_messages_role` on (role)
+
+### Goal Deals
+
+Maps user goals to relevant deals.
+
+```sql
+CREATE TABLE goal_deals (
+    goal_id UUID NOT NULL REFERENCES user_goals(id) ON DELETE CASCADE,
+    deal_id UUID NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    relevance_score NUMERIC(5, 2) NOT NULL,
+    matched_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    status VARCHAR(50) NOT NULL DEFAULT 'active',
+    PRIMARY KEY (goal_id, deal_id)
+);
+
+CREATE INDEX idx_goal_deals_goal ON goal_deals(goal_id);
+CREATE INDEX idx_goal_deals_deal ON goal_deals(deal_id);
+CREATE INDEX idx_goal_deals_relevance ON goal_deals(relevance_score);
+```
+
+## Token System Tables
+
+### User Token Balances
+
+Tracks user token balances.
+
+```sql
+CREATE TABLE user_token_balances (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    balance INTEGER NOT NULL DEFAULT 0,
+    lifetime_earned INTEGER NOT NULL DEFAULT 0,
+    lifetime_spent INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CONSTRAINT positive_balance CHECK (balance >= 0)
+);
+
+CREATE UNIQUE INDEX idx_token_balances_user ON user_token_balances(user_id);
+```
+
+### Token Transactions
+
+Records all token balance changes.
+
+```sql
+CREATE TABLE token_transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    transaction_type VARCHAR(50) NOT NULL,
+    amount INTEGER NOT NULL,
+    balance_after INTEGER NOT NULL,
+    description TEXT,
+    metadata JSONB,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    reference_id UUID,
+    CONSTRAINT valid_amount CHECK (amount != 0)
+);
+
+CREATE INDEX idx_token_transactions_user ON token_transactions(user_id);
+CREATE INDEX idx_token_transactions_type ON token_transactions(transaction_type);
+CREATE INDEX idx_token_transactions_created_at ON token_transactions(created_at);
+CREATE INDEX idx_token_transactions_reference ON token_transactions(reference_id);
+```
+
+### Token Packages
+
+Defines token packages available for purchase.
+
+```sql
+CREATE TABLE token_packages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL,
+    token_amount INTEGER NOT NULL,
+    price_usd NUMERIC(10, 2) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    description TEXT,
+    discount_percentage INTEGER DEFAULT 0,
+    CONSTRAINT positive_token_amount CHECK (token_amount > 0),
+    CONSTRAINT positive_price CHECK (price_usd > 0)
+);
+
+CREATE INDEX idx_token_packages_active ON token_packages(is_active);
+```
+
+### Token Redemption Codes
+
+Manages one-time token redemption codes.
+
+```sql
+CREATE TABLE token_redemption_codes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code VARCHAR(50) UNIQUE NOT NULL,
+    token_amount INTEGER NOT NULL,
+    max_redemptions INTEGER NOT NULL DEFAULT 1,
+    redemptions_count INTEGER NOT NULL DEFAULT 0,
+    expires_at TIMESTAMP WITH TIME ZONE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    created_by UUID REFERENCES users(id),
+    CONSTRAINT positive_token_amount CHECK (token_amount > 0),
+    CONSTRAINT valid_max_redemptions CHECK (max_redemptions > 0)
+);
+
+CREATE INDEX idx_redemption_codes_active ON token_redemption_codes(is_active);
+CREATE INDEX idx_redemption_codes_expires ON token_redemption_codes(expires_at);
+```
+
+## Social and Sharing Tables
+
+### Shared Deals
+
+Tracks deals shared by users.
+
+```sql
+CREATE TABLE shared_deals (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    deal_id UUID NOT NULL REFERENCES deals(id),
+    share_type VARCHAR(50) NOT NULL,
+    recipients JSONB,
+    message TEXT,
+    public_link_id VARCHAR(100) UNIQUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMP WITH TIME ZONE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    click_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_shared_deals_user ON shared_deals(user_id);
+CREATE INDEX idx_shared_deals_deal ON shared_deals(deal_id);
+CREATE INDEX idx_shared_deals_public_link ON shared_deals(public_link_id);
+CREATE INDEX idx_shared_deals_created_at ON shared_deals(created_at);
+```
+
+### Social Interactions
+
+Records user interactions with deals.
+
+```sql
+CREATE TABLE social_interactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    deal_id UUID NOT NULL REFERENCES deals(id),
+    interaction_type VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    metadata JSONB
+);
+
+CREATE INDEX idx_social_interactions_user ON social_interactions(user_id);
+CREATE INDEX idx_social_interactions_deal ON social_interactions(deal_id);
+CREATE INDEX idx_social_interactions_type ON social_interactions(interaction_type);
+CREATE INDEX idx_social_interactions_created_at ON social_interactions(created_at);
+```
+
+## AI Component Tables
+
+### AI Analysis Requests
+
+Tracks AI analysis requests for deals.
+
+```sql
+CREATE TABLE ai_analysis_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id),
+    deal_id UUID REFERENCES deals(id),
+    url TEXT,
+    product_name TEXT,
+    status VARCHAR(50) NOT NULL DEFAULT 'pending',
+    requested_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMP WITH TIME ZONE,
+    tokens_charged INTEGER,
+    model_used VARCHAR(100),
+    result JSONB,
+    error_message TEXT
+);
+
+CREATE INDEX idx_ai_requests_user ON ai_analysis_requests(user_id);
+CREATE INDEX idx_ai_requests_deal ON ai_analysis_requests(deal_id);
+CREATE INDEX idx_ai_requests_status ON ai_analysis_requests(status);
+CREATE INDEX idx_ai_requests_requested_at ON ai_analysis_requests(requested_at);
+```
+
+### AI Models
+
+Tracks LLM models used in the system.
+
+```sql
+CREATE TABLE ai_models (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL UNIQUE,
+    provider VARCHAR(100) NOT NULL,
+    version VARCHAR(100) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    is_fallback BOOLEAN NOT NULL DEFAULT FALSE,
+    token_cost_per_1k NUMERIC(10, 6) NOT NULL,
+    max_tokens INTEGER NOT NULL,
+    capabilities JSONB,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_ai_models_active ON ai_models(is_active);
+CREATE INDEX idx_ai_models_provider ON ai_models(provider);
+```
+
+### AI Prompt Templates
+
+Stores templates for AI prompts.
+
+```sql
+CREATE TABLE ai_prompt_templates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL UNIQUE,
+    template_text TEXT NOT NULL,
+    description TEXT,
+    version VARCHAR(50) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    usage_type VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_prompt_templates_active ON ai_prompt_templates(is_active);
+CREATE INDEX idx_prompt_templates_usage_type ON ai_prompt_templates(usage_type);
+```
+
+## Notification Tables
 
 ### Notifications
+
+Stores user notifications.
+
 ```sql
 CREATE TABLE notifications (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    type notificationtype NOT NULL,
-    priority notificationpriority NOT NULL DEFAULT 'medium',
-    status notificationstatus NOT NULL DEFAULT 'pending',
+    type VARCHAR(50) NOT NULL,
     title VARCHAR(255) NOT NULL,
-    message TEXT NOT NULL,
-    goal_id UUID REFERENCES goals(id) ON DELETE SET NULL,
-    deal_id UUID REFERENCES deals(id) ON DELETE SET NULL,
-    action_url TEXT,
-    channels JSONB NOT NULL DEFAULT '["in_app"]',
-    sent_at TIMESTAMP WITH TIME ZONE,
-    delivered_at TIMESTAMP WITH TIME ZONE,
+    content TEXT NOT NULL,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     read_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    meta_data JSONB NOT NULL DEFAULT '{}'
+    metadata JSONB,
+    action_url TEXT
 );
-```
-**Indexes:**
-- `ix_notifications_user_status` on (user_id, status)
-- `ix_notifications_type` on (type)
-- `ix_notifications_priority` on (priority)
 
-### Token Transactions
+CREATE INDEX idx_notifications_user ON notifications(user_id);
+CREATE INDEX idx_notifications_created_at ON notifications(created_at);
+CREATE INDEX idx_notifications_is_read ON notifications(is_read);
+CREATE INDEX idx_notifications_type ON notifications(type);
+```
+
+### Notification Settings
+
+Controls user notification preferences.
+
 ```sql
-CREATE TABLE token_transactions (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    type transactiontype NOT NULL,
-    amount NUMERIC(18,8) NOT NULL,
-    status transactionstatus NOT NULL DEFAULT 'pending',
-    description TEXT,
-    goal_id UUID REFERENCES goals(id) ON DELETE SET NULL,
-    tx_hash VARCHAR(66),
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    meta_data JSONB NOT NULL DEFAULT '{}'
+CREATE TABLE notification_settings (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    email_deal_alerts BOOLEAN NOT NULL DEFAULT TRUE,
+    email_price_drops BOOLEAN NOT NULL DEFAULT TRUE,
+    email_goal_updates BOOLEAN NOT NULL DEFAULT TRUE,
+    push_deal_alerts BOOLEAN NOT NULL DEFAULT TRUE,
+    push_price_drops BOOLEAN NOT NULL DEFAULT TRUE,
+    push_goal_updates BOOLEAN NOT NULL DEFAULT TRUE,
+    quiet_hours_start TIME,
+    quiet_hours_end TIME,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 ```
-**Indexes:**
-- `ix_token_transactions_user` on (user_id)
-- `ix_token_transactions_type` on (type)
-- `ix_token_transactions_status` on (status)
-- `ix_token_transactions_hash` on (tx_hash)
 
-### Token Balance History
+## Enums
+
+The system uses several enums across tables for consistency:
+
 ```sql
-CREATE TABLE token_balance_history (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    balance_before NUMERIC(18,8) NOT NULL,
-    balance_after NUMERIC(18,8) NOT NULL,
-    change_amount NUMERIC(18,8) NOT NULL,
-    change_type balancechangetype NOT NULL,
-    transaction_id UUID REFERENCES token_transactions(id) ON DELETE SET NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    meta_data JSONB NOT NULL DEFAULT '{}'
+-- User Roles
+CREATE TYPE user_role AS ENUM ('user', 'admin', 'moderator');
+
+-- Deal Status
+CREATE TYPE deal_status AS ENUM ('active', 'expired', 'removed');
+
+-- Market Status
+CREATE TYPE market_status AS ENUM ('active', 'inactive', 'deprecated');
+
+-- Source Type
+CREATE TYPE source_type AS ENUM ('api', 'scraper', 'affiliate', 'user_submitted');
+
+-- Token Transaction Type
+CREATE TYPE token_transaction_type AS ENUM (
+    'purchase', 
+    'ai_usage', 
+    'signup_bonus', 
+    'referral_bonus', 
+    'admin_adjustment', 
+    'redemption_code', 
+    'refund', 
+    'expiration'
+);
+
+-- Share Type
+CREATE TYPE share_type AS ENUM ('email', 'link', 'social');
+
+-- Interaction Type
+CREATE TYPE interaction_type AS ENUM ('view', 'save', 'share', 'click', 'purchase');
+
+-- Analysis Status
+CREATE TYPE analysis_status AS ENUM ('pending', 'processing', 'completed', 'failed');
+
+-- Notification Type
+CREATE TYPE notification_type AS ENUM (
+    'deal_alert', 
+    'price_drop', 
+    'goal_update', 
+    'token_update', 
+    'system_message'
 );
 ```
-**Indexes:**
-- `ix_token_balance_history_user` on (user_id)
-- `ix_token_balance_history_type` on (change_type)
 
-### Model Metrics
-```sql
-CREATE TABLE model_metrics (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    model_name VARCHAR(50) NOT NULL,
-    model_version VARCHAR(50) NOT NULL,
-    accuracy NUMERIC(5,4) NOT NULL,
-    precision NUMERIC(5,4) NOT NULL,
-    recall NUMERIC(5,4) NOT NULL,
-    f1_score NUMERIC(5,4) NOT NULL,
-    training_duration INTEGER NOT NULL,
-    training_samples INTEGER NOT NULL,
-    validation_samples INTEGER NOT NULL,
-    hyperparameters JSONB NOT NULL DEFAULT '{}',
-    feature_importance JSONB NOT NULL DEFAULT '{}',
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    meta_data JSONB NOT NULL DEFAULT '{}'
-);
+## Relationships Diagram
+
 ```
-**Indexes:**
-- `ix_model_metrics_name_version` on (model_name, model_version)
-- `ix_model_metrics_created` on (created_at)
-
-### Token Pricing
-```sql
-CREATE TABLE token_pricing (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    service_type VARCHAR(50) NOT NULL,
-    token_cost NUMERIC(18,8) NOT NULL,
-    min_tokens INTEGER NOT NULL DEFAULT 1,
-    max_tokens INTEGER,
-    valid_from TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    valid_to TIMESTAMP WITH TIME ZONE,
-    is_active BOOLEAN NOT NULL DEFAULT true,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    meta_data JSONB NOT NULL DEFAULT '{}'
-);
-```
-**Indexes:**
-- `ix_token_pricing_service` on (service_type)
-- `ix_token_pricing_active` on (is_active)
-- `ix_token_pricing_validity` on (valid_from, valid_to)
-
-## Notes
-- All tables inherit created_at/updated_at from Base model
-- All UUID fields use gen_random_uuid() for generation
-- All timestamp fields include timezone information
-- JSONB used for flexible schema evolution
-- Appropriate indexes on frequently queried fields
-- Proper foreign key constraints with ON DELETE actions
-- Check constraints for data integrity
-- Enum fields implemented as VARCHAR with constraints
-
-## Database Connection Standards
-- Connection Pooling:
-  - Min connections: 5
-  - Max connections: 20
-  - Overflow: 5
-  - Pool recycle: 3600
-- Transaction Management:
-  - Max retry attempts: 3
-  - Deadlock retry delay: 1s
-  - Transaction timeout: 30s
-
-## Performance Guidelines
-- Maximum query time: 1 second
-- Use efficient indexing
-- Implement query monitoring
-- Follow cache strategy
-- Use connection pooling
-- Optimize bulk operations 
-
-## Database Engine
-
-The system uses PostgreSQL as the primary database engine. All models are designed to work optimally with PostgreSQL's features.
-
-## Naming Conventions
-
-- Table names: snake_case, plural (e.g., `users`, `deal_scores`)
-- Column names: snake_case (e.g., `created_at`, `user_id`)
-- Primary keys: `id` (UUID type)
-- Foreign keys: `entity_name_id` (e.g., `user_id`, `deal_id`)
-- Indexes: `ix_table_column` (e.g., `ix_users_email`)
-- Unique constraints: `uq_table_column` (e.g., `uq_users_email`)
-
-## Enum Handling
-
-Enums are stored in the database as lowercase strings for maximum compatibility. The system follows these conventions for enum handling:
-
-1. Enum definitions are kept in `core.models.enums`
-2. When defining SQLAlchemy enum columns, values are converted to lowercase:
-   ```python
-   status = mapped_column(SQLAlchemyEnum(MarketStatus, values_callable=lambda x: [e.value.lower() for e in x]))
-   ```
-3. When retrieving enum values from the database, they are converted back to enum objects
-4. In API responses, enum values (strings) are used instead of enum objects
-5. When creating factory defaults, `.value` is used for enum fields
-6. In test files, always use `.value` when working with enums (e.g., `MarketType.TEST.value`)
-
-## Data Models
-
-### User
-
-**Table**: `users`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `email` | String | UNIQUE, NOT NULL | User email address |
-| `name` | String | NOT NULL | User full name |
-| `password_hash` | String | NOT NULL | Hashed password |
-| `status` | String (Enum) | NOT NULL | User status (active, inactive, suspended) |
-| `role` | String (Enum) | NOT NULL | User role (admin, user, agent) |
-| `created_at` | Timestamp | NOT NULL | Creation timestamp |
-| `updated_at` | Timestamp | NOT NULL | Last update timestamp |
-
-**Indexes**:
-- `ix_users_email` - For fast lookup by email
-- `ix_users_status` - For filtering active users
-
-**Relationships**:
-- `deals` (One-to-Many) -> `Deal`
-- `tokens` (One-to-Many) -> `TokenBalance`
-- `settings` (One-to-One) -> `UserSettings`
-
-### Deal
-
-**Table**: `deals`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `user_id` | UUID | FK, NOT NULL | Owner user ID |
-| `title` | String | NOT NULL | Deal title |
-| `description` | Text | | Deal description |
-| `status` | String (Enum) | NOT NULL | Deal status (draft, active, completed, cancelled) |
-| `market_type` | String (Enum) | NOT NULL | Market type (stock, crypto, forex, commodity) |
-| `price` | Numeric | | Current price |
-| `target_price` | Numeric | | Target price |
-| `quantity` | Numeric | | Quantity |
-| `created_at` | Timestamp | NOT NULL | Creation timestamp |
-| `updated_at` | Timestamp | NOT NULL | Last update timestamp |
-| `metadata` | JSONB | | Additional metadata |
-
-**Indexes**:
-- `ix_deals_user_id` - For fast lookup of user's deals
-- `ix_deals_status` - For filtering by status
-- `ix_deals_market_type` - For filtering by market type
-- `ix_deals_created_at` - For sorting by creation date
-
-**Relationships**:
-- `user` (Many-to-One) -> `User`
-- `scores` (One-to-Many) -> `DealScore`
-- `activities` (One-to-Many) -> `DealActivity`
-- `goals` (One-to-Many) -> `Goal`
-
-### DealScore
-
-**Table**: `deal_scores`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `deal_id` | UUID | FK, NOT NULL | Referenced deal ID |
-| `score_type` | String (Enum) | NOT NULL | Score type (risk, profit_potential, market_sentiment) |
-| `value` | Numeric | NOT NULL | Score value (0-100) |
-| `confidence` | Numeric | NOT NULL | Confidence level (0-100) |
-| `created_at` | Timestamp | NOT NULL | Creation timestamp |
-| `updated_at` | Timestamp | NOT NULL | Last update timestamp |
-| `metadata` | JSONB | | Additional metadata |
-
-**Indexes**:
-- `ix_deal_scores_deal_id` - For fast lookup of deal's scores
-- `ix_deal_scores_score_type` - For filtering by score type
-- `ix_deal_scores_created_at` - For sorting by creation date
-
-**Relationships**:
-- `deal` (Many-to-One) -> `Deal`
-
-### TokenBalance
-
-**Table**: `token_balances`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `user_id` | UUID | FK, NOT NULL | User ID |
-| `token_type` | String (Enum) | NOT NULL | Token type (usage, api) |
-| `balance` | Integer | NOT NULL | Current token balance |
-| `created_at` | Timestamp | NOT NULL | Creation timestamp |
-| `updated_at` | Timestamp | NOT NULL | Last update timestamp |
-
-**Indexes**:
-- `ix_token_balances_user_id` - For fast lookup of user's token balances
-- `ix_token_balances_token_type` - For filtering by token type
-
-**Relationships**:
-- `user` (Many-to-One) -> `User`
-- `transactions` (One-to-Many) -> `TokenTransaction`
-
-### TokenTransaction
-
-**Table**: `token_transactions`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `balance_id` | UUID | FK, NOT NULL | Token balance ID |
-| `amount` | Integer | NOT NULL | Transaction amount |
-| `transaction_type` | String (Enum) | NOT NULL | Transaction type (purchase, usage, refund, bonus) |
-| `reference_id` | UUID | | Reference to related entity (e.g., deal ID) |
-| `reference_type` | String | | Type of related entity (e.g., "deal") |
-| `created_at` | Timestamp | NOT NULL | Creation timestamp |
-| `metadata` | JSONB | | Additional metadata |
-
-**Indexes**:
-- `ix_token_transactions_balance_id` - For fast lookup of balance's transactions
-- `ix_token_transactions_transaction_type` - For filtering by transaction type
-- `ix_token_transactions_created_at` - For sorting by creation date
-- `ix_token_transactions_reference_id` - For filtering by reference ID
-
-**Relationships**:
-- `balance` (Many-to-One) -> `TokenBalance`
-
-### Goal
-
-**Table**: `goals`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `deal_id` | UUID | FK, NOT NULL | Related deal ID |
-| `title` | String | NOT NULL | Goal title |
-| `description` | Text | | Goal description |
-| `status` | String (Enum) | NOT NULL | Goal status (pending, in_progress, completed, failed) |
-| `priority` | Integer | NOT NULL | Priority (1-5, 1 highest) |
-| `due_date` | Timestamp | | Due date |
-| `created_at` | Timestamp | NOT NULL | Creation timestamp |
-| `updated_at` | Timestamp | NOT NULL | Last update timestamp |
-| `metadata` | JSONB | | Additional metadata |
-
-**Indexes**:
-- `ix_goals_deal_id` - For fast lookup of deal's goals
-- `ix_goals_status` - For filtering by status
-- `ix_goals_priority` - For sorting by priority
-- `ix_goals_due_date` - For sorting by due date
-
-**Relationships**:
-- `deal` (Many-to-One) -> `Deal`
-- `tasks` (One-to-Many) -> `Task`
-
-### Task
-
-**Table**: `tasks`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `goal_id` | UUID | FK, NOT NULL | Related goal ID |
-| `agent_id` | UUID | FK | Assigned agent ID |
-| `title` | String | NOT NULL | Task title |
-| `description` | Text | | Task description |
-| `status` | String (Enum) | NOT NULL | Task status (pending, in_progress, completed, failed) |
-| `priority` | Integer | NOT NULL | Priority (1-5, 1 highest) |
-| `due_date` | Timestamp | | Due date |
-| `created_at` | Timestamp | NOT NULL | Creation timestamp |
-| `updated_at` | Timestamp | NOT NULL | Last update timestamp |
-| `metadata` | JSONB | | Additional metadata |
-
-**Indexes**:
-- `ix_tasks_goal_id` - For fast lookup of goal's tasks
-- `ix_tasks_agent_id` - For fast lookup of agent's tasks
-- `ix_tasks_status` - For filtering by status
-- `ix_tasks_priority` - For sorting by priority
-- `ix_tasks_due_date` - For sorting by due date
-
-**Relationships**:
-- `goal` (Many-to-One) -> `Goal`
-- `agent` (Many-to-One) -> `Agent`
-- `activities` (One-to-Many) -> `TaskActivity`
-
-### Agent
-
-**Table**: `agents`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `name` | String | NOT NULL | Agent name |
-| `type` | String (Enum) | NOT NULL | Agent type (market_analyst, research, negotiator, executor) |
-| `status` | String (Enum) | NOT NULL | Agent status (active, inactive, busy) |
-| `capabilities` | ARRAY[String] | NOT NULL | Array of agent capabilities |
-| `created_at` | Timestamp | NOT NULL | Creation timestamp |
-| `updated_at` | Timestamp | NOT NULL | Last update timestamp |
-| `config` | JSONB | | Agent configuration |
-
-**Indexes**:
-- `ix_agents_type` - For filtering by agent type
-- `ix_agents_status` - For filtering by status
-
-**Relationships**:
-- `tasks` (One-to-Many) -> `Task`
-
-### DealActivity
-
-**Table**: `deal_activities`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `deal_id` | UUID | FK, NOT NULL | Related deal ID |
-| `user_id` | UUID | FK | User ID who performed the activity |
-| `agent_id` | UUID | FK | Agent ID who performed the activity |
-| `activity_type` | String (Enum) | NOT NULL | Activity type (created, updated, analyzed, etc.) |
-| `description` | Text | | Activity description |
-| `created_at` | Timestamp | NOT NULL | Creation timestamp |
-| `metadata` | JSONB | | Additional metadata |
-
-**Indexes**:
-- `ix_deal_activities_deal_id` - For fast lookup of deal's activities
-- `ix_deal_activities_user_id` - For filtering by user
-- `ix_deal_activities_agent_id` - For filtering by agent
-- `ix_deal_activities_activity_type` - For filtering by activity type
-- `ix_deal_activities_created_at` - For sorting by creation date
-
-**Relationships**:
-- `deal` (Many-to-One) -> `Deal`
-- `user` (Many-to-One) -> `User`
-- `agent` (Many-to-One) -> `Agent`
-
-### TaskActivity
-
-**Table**: `task_activities`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `task_id` | UUID | FK, NOT NULL | Related task ID |
-| `agent_id` | UUID | FK | Agent ID who performed the activity |
-| `activity_type` | String (Enum) | NOT NULL | Activity type (started, progress, completed, etc.) |
-| `description` | Text | | Activity description |
-| `created_at` | Timestamp | NOT NULL | Creation timestamp |
-| `metadata` | JSONB | | Additional metadata |
-
-**Indexes**:
-- `ix_task_activities_task_id` - For fast lookup of task's activities
-- `ix_task_activities_agent_id` - For filtering by agent
-- `ix_task_activities_activity_type` - For filtering by activity type
-- `ix_task_activities_created_at` - For sorting by creation date
-
-**Relationships**:
-- `task` (Many-to-One) -> `Task`
-- `agent` (Many-to-One) -> `Agent`
-
-### UserSettings
-
-**Table**: `user_settings`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `user_id` | UUID | FK, UNIQUE, NOT NULL | User ID |
-| `notification_preferences` | JSONB | NOT NULL | Notification preferences |
-| `ui_preferences` | JSONB | NOT NULL | UI preferences |
-| `agent_preferences` | JSONB | NOT NULL | Agent behavior preferences |
-| `created_at` | Timestamp | NOT NULL | Creation timestamp |
-| `updated_at` | Timestamp | NOT NULL | Last update timestamp |
-
-**Indexes**:
-- `ix_user_settings_user_id` - For fast lookup of user's settings
-
-**Relationships**:
-- `user` (One-to-One) -> `User`
-
-### MarketData
-
-**Table**: `market_data`
-
-| Column | Type | Constraints | Description |
-| --- | --- | --- | --- |
-| `id` | UUID | PK, NOT NULL | Unique identifier |
-| `symbol` | String | NOT NULL | Market symbol |
-| `market_type` | String (Enum) | NOT NULL | Market type (stock, crypto, forex, commodity) |
-| `price` | Numeric | NOT NULL | Current price |
-| `high_24h` | Numeric | | 24-hour high price |
-| `low_24h` | Numeric | | 24-hour low price |
-| `volume_24h` | Numeric | | 24-hour volume |
-| `change_24h` | Numeric | | 24-hour price change |
-| `change_percent_24h` | Numeric | | 24-hour price change percentage |
-| `last_updated` | Timestamp | NOT NULL | Last update timestamp |
-| `source` | String | NOT NULL | Data source |
-| `metadata` | JSONB | | Additional metadata |
-
-**Indexes**:
-- `ix_market_data_symbol` - For fast lookup by symbol
-- `ix_market_data_market_type` - For filtering by market type
-- `ix_market_data_last_updated` - For sorting by update time
-- `uq_market_data_symbol_source` - Unique constraint for symbol+source combination
-
-## Database Migrations
-
-Database migrations are managed using Alembic. The migration files are located in `backend/migrations/versions/`.
-
-### Initial Migration
-
-The initial migration file (`20240219_000001_initial_schema.py`) creates all the tables defined above with their relationships and constraints.
-
-### Creating New Migrations
-
-When making schema changes, create a new migration:
-
-```bash
-# From the backend directory
-alembic revision --autogenerate -m "description_of_changes"
+┌─────────────┐       ┌───────────────┐       ┌───────────┐
+│   Users     │───┐   │ User Preferences│      │  Markets  │
+└─────────────┘   │   └───────────────┘       └─────┬─────┘
+      │           │                                 │
+      │           │                                 │
+┌─────▼───────┐   │   ┌───────────────┐       ┌─────▼─────┐
+│   Saved     │   │   │  User Goals    │       │   Deals   │
+│   Deals     │   │   └─────┬─────────┘       └─────┬─────┘
+└─────────────┘   │         │                       │
+      ▲           │         │                       │
+      │           │    ┌────▼──────┐                │
+┌─────┴───────┐   │    │ Goal Deals │◄───────────────┘
+│  Shared     │   │    └────────────┘
+│  Deals      │   │
+└─────────────┘   │    ┌────────────────────┐
+      ▲           │    │ User Token Balances │
+      │           └───►└──────────┬─────────┘
+┌─────┴───────┐                   │
+│   Social    │                   │
+│ Interactions│            ┌──────▼─────────┐
+└─────────────┘            │Token Transactions│
+                          └──────────────────┘
 ```
 
-### Applying Migrations
+## SQLAlchemy Models
 
-To apply migrations:
-
-```bash
-# From the backend directory
-alembic upgrade head
-```
-
-## Performance Considerations
-
-The database schema is optimized for performance with the following considerations:
-
-1. **Proper Indexing**:
-   - Foreign keys are indexed for efficient joins
-   - Frequently filtered columns have indexes
-   - Columns used for sorting have indexes
-
-2. **Denormalization**:
-   - JSONB fields are used for flexible, schema-less data
-   - Metadata fields allow for extensibility without schema changes
-
-3. **Partitioning Strategy**:
-   - Large tables like `market_data` can be partitioned by date
-   - Historical data can be archived to maintain performance
-
-4. **Query Optimization**:
-   - Complex queries are optimized with joins and indexes
-   - JSONB queries use GIN indexes for performance
-
-5. **Connection Pooling**:
-   - Production environment uses connection pooling
-   - Pool size is configured based on server resources
-
-## Database Administration
-
-### Maintenance Tasks
-
-1. **Regular Vacuum**:
-   - Run vacuum analyze regularly to update statistics
-   - Consider automated vacuum based on table growth
-
-2. **Index Maintenance**:
-   - Monitor index usage and bloat
-   - Reindex when necessary
-
-3. **Performance Monitoring**:
-   - Monitor slow queries
-   - Adjust indexes based on query patterns
-
-4. **Backup Strategy**:
-   - Regular database backups
-   - Point-in-time recovery capability
-
-### Connection Settings
-
-Production database uses the following connection settings:
+The database schema is represented in Python using SQLAlchemy 2.0 style models:
 
 ```python
-# SQLAlchemy engine configuration for production
-engine = create_async_engine(
-    str(settings.DATABASE_URL),
-    echo=False,
-    future=True,
-    pool_size=20,
-    max_overflow=10,
-    pool_timeout=30,
-    pool_recycle=300,
-    pool_pre_ping=True,
-    connect_args={
-        "statement_timeout": 30000,  # 30 seconds
-        "options": "-c timezone=UTC"
-    }
-)
+# Example of a SQLAlchemy 2.0 model
+from sqlalchemy import Column, ForeignKey, String, Boolean, DateTime, Integer, Numeric, Text
+from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.orm import relationship, mapped_column, Mapped
+from sqlalchemy.sql import func
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+import uuid
+
+from core.models.base import Base
+from core.models.enums import UserRole
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id: Mapped[uuid.UUID] = mapped_column(UUID, primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    verification_token: Mapped[Optional[str]] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(
+        String(50), 
+        nullable=False, 
+        default=UserRole.USER.value.lower()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        nullable=False, 
+        server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), 
+        nullable=False, 
+        server_default=func.now(), 
+        onupdate=func.now()
+    )
+    
+    # Relationships
+    preferences = relationship("UserPreference", back_populates="user", uselist=False)
+    token_balance = relationship("UserTokenBalance", back_populates="user", uselist=False)
+    saved_deals = relationship("SavedDeal", back_populates="user")
+    goals = relationship("UserGoal", back_populates="user")
 ```
 
-## Enum Values Reference
+## Database Optimization
 
-Below is a reference of all enum values used in the database:
+### Indexes
 
-### UserStatus
-- `active` - Active user
-- `inactive` - Inactive user
-- `suspended` - Suspended user
+The database uses several types of indexes to optimize query performance:
 
-### UserRole
-- `admin` - Administrator
-- `user` - Regular user
-- `agent` - Agent user
+1. **Primary Key Indexes**: Automatically created for all primary keys
+2. **Foreign Key Indexes**: Created for all foreign key columns
+3. **Composite Indexes**: Used for columns frequently queried together
+4. **Expression Indexes**: For complex query conditions
+5. **Partial Indexes**: For filtering on specific conditions
 
-### DealStatus
-- `draft` - Draft deal
-- `active` - Active deal
-- `completed` - Completed deal
-- `cancelled` - Cancelled deal
+### Performance Optimizations
 
-### MarketType
-- `stock` - Stock market
-- `crypto` - Cryptocurrency market
-- `forex` - Foreign exchange market
-- `commodity` - Commodity market
+1. **Connection Pooling**:
+   - Configured with appropriate pool size based on workload
+   - Connection recycling to prevent stale connections
+   - Statement caching for repeated queries
 
-### ScoreType
-- `risk` - Risk assessment
-- `profit_potential` - Profit potential assessment
-- `market_sentiment` - Market sentiment assessment
+2. **Query Optimization**:
+   - Use of `EXPLAIN ANALYZE` to identify slow queries
+   - Materialized views for complex reporting queries
+   - Appropriate JOIN strategies
 
-### TokenType
-- `usage` - Usage tokens
-- `api` - API tokens
+3. **Database Configuration**:
+   - Optimized for available hardware resources
+   - Proper WAL configuration
+   - Autovacuum settings tuned for workload
 
-### TransactionType
-- `purchase` - Token purchase
-- `usage` - Token usage
-- `refund` - Token refund
-- `bonus` - Bonus tokens
+### Partitioning Strategy
 
-### GoalStatus
-- `pending` - Pending goal
-- `in_progress` - In-progress goal
-- `completed` - Completed goal
-- `failed` - Failed goal
+For high-volume tables, partitioning is implemented:
 
-### TaskStatus
-- `pending` - Pending task
-- `in_progress` - In-progress task
-- `completed` - Completed task
-- `failed` - Failed task
-
-### AgentType
-- `market_analyst` - Market analyst agent
-- `research` - Research agent
-- `negotiator` - Negotiator agent
-- `executor` - Executor agent
-
-### AgentStatus
-- `active` - Active agent
-- `inactive` - Inactive agent
-- `busy` - Busy agent
-
-### ActivityType (Deal)
-- `created` - Deal created
-- `updated` - Deal updated
-- `analyzed` - Deal analyzed
-- `goal_added` - Goal added
-- `goal_completed` - Goal completed
-- `completed` - Deal completed
-- `cancelled` - Deal cancelled
-
-### ActivityType (Task)
-- `created` - Task created
-- `started` - Task started
-- `progress` - Task in progress
-- `blocked` - Task blocked
-- `completed` - Task completed
-- `failed` - Task failed
+```sql
+-- Example of a time-based partitioning for token_transactions
+CREATE TABLE token_transactions_y2023m01 PARTITION OF token_transactions
+    FOR VALUES FROM ('2023-01-01') TO ('2023-02-01');
+    
+CREATE TABLE token_transactions_y2023m02 PARTITION OF token_transactions
+    FOR VALUES FROM ('2023-02-01') TO ('2023-03-01');
+```
 
 ## Data Migration
 
-For major data migrations, use Alembic's `data_upgrades` feature in migration scripts. Example:
+### Migration Strategy
+
+The database schema is managed through Alembic migrations:
+
+1. **Versioned Migrations**: Every schema change is versioned
+2. **Reversible Changes**: Migrations include both upgrade and downgrade paths
+3. **Data Migration**: Complex migrations include data transformation steps
+4. **Zero-downtime Deployments**: Migrations designed to minimize locking
+
+### Example Migration
 
 ```python
-def data_upgrades():
-    """Add data migration logic here"""
-    op.execute(
-        "UPDATE users SET role = 'user' WHERE role IS NULL"
+# Example Alembic migration
+"""Add notification settings table
+
+Revision ID: a1b2c3d4e5f6
+Revises: previous_revision_id
+Create Date: 2023-06-01 12:34:56
+
+"""
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+# revision identifiers
+revision = 'a1b2c3d4e5f6'
+down_revision = 'previous_revision_id'
+branch_labels = None
+depends_on = None
+
+
+def upgrade():
+    op.create_table(
+        'notification_settings',
+        sa.Column('user_id', postgresql.UUID(), nullable=False),
+        sa.Column('email_deal_alerts', sa.Boolean(), nullable=False, server_default=sa.text('true')),
+        sa.Column('email_price_drops', sa.Boolean(), nullable=False, server_default=sa.text('true')),
+        sa.Column('email_goal_updates', sa.Boolean(), nullable=False, server_default=sa.text('true')),
+        sa.Column('push_deal_alerts', sa.Boolean(), nullable=False, server_default=sa.text('true')),
+        sa.Column('push_price_drops', sa.Boolean(), nullable=False, server_default=sa.text('true')),
+        sa.Column('push_goal_updates', sa.Boolean(), nullable=False, server_default=sa.text('true')),
+        sa.Column('quiet_hours_start', sa.Time(), nullable=True),
+        sa.Column('quiet_hours_end', sa.Time(), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')),
+        sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False, server_default=sa.text('now()')),
+        sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
+        sa.PrimaryKeyConstraint('user_id')
     )
 
-def data_downgrades():
-    """Add data migration rollback logic here"""
-    pass
-``` 
+
+def downgrade():
+    op.drop_table('notification_settings')
+```
+
+## Security Considerations
+
+### Data Protection
+
+1. **Sensitive Data Encryption**:
+   - Passwords are hashed using bcrypt
+   - Sensitive personal information is encrypted at rest
+
+2. **Access Control**:
+   - Row-level security policies for multi-tenant data
+   - Role-based access control integration
+
+3. **Audit Logging**:
+   - Database-level audit logs for sensitive operations
+   - Application-level logging of data access and modifications
+
+### Example Security Implementation
+
+```sql
+-- Row-level security example
+CREATE POLICY user_data_isolation ON user_preferences
+    USING (user_id = current_setting('app.current_user_id')::uuid);
+    
+ALTER TABLE user_preferences ENABLE ROW LEVEL SECURITY;
+```
+
+## Conclusion
+
+The database schema for the AI Agentic Deals System is designed to support the system's key requirements of deal discovery, user personalization, token economics, and AI-powered analysis. The schema follows best practices for performance, security, and data integrity while maintaining flexibility for future growth.
+
+## References
+
+1. [PostgreSQL Documentation](https://www.postgresql.org/docs/)
+2. [SQLAlchemy 2.0 Documentation](https://docs.sqlalchemy.org/en/20/)
+3. [Alembic Documentation](https://alembic.sqlalchemy.org/en/latest/)
+4. [Database Schema Best Practices](../development/best_practices.md)
+5. [Connection Management](./connection_management.md) 

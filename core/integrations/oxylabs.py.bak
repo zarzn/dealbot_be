@@ -1,0 +1,2070 @@
+"""
+Oxylabs integration service.
+
+This module provides a service for interacting with Oxylabs web scraping APIs.
+It supports searching products on Amazon, Walmart, and Google Shopping.
+
+Usage example:
+    ```python
+    from core.integrations.oxylabs import get_oxylabs
+    
+    async def search_amazon_products(query: str):
+        oxylabs = await get_oxylabs()
+        results = await oxylabs.search_amazon(
+            query=query,
+            max_results=10,
+            cache_ttl=3600  # 1 hour cache
+        )
+        return results
+        
+    async def get_product_details(asin: str):
+        oxylabs = await get_oxylabs()
+        product = await oxylabs.get_amazon_product(
+            asin=asin,
+            cache_ttl=86400  # 24 hour cache
+        )
+        return product
+    ```
+"""
+import asyncio
+import base64
+import json
+import logging
+import os
+import re
+import time
+import uuid
+import hashlib
+import contextlib
+from typing import Any, Dict, List, Optional, Union
+from datetime import datetime, timezone
+
+import aiohttp
+from pydantic import SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from core.exceptions import MarketIntegrationError
+from core.models.enums import MarketType
+from core.services.market_metrics import MarketMetricsService
+from core.services.redis import create_null_safe_redis_service
+from core.config import get_settings
+from core.utils.logger import get_logger
+from fastapi import FastAPI
+
+logger = get_logger(__name__)
+settings = get_settings()
+
+# Country code to location mappings
+COUNTRY_TO_LOCATION = {
+    "us": "United States",
+    "ca": "Canada",
+    "uk": "United Kingdom",
+    "gb": "United Kingdom",
+    "au": "Australia",
+    "de": "Germany",
+    "fr": "France",
+    "it": "Italy",
+    "es": "Spain",
+    "jp": "Japan",
+    "cn": "China",
+    "br": "Brazil",
+    "mx": "Mexico",
+    "in": "India",
+    "ru": "Russia"
+}
+
+# Default settings for Oxylabs
+class OxylabsSettings:
+    """Settings for Oxylabs integration."""
+    
+    # Credentials
+    OXYLABS_USERNAME: str = ""
+    OXYLABS_PASSWORD: str = ""
+    
+    # API config
+    OXYLABS_BASE_URL: str = "https://realtime.oxylabs.io"
+    
+    # Rate limiting
+    OXYLABS_CONCURRENT_LIMIT: int = 15
+    OXYLABS_REQUESTS_PER_SECOND: int = 5
+    OXYLABS_MONTHLY_LIMIT: int = 100000
+    
+    # Timeouts (in seconds)
+    OXYLABS_TIMEOUT_AMAZON: int = 20
+    OXYLABS_TIMEOUT_WALMART: int = 25
+    OXYLABS_TIMEOUT_GOOGLE_SHOPPING: int = 60
+    OXYLABS_TIMEOUT_DEFAULT: int = 20
+
+# Try to import project settings, fall back to default settings
+try:
+    from core.config import settings
+except ImportError:
+    logger.warning("Could not import settings, using default OxylabsSettings")
+    settings = OxylabsSettings()
+
+# Add missing imports
+try:
+    from core.services.redis import get_redis_service
+except ImportError:
+    logger.warning("Could not import get_redis_service, will implement locally")
+    async def get_redis_service():
+        """Placeholder for get_redis_service if not available from core."""
+        raise ImportError("Redis service not available")
+
+
+class OxylabsService:
+    """Service for interacting with Oxylabs."""
+    
+    def __init__(
+        self,
+        username: Optional[Union[str, SecretStr]] = None,
+        password: Optional[Union[str, SecretStr]] = None,
+        base_url: Optional[str] = None,
+        redis_client: Optional[Any] = None,
+        db: Optional[AsyncSession] = None
+    ):
+        # Handle credentials initialization
+        if username is None:
+            username = settings.OXYLABS_USERNAME
+        
+        if password is None:
+            password = settings.OXYLABS_PASSWORD
+        
+        if isinstance(username, SecretStr):
+            self.username = username.get_secret_value()
+        else:
+            self.username = str(username)
+            
+        if isinstance(password, SecretStr):
+            self.password = password.get_secret_value()
+        else:
+            self.password = str(password)
+
+        self.base_url = base_url or settings.OXYLABS_BASE_URL
+        self.redis_client = redis_client
+        self.db = db
+        self.metrics_service = None
+        if db:
+            self.metrics_service = MarketMetricsService(db)
+        
+        # Initialize time tracking for Redis initialization attempts
+        self._last_redis_init_attempt = 0
+        self._last_redis_success_log = 0
+        
+        # Rate limiting
+        self.concurrent_limit = getattr(settings, "OXYLABS_CONCURRENT_LIMIT", 15)
+        self.semaphore = asyncio.Semaphore(self.concurrent_limit)
+        
+        # Define market-specific timeouts with longer durations for slower markets
+        self.timeouts = {
+            MarketType.AMAZON.value.lower(): aiohttp.ClientTimeout(total=20),  # 20 seconds for Amazon
+            MarketType.GOOGLE_SHOPPING.value.lower(): aiohttp.ClientTimeout(total=60),  # 60 seconds for Google Shopping
+            MarketType.WALMART.value.lower(): aiohttp.ClientTimeout(total=25),  # 25 seconds for Walmart
+            "default": aiohttp.ClientTimeout(total=20)  # Default timeout of 20 seconds
+        }
+        
+        # Configure limits from settings
+        self.requests_per_second = getattr(settings, "OXYLABS_REQUESTS_PER_SECOND", 5)
+        self.monthly_limit = getattr(settings, "OXYLABS_MONTHLY_LIMIT", 100000)
+        
+        # Last request timestamp for rate limiting
+        self._last_request_time = time.time()
+        self._request_times = []  # Track recent request times for rolling window rate limiting
+        
+        # Track request times per market type for market-specific rate limiting
+        self._market_request_times = {
+            market_type.lower(): [] for market_type in [m.value for m in MarketType]
+        }
+        
+        # Track failed requests and error counts by market type
+        self._market_failures = {
+            market_type.lower(): 0 for market_type in [m.value for m in MarketType]
+        }
+        
+        # Track markets that are currently rate limited with expiry times
+        self._rate_limited_markets = {}
+        
+        # Initialize lock for rate limiting access
+        self._rate_limit_lock = asyncio.Lock()
+        
+        # URL validation cache (to avoid redundant validations)
+        self._url_cache = {}
+        
+        # Batch metrics collection to reduce DB operations
+        self._metrics_batch = []
+        self._metrics_batch_size = 10  # Process in batches of 10
+        self._metrics_lock = asyncio.Lock()
+        self._metrics_flush_task = None
+
+    # Compile regular expression pattern once for better performance
+    import re
+    _PRICE_PATTERN = re.compile(r'(\d+\.?\d*|\.\d+)')
+    _CURRENCY_PATTERN = re.compile(r'([£€$¥₹])')
+    
+    def _extract_price(self, price_raw: Any) -> float:
+        """Extract numerical price from various formats.
+        
+        Args:
+            price_raw: Price in various formats (string, float, dict, etc.)
+            
+        Returns:
+            float: Extracted price or 0.0 if not extractable
+        """
+        if not price_raw:
+            return 0.0
+            
+        # Handle already numeric prices
+        if isinstance(price_raw, (int, float)):
+            return float(price_raw)
+            
+        # Handle string prices - extract digits and decimal point
+        if isinstance(price_raw, str):
+            # Remove currency symbols and whitespace
+            price_str = price_raw.strip().replace('$', '').replace('£', '').replace('€', '')
+            
+            # Extract all digits and at most one decimal point using compiled regex
+            price_match = self._PRICE_PATTERN.search(price_str)
+            if price_match:
+                try:
+                    return float(price_match.group(0))
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not convert price string to float: {price_raw}")
+                    return 0.0
+                    
+        # Handle dictionary with price key
+        if isinstance(price_raw, dict):
+            if 'value' in price_raw:
+                return self._extract_price(price_raw['value'])
+            if 'price' in price_raw:
+                return self._extract_price(price_raw['price'])
+                
+        # Could not extract price
+        logger.warning(f"Could not extract price from: {price_raw}")
+        return 0.0
+        
+    def _extract_currency(self, price_raw: Any) -> Optional[str]:
+        """Extract currency from price string or dict.
+        
+        Args:
+            price_raw: Price in various formats (string, float, dict, etc.)
+            
+        Returns:
+            str: Currency code (USD, EUR, GBP, etc.) or None if not extractable
+        """
+        if not price_raw:
+            return None
+            
+        # Handle dictionary with currency key
+        if isinstance(price_raw, dict):
+            if 'currency' in price_raw:
+                return price_raw['currency']
+            if 'currency_code' in price_raw:
+                return price_raw['currency_code']
+            if 'currency_symbol' in price_raw:
+                # Convert symbol to code
+                symbol = price_raw['currency_symbol']
+                if symbol == '$':
+                    return 'USD'
+                elif symbol == '£':
+                    return 'GBP'
+                elif symbol == '€':
+                    return 'EUR'
+                elif symbol == '¥':
+                    return 'JPY'
+                elif symbol == '₹':
+                    return 'INR'
+                    
+            # Try to extract from nested value
+            if 'value' in price_raw:
+                return self._extract_currency(price_raw['value'])
+            if 'price' in price_raw:
+                return self._extract_currency(price_raw['price'])
+                
+        # Handle string prices
+        if isinstance(price_raw, str):
+            price_str = price_raw.strip()
+            
+            # Check for currency symbols
+            if price_str.startswith('$') or 'USD' in price_str:
+                return 'USD'
+            elif price_str.startswith('£') or 'GBP' in price_str:
+                return 'GBP'
+            elif price_str.startswith('€') or 'EUR' in price_str:
+                return 'EUR'
+            elif price_str.startswith('¥') or 'JPY' in price_str or 'CNY' in price_str:
+                # Context would be needed to differentiate JPY and CNY
+                return 'JPY'
+            elif price_str.startswith('₹') or 'INR' in price_str:
+                return 'INR'
+            elif price_str.startswith('C$') or price_str.startswith('CA$') or 'CAD' in price_str:
+                return 'CAD'
+            elif price_str.startswith('A$') or price_str.startswith('AU$'):
+                return 'AUD'
+                
+        # Default to USD if we couldn't extract a currency
+        return None
+
+    def _get_auth_header(self) -> Dict[str, str]:
+        """Get authorization header for Oxylabs API."""
+        auth_str = f"{self.username}:{self.password}"
+        auth_bytes = auth_str.encode('ascii')
+        auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
+        return {"Authorization": f"Basic {auth_b64}"}
+
+    def _record_request_completion(self, market_type='default', success=True, response_time=None):
+        """Record a completed request for rate limiting purposes.
+        
+        Args:
+            market_type: The type of market (amazon, walmart, etc.)
+            success: Whether the request was successful
+            response_time: Response time in seconds for metrics
+        """
+        current_time = time.time()
+        
+        # Add current time to request times list
+        self._request_times.append(current_time)
+        
+        # Also track per-market type
+        market_key = market_type.lower()
+        if market_key in self._market_request_times:
+            self._market_request_times[market_key].append(current_time)
+            
+        # Track failures by market type
+        if not success and market_key in self._market_failures:
+            self._market_failures[market_key] += 1
+            
+            # If too many failures, mark the market as rate limited for a period
+            if self._market_failures[market_key] >= 5:  # 5 failures in a short period
+                self._rate_limited_markets[market_key] = current_time + 300  # Rate limit for 5 minutes
+                logger.warning(f"Market {market_key} has been rate limited for 5 minutes due to repeated failures")
+        elif success and market_key in self._market_failures:
+            # Reset failure count on success
+            self._market_failures[market_key] = 0
+            
+        # Cleanup old request times (older than 60 seconds)
+        cutoff_time = current_time - 60
+        self._request_times = [t for t in self._request_times if t > cutoff_time]
+        
+        # Also cleanup per-market request times
+        for market in self._market_request_times:
+            self._market_request_times[market] = [
+                t for t in self._market_request_times[market] if t > cutoff_time
+            ]
+            
+        # Clean up expired rate limits
+        expired_markets = [m for m, expiry in self._rate_limited_markets.items() if expiry < current_time]
+        for market in expired_markets:
+            del self._rate_limited_markets[market]
+            logger.info(f"Market {market} rate limit has expired")
+            
+        # Log detailed market stats for debugging
+        if len(self._request_times) % 10 == 0:  # Log every 10 requests
+            # Calculate requests in the last minute (rolling window)
+            minute_ago = current_time - 60
+            recent_requests = [t for t in self._request_times if t > minute_ago]
+            
+            # Calculate per-market recent requests
+            market_stats = {}
+            for m_key, times in self._market_request_times.items():
+                recent_market_requests = [t for t in times if t > minute_ago]
+                market_stats[m_key] = len(recent_market_requests)
+            
+            # Log current status
+            logger.debug(
+                f"Oxylabs rate status: {len(recent_requests)} requests in last 60s, "
+                f"Market stats: {market_stats}, "
+                f"Failures: {self._market_failures}"
+            )
+            
+        # Record metrics if available
+        if self.metrics_service and response_time is not None:
+            asyncio.create_task(
+                self._record_market_metrics(
+                    market_type=market_type,
+                    success=success,
+                    response_time=response_time,
+                    error=None
+                )
+            )
+
+    async def _apply_rate_limiting(self, market_type='default'):
+        """Apply rate limiting before making a request.
+        
+        Args:
+            market_type: The type of market (amazon, walmart, etc.)
+            
+        Returns:
+            None: Will wait as needed to respect rate limits
+        """
+        async with self._rate_limit_lock:
+            current_time = time.time()
+            market_key = market_type.lower()
+            
+            # Check if this market is currently rate limited
+            if market_key in self._rate_limited_markets:
+                wait_time = self._rate_limited_markets[market_key] - current_time
+                if wait_time > 0:
+                    logger.warning(f"Market {market_key} is rate limited. Waiting {wait_time:.2f}s before retry")
+                    await asyncio.sleep(min(wait_time, 60))  # Wait at most 60 seconds
+                    return
+            
+            # Remove requests older than 1 minute
+            cutoff_time = current_time - 60
+            recent_requests = [t for t in self._request_times if t > cutoff_time]
+            self._request_times = recent_requests
+            
+            # Also clean up market-specific request times
+            if market_key in self._market_request_times:
+                recent_market_requests = [
+                    t for t in self._market_request_times[market_key] if t > cutoff_time
+                ]
+                self._market_request_times[market_key] = recent_market_requests
+            else:
+                recent_market_requests = []
+                
+            # Check for the overall rate limit
+            if len(recent_requests) >= self.requests_per_second * 60:
+                # Calculate wait time based on the oldest request
+                if recent_requests:
+                    wait_time = 60 - (current_time - recent_requests[0])
+                    if wait_time > 0:
+                        logger.warning(f"Rate limit reached. Waiting {wait_time:.2f}s")
+                        await asyncio.sleep(wait_time)
+            
+            # Add delay based on failure history - more failures = longer delay
+            failure_count = self._market_failures.get(market_key, 0)
+            if failure_count > 0:
+                # Exponential backoff based on failure count
+                backoff_delay = min(2 ** failure_count, 30)  # Up to 30 seconds
+                logger.warning(f"Market {market_key} has {failure_count} recent failures. Adding {backoff_delay:.2f}s backoff delay")
+                await asyncio.sleep(backoff_delay)
+            
+            # For very aggressive requests to the same market, add additional delay
+            market_requests_last_second = len([
+                t for t in recent_market_requests if t > (current_time - 1)
+            ])
+            
+            if market_requests_last_second >= 3:  # More than 3 requests to same market in 1 second
+                # Add a small delay to avoid overwhelming the market
+                delay = 1.0 / self.requests_per_second
+                logger.debug(f"Adding {delay:.2f}s delay for {market_type} market cooling")
+                await asyncio.sleep(delay)
+
+    async def _is_market_available(self, market_type: str) -> bool:
+        """Check if a market is available with the current Oxylabs plan.
+        
+        This method uses information from previous failures to prevent
+        making requests to markets that are known to be unavailable.
+        
+        Args:
+            market_type: The type of market to check
+            
+        Returns:
+            bool: True if the market is available, False otherwise
+        """
+        if not market_type or not isinstance(market_type, str):
+            logger.warning(f"Invalid market_type provided: {market_type}")
+            return False
+            
+        market_key = market_type.lower().strip()
+        logger.debug(f"Checking availability for market: {market_key}")
+        
+        # Check if market is already known to be rate limited
+        current_time = time.time()
+        if market_key in self._rate_limited_markets:
+            if self._rate_limited_markets[market_key] > current_time:
+                time_remaining = int(self._rate_limited_markets[market_key] - current_time)
+                logger.debug(f"Market {market_key} is currently rate limited for {time_remaining} more seconds")
+                return False
+            else:
+                # Rate limit has expired, remove it
+                logger.debug(f"Rate limit for market {market_key} has expired, removing")
+                del self._rate_limited_markets[market_key]
+                
+        # Check if the market has had too many failures
+        failure_threshold = 5  # Lower threshold for better responsiveness
+        if market_key in self._market_failures and self._market_failures[market_key] >= failure_threshold:
+            logger.warning(f"Market {market_key} has {self._market_failures[market_key]} failures (threshold: {failure_threshold})")
+            
+            # Apply exponential backoff based on failure count
+            # More failures mean longer unavailability period
+            if self._market_failures[market_key] >= 10:
+                logger.error(f"Market {market_key} has critical failure count ({self._market_failures[market_key]}), marking as unavailable")
+                # Mark as unavailable in Redis with longer TTL
+                await self._mark_market_unavailable(market_key, ttl=3600*4)  # 4 hours
+                return False
+                
+            return False
+            
+        # Check redis for market availability information
+        if self.redis_client:
+            try:
+                # Use Redis to share market availability information across instances
+                availability_key = f"oxylabs:market_availability:{market_key}"
+                availability = await self.redis_client.get(availability_key)
+                
+                if availability is not None:
+                    # If we have stored information, use it
+                    is_available = availability == b"1"
+                    if not is_available:
+                        # Try to get TTL to show in logs
+                        try:
+                            ttl = await self.redis_client.ttl(availability_key)
+                            logger.debug(f"Market {market_key} is marked as unavailable in Redis for {ttl} more seconds")
+                        except:
+                            logger.debug(f"Market {market_key} is marked as unavailable in Redis")
+                        
+                    return is_available
+            except Exception as e:
+                logger.warning(f"Error checking market availability in Redis: {str(e)}")
+                # Continue with default availability check
+        
+        # If market is not in our failure tracking, initialize it
+        if market_key not in self._market_failures:
+            self._market_failures[market_key] = 0
+        
+        # Default to available if we have no negative information
+        logger.debug(f"No availability information for market {market_key}, assuming available")
+        return True
+        
+    async def _mark_market_unavailable(self, market_type: str, ttl: int = 3600):
+        """Mark a market as unavailable in Redis.
+        
+        Args:
+            market_type: The type of market to mark as unavailable
+            ttl: Time-to-live in seconds for this information
+        """
+        if not market_type or not isinstance(market_type, str):
+            logger.warning(f"Invalid market_type provided to _mark_market_unavailable: {market_type}")
+            return
+            
+        market_key = market_type.lower().strip()
+        
+        # Increment the failure count
+        if market_key in self._market_failures:
+            self._market_failures[market_key] += 1
+            # Apply exponential backoff for TTL based on failure count
+            backoff_factor = min(self._market_failures[market_key], 10)  # Max factor of 10
+            adjusted_ttl = ttl * (2 ** (backoff_factor - 1))  # Exponential growth
+            ttl = min(adjusted_ttl, 86400)  # Cap at 24 hours
+            logger.info(f"Market {market_key} failure count: {self._market_failures[market_key]}, TTL adjusted to {ttl} seconds")
+        else:
+            self._market_failures[market_key] = 1
+            logger.info(f"First failure for market {market_key}, setting TTL to {ttl} seconds")
+        
+        # Also mark in local rate limit tracker
+        self._rate_limited_markets[market_key] = time.time() + ttl
+            
+        if self.redis_client:
+            try:
+                # Store the availability information in Redis
+                availability_key = f"oxylabs:market_availability:{market_key}"
+                await self.redis_client.set(availability_key, "0", ex=ttl)
+                logger.info(f"Marked market {market_key} as unavailable for {ttl} seconds in Redis")
+                
+                # Also store the failure count in Redis for visibility across instances
+                failure_key = f"oxylabs:market_failures:{market_key}"
+                await self.redis_client.set(failure_key, str(self._market_failures[market_key]), ex=86400)  # 24h TTL for count
+            except Exception as e:
+                logger.warning(f"Error marking market as unavailable in Redis: {str(e)}")
+                # Continue execution, as we've already marked it locally
+
+    async def _make_request(
+        self,
+        endpoint: str,
+        payload: Dict[str, Any],
+        cache_ttl: Optional[int] = None,
+        market_type: str = "unknown",
+        retries: int = 3
+    ) -> Dict[str, Any]:
+        """Make a request to the Oxylabs API.
+        
+        Args:
+            endpoint: API endpoint
+            payload: Request payload
+            cache_ttl: Cache TTL in seconds
+            market_type: Market type for metrics
+            retries: Number of retries for failed requests
+            
+        Returns:
+            API response as a dictionary
+        """
+        # Generate cache key
+        cache_key = f"oxylabs:{endpoint}:{json.dumps(payload, sort_keys=True)}"
+        
+        # Check cache first if TTL provided
+        if cache_ttl is not None:
+            cached = await self._get_from_cache(cache_key)
+            if cached is not None:
+                logger.debug(f"Cache hit for {market_type} request")
+                if self.metrics_service:
+                    # Record cached hit metrics
+                    try:
+                        await self._record_market_metrics(
+                            market_type=market_type,
+                            success=True,
+                            response_time=0.001  # Negligible time for cache hit
+                        )
+                    except Exception as e:
+                        logger.error(f"Error recording cache hit metrics: {str(e)}")
+                return cached
+        
+        # Apply rate limiting
+        await self._apply_rate_limiting(market_type)
+        
+        # Check if market is available
+        market_available = await self._is_market_available(market_type)
+        if not market_available:
+            logger.warning(f"Market {market_type} unavailable, returning empty results")
+            return {
+                "status": "error",
+                    "message": f"Market {market_type} unavailable",
+                "results": []
+            }
+        
+        # Prepare request
+        url = f"{self.base_url}{endpoint}"
+        auth_header = self._get_auth_header()
+        headers = {
+            **auth_header,
+            "Content-Type": "application/json"
+        }
+        
+        # Apply market-specific timeout or default
+        timeout = self.timeouts.get(market_type.lower(), self.timeouts.get("default"))
+        
+        # Track timing
+        request_start_time = time.time()
+        
+        async with self.semaphore:
+            # Execute with retry logic
+            for attempt in range(1, retries + 1):
+                try:
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.post(url, json=payload, headers=headers) as response:
+                            response_time = time.time() - request_start_time
+                            response_text = await response.text()
+                            
+                            # Handle API response
+                            result = await self._handle_api_response(
+                                response=response,
+                                response_text=response_text,
+                                endpoint=endpoint,
+                                market_type=market_type,
+                                request_start_time=request_start_time,
+                                cache_key=cache_key,
+                                cache_ttl=cache_ttl
+                            )
+                            
+                            # Record success metrics
+                            if self.metrics_service:
+                                try:
+                                    await self._record_market_metrics(
+                                        market_type=market_type,
+                                        success=True,
+                                        response_time=response_time
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Error recording success metrics: {str(e)}")
+                            
+                            return result
+                                    
+                except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                    error_message = f"Request error (attempt {attempt}/{retries}): {str(e)}"
+                    if attempt < retries:
+                        logger.warning(error_message)
+                        await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    else:
+                        logger.error(f"All retries failed for {market_type}: {str(e)}")
+                        
+                        # Record failure metrics
+                        if self.metrics_service:
+                            try:
+                                await self._record_market_metrics(
+                                    market_type=market_type,
+                                    success=False,
+                                    response_time=time.time() - request_start_time,
+                                    error=str(e)
+                                )
+                            except Exception as me:
+                                logger.error(f"Error recording failure metrics: {str(me)}")
+                        
+                        # If all retries fail, return error response
+                        return {
+                            "status": "error",
+                                "message": f"Request failed after {retries} attempts: {str(e)}",
+                            "results": []
+                        }
+                except Exception as e:
+                    logger.error(f"Unexpected error with {market_type} request: {str(e)}")
+                    
+                    # Record failure metrics
+                    if self.metrics_service:
+                        try:
+                                    await self._record_market_metrics(
+                                        market_type=market_type,
+                                success=False,
+                                response_time=time.time() - request_start_time,
+                                error=str(e)
+                            )
+                        except Exception as me:
+                            logger.error(f"Error recording unexpected error metrics: {str(me)}")
+                    
+                    # Return error response
+                    return {
+                        "status": "error",
+                            "message": f"Unexpected error: {str(e)}",
+                        "results": []
+                    }
+
+    async def _init_redis_client(self):
+        """Initialize Redis client for caching.
+        
+        This will attempt to connect to Redis for caching.
+        If Redis is not available, cache operations will be skipped.
+        """
+        current_time = time.time()
+        # Only try to initialize Redis once every minute
+        if self.redis_client is None and (current_time - self._last_redis_init_attempt > 60):
+            self._last_redis_init_attempt = current_time
+            try:
+                logger.debug("Initializing Redis client for Oxylabs...")
+                redis_service = None
+                
+                    # Try to import and get Redis service with a timeout
+                try:
+                    async with asyncio.timeout(2):  # 2 second timeout to avoid blocking
+                        try:
+                            # First try the imported function
+                            redis_service = await get_redis_service()
+                        except (ImportError, Exception) as e:
+                            # If that fails, try to create a nullsafe service
+                            logger.warning(f"Error using standard get_redis_service: {str(e)}")
+                            try:
+                                redis_service = await create_null_safe_redis_service()
+                                logger.info("Using nullsafe Redis service as fallback")
+                            except Exception as ne:
+                                logger.warning(f"Could not create nullsafe Redis service: {str(ne)}")
+                except asyncio.TimeoutError:
+                    logger.warning("Timed out while getting Redis service")
+                    # Create a local in-memory cache as fallback
+                    self._memory_cache = {}
+                    logger.info("Using in-memory cache as Redis fallback")
+                except Exception as e:
+                    # Set to None if initialization fails
+                    self.redis_client = None
+                    self._memory_cache = {}  # Initialize memory cache as fallback
+                    if current_time - self._last_redis_success_log > 3600:
+                        self._last_redis_success_log = current_time
+                        logger.warning(f"Error initializing Redis client, using in-memory cache: {str(e)}")
+                
+                # Initialize the Redis client if we successfully got a service
+                if redis_service:
+                    try:
+                        # Test the connection with a ping
+                        if hasattr(redis_service, "client") and redis_service.client:
+                            await redis_service.client.ping()
+                            self.redis_client = redis_service.client
+                            
+                    if current_time - self._last_redis_success_log > 3600:
+                        self._last_redis_success_log = current_time
+                                logger.info("Successfully initialized Redis client for Oxylabs")
+                    except Exception as e:
+                        # Redis ping failed, use memory cache
+                        self._memory_cache = {}
+                        logger.warning(f"Redis ping failed, using in-memory cache: {str(e)}")
+                else:
+                    # If no Redis service available, initialize memory cache as fallback
+                    self._memory_cache = {}
+                    logger.debug("No Redis service available, using in-memory cache")
+                except Exception as e:
+                self.redis_client = None
+                self._memory_cache = {}  # Initialize memory cache as fallback
+                if current_time - self._last_redis_success_log > 3600:
+                    self._last_redis_success_log = current_time
+                    logger.warning(f"Error initializing Redis client, using in-memory cache: {str(e)}")
+
+    async def _get_from_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """Get data from Redis cache or memory cache fallback.
+        
+        Args:
+            cache_key: Cache key to retrieve
+            
+        Returns:
+            Dict containing cached data or None if not in cache
+        """
+        # Try Redis first if available
+        if self.redis_client:
+        try:
+            async with asyncio.timeout(1):  # 1 second timeout to prevent blocking
+                cached = await self.redis_client.get(cache_key)
+                if cached:
+                    try:
+                        return json.loads(cached)
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.warning(f"Error parsing cached JSON for key {cache_key}: {str(e)}")
+                return None
+        except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"Error getting data from Redis cache: {str(e)}")
+                # Fall through to memory cache
+        
+        # Try memory cache if Redis failed or unavailable
+        if hasattr(self, '_memory_cache') and self._memory_cache is not None:
+            memory_cached = self._memory_cache.get(cache_key)
+            if memory_cached and isinstance(memory_cached, dict):
+                # Check if the cached value has expired
+                if 'expiry' in memory_cached:
+                    if memory_cached['expiry'] > time.time():
+                        return memory_cached['data']
+                    else:
+                        # Remove expired item
+                        del self._memory_cache[cache_key]
+                else:
+                    return memory_cached.get('data')
+        
+            return None
+            
+    async def _store_in_cache(self, cache_key: str, value: Dict[str, Any], ttl: int):
+        """Store data in Redis cache or memory cache fallback.
+        
+        Args:
+            cache_key: Cache key
+            value: Data to cache
+            ttl: Time to live in seconds
+        """
+        # Try Redis first if available
+        if self.redis_client:
+        try:
+            async with asyncio.timeout(1):  # 1 second timeout to prevent blocking
+                json_value = json.dumps(value)
+                await self.redis_client.set(cache_key, json_value, ex=ttl)
+                    return  # If Redis succeeded, we're done
+        except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"Error storing data in Redis cache: {str(e)}")
+                # Fall through to memory cache
+        
+        # Use memory cache if Redis failed or unavailable
+        if hasattr(self, '_memory_cache') and self._memory_cache is not None:
+            # Store with expiry time
+            self._memory_cache[cache_key] = {
+                'data': value,
+                'expiry': time.time() + ttl
+            }
+            
+            # Clean up expired items if cache is getting large (more than 1000 items)
+            if len(self._memory_cache) > 1000:
+                current_time = time.time()
+                expired_keys = [
+                    k for k, v in self._memory_cache.items() 
+                    if 'expiry' in v and v['expiry'] < current_time
+                ]
+                for k in expired_keys[:100]:  # Remove up to 100 expired items
+                    del self._memory_cache[k]
+
+    def _get_geo_location_for_country(self, country: str) -> str:
+        """
+        Get geo location string for country code.
+        
+        Args:
+            country: Two-letter country code
+            
+        Returns:
+            ZIP code for Oxylabs API geo_location
+        """
+        # Map common country codes to ZIP codes
+        country_to_zipcode = {
+            "us": "90210",  # Beverly Hills, CA
+            "uk": "SW1A 1AA",  # London
+            "ca": "M5V 2A8",  # Toronto
+            "au": "2000",  # Sydney
+            "de": "10115",  # Berlin
+            "fr": "75001",  # Paris
+            "it": "00100",  # Rome
+            "es": "28001",  # Madrid
+            "jp": "100-0001",  # Tokyo
+            "in": "110001",  # New Delhi
+            "mx": "06000",  # Mexico City
+            "br": "01000-000"  # São Paulo
+        }
+        
+        # Convert to lowercase for case-insensitive lookup
+        country_lower = country.lower() if isinstance(country, str) else ""
+        
+        # Use mapping or fallback to US ZIP code
+        return country_to_zipcode.get(country_lower, "90210")
+
+    def _validate_product_url(self, url: str, query: str = "", source: str = "", skip_if_validated: bool = True) -> str:
+        """Validate and sanitize a product URL.
+        
+        Args:
+            url: The URL to validate and sanitize
+            query: The original search query (for fallback URLs)
+            source: The source (amazon, walmart, google_shopping)
+            skip_if_validated: If True, will skip validation if URL was validated before (defaults to True for performance)
+            
+        Returns:
+            The validated URL or a fallback URL
+        """
+        # Check if URL is in cache and we should skip validation for already validated URLs
+        if skip_if_validated and url in self._url_cache:
+            return self._url_cache[url]
+            
+        # Preliminary check - if not a string or empty, create fallback
+        if not url or not isinstance(url, str):
+            # Create appropriate fallback URL
+            logger.debug(f"Creating fallback URL for source: {source} with query: {query}")
+            fallback_url = ""
+            
+            if source and isinstance(source, str):
+                source_lower = source.lower()
+                if source_lower == "amazon":
+                    fallback_url = f"https://www.amazon.com/s?k={query.replace(' ', '+')}"
+                elif source_lower == "walmart":
+                    fallback_url = f"https://www.walmart.com/search?q={query.replace(' ', '+')}"
+                elif source_lower == "google_shopping":
+                    fallback_url = f"https://www.google.com/search?tbm=shop&q={query.replace(' ', '+')}"
+            
+            # If source is not recognized or not provided
+            if not fallback_url and query and isinstance(query, str):
+                # Generic search fallback
+                fallback_url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+                
+            # Cache and return the fallback URL
+            self._url_cache[url if url else ""] = fallback_url
+            return fallback_url
+                
+        try:
+            # Import validation utilities
+            from core.utils.validation import Validator
+            
+            # Clean the URL first to remove any whitespace or unsafe characters
+            url = url.strip()
+            
+            # Check if the URL has a scheme
+            if not url.startswith(('http://', 'https://')):
+                # Add https:// if missing and appears to be a domain
+                if '.' in url and '/' in url:
+                    url = f"https://{url}"
+                # Otherwise, try to create a domain-specific URL based on source
+                elif source and isinstance(source, str):
+                    source_lower = source.lower()
+                    if source_lower == "amazon":
+                        url = f"https://www.amazon.com{url if url.startswith('/') else '/' + url}"
+                    elif source_lower == "walmart":
+                        url = f"https://www.walmart.com{url if url.startswith('/') else '/' + url}"
+                    elif source_lower == "google_shopping":
+                        url = f"https://www.google.com{url if url.startswith('/') else '/' + url}"
+            
+            # Use the validation library to validate and sanitize
+            is_valid_url, sanitized_url = Validator.validate_and_sanitize_url(url)
+            if is_valid_url and sanitized_url:
+                logger.debug(f"URL validated and sanitized: {url} -> {sanitized_url}")
+                # Cache both the original and sanitized URLs to optimize lookups
+                self._url_cache[url] = sanitized_url
+                self._url_cache[sanitized_url] = sanitized_url  # Cache sanitized URL pointing to itself
+                return sanitized_url
+                
+            # If validation failed, log a warning
+            logger.warning(f"URL validation failed for: {url}, using original URL")
+            # Cache the original URL as fallback
+            self._url_cache[url] = url
+        except ImportError:
+            logger.warning("Validator module could not be imported, using original URL")
+        except Exception as e:
+            logger.warning(f"URL validation error: {str(e)}")
+            
+        # Return original URL if validation fails
+        self._url_cache[url] = url
+        return url
+
+    # Add this method before _detect_currency_from_price_string
+    def _generate_product_id(self, source: str, title: str, merchant: str = "", price: Any = None, existing_id: str = "") -> str:
+        """Generate a stable product ID from product details.
+        
+        Args:
+            source: Source marketplace (amazon, walmart, google_shopping)
+            title: Product title 
+            merchant: Optional merchant/seller name
+            price: Optional price
+            existing_id: Optional existing ID to use if available
+            
+        Returns:
+            str: A stable product ID
+        """
+        # Use existing ID if provided
+        if existing_id and isinstance(existing_id, str) and existing_id.strip():
+            return existing_id.strip()
+            
+        # Construct a string from the product details
+        id_parts = []
+        
+        # Start with the source
+        id_parts.append(source.lower() if isinstance(source, str) else "unknown")
+        
+        # Add title (simplified)
+        if title and isinstance(title, str):
+            # Remove special characters, lowercase, and join words with underscores
+            simplified_title = "_".join(
+                re.sub(r'[^a-zA-Z0-9\s]', '', title.lower()).split()
+            )[:50]  # Limit length
+            id_parts.append(simplified_title)
+            
+        # Add merchant if available
+        if merchant and isinstance(merchant, str):
+            simplified_merchant = re.sub(r'[^a-zA-Z0-9\s]', '', merchant.lower())
+            id_parts.append(simplified_merchant[:20])  # Limit length
+            
+        # Add price if available
+        if price is not None:
+            try:
+                # Try to convert price to float and format it
+                price_float = float(price)
+                id_parts.append(f"{price_float:.2f}")
+            except (ValueError, TypeError):
+                # If conversion fails, try to use it as a string
+                if isinstance(price, str):
+                    # Extract numbers from price string
+                    price_nums = self._PRICE_PATTERN.findall(price)
+                    if price_nums:
+                        id_parts.append(price_nums[0])
+        
+        # Join parts with a separator
+        id_string = "_".join(id_parts)
+        
+        # Generate a hash of the combined string
+        id_hash = hashlib.md5(id_string.encode()).hexdigest()[:12]
+        
+        # Return a formatted ID
+        return f"{source.lower() if isinstance(source, str) else 'unknown'}_{id_hash}"
+
+    # Add this method after _extract_price
+    def _detect_currency_from_price_string(self, price_str: str) -> str:
+        """Detect currency from a price string based on the currency symbol.
+        
+        Args:
+            price_str: Price string potentially containing currency symbols
+            
+        Returns:
+            str: Currency code (USD, GBP, EUR, etc.)
+        """
+        if not price_str or not isinstance(price_str, str):
+            return "USD"  # Default currency
+            
+        # Check for currency symbols
+        if price_str.startswith('£'):
+            return "GBP"
+        elif price_str.startswith('€'):
+            return "EUR"
+        elif price_str.startswith('¥'):
+            return "JPY"
+        elif price_str.startswith('₹'):
+            return "INR"
+        elif price_str.startswith('C$') or price_str.startswith('CA$'):
+            return "CAD"
+        elif price_str.startswith('A$') or price_str.startswith('AU$'):
+            return "AUD"
+        
+        # Default to USD for $ or unknown symbols
+        return "USD"
+
+    # Add this method after _generate_product_id
+    def _create_standardized_product(
+        self,
+        item: Dict[str, Any],
+        source: str,
+        query: str = ""
+    ) -> Dict[str, Any]:
+        """Create a standardized product object from scraped data.
+        
+        Args:
+            item: Raw product data from scraper
+            source: Source marketplace (amazon, walmart, google_shopping)
+            query: Original search query (for URL validation)
+            
+        Returns:
+            Dict: Standardized product object
+        """
+        # Extract basic fields with fallbacks
+        title = item.get('title', '') or item.get('name', '')
+        
+        # Get or generate product ID
+        product_id = self._generate_product_id(
+            source=source,
+            title=title,
+            merchant=item.get('merchant', '') or item.get('seller', ''),
+            price=item.get('price', ''),
+            existing_id=item.get('id', '') or item.get('asin', '') or item.get('product_id', '')
+        )
+        
+        # Extract price
+        price = self._extract_price(item.get('price', 0))
+        
+        # Determine currency
+        currency = "USD"  # Default
+        if isinstance(item.get('price'), str):
+            currency = self._detect_currency_from_price_string(item.get('price', ''))
+        elif 'currency' in item and item['currency']:
+            currency = item['currency']
+        
+        # Handle image URL
+        image_url = (
+            item.get('image', '') or 
+            item.get('thumbnail', '') or 
+            (item.get('images', [{}])[0].get('url') if item.get('images') else '')
+        )
+        
+        # Validate and process product URL
+        product_url = item.get('link', '') or item.get('url', '')
+        product_url = self._validate_product_url(
+            product_url, 
+            query=query, 
+            source=source,
+            skip_if_validated=True
+        )
+        
+        # Create metadata with common fields
+        metadata = {
+            "seller": item.get('merchant', '') or item.get('seller', ''),
+            "rating": item.get('rating', 0),
+            "reviews": item.get('reviews', 0),
+        }
+        
+        # Add source-specific metadata
+        if source == "amazon":
+            metadata["asin"] = item.get('asin', '') or product_id
+            metadata["prime"] = item.get('prime', False)
+        
+        # Create the standardized product object
+            return {
+            "id": product_id,
+            "title": title,
+            "price": price,
+            "currency": currency,
+            "image": image_url,
+            "url": product_url,
+            "description": item.get('description', '') or item.get('snippet', ''),
+            "source": source,
+            "metadata": metadata
+        }
+
+    # Add this method after _create_standardized_product
+    def _process_product_batch(
+        self,
+        items: List[Dict[str, Any]],
+        source: str,
+        query: str = "",
+        max_results: int = 50,
+        content_extraction_paths: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """Process a batch of products more efficiently.
+        
+        Args:
+            items: List of raw product items
+            source: Source marketplace (amazon, walmart, google_shopping)
+            query: Original search query
+            max_results: Maximum number of results to return
+            content_extraction_paths: Optional list of JSON paths to extract content
+            
+        Returns:
+            List of standardized product objects
+        """
+        if not items or not isinstance(items, list):
+            logger.warning(f"No valid items to process for {source}")
+            return []
+            
+        processed_products = []
+        seen_product_ids = set()  # To avoid duplicates
+        
+        # Process all items
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+                
+            try:
+                # Check for nested content
+                if 'content' in item and isinstance(item['content'], dict):
+                    content = item['content']
+                    
+                    # If specific content extraction paths provided, check them
+                    if content_extraction_paths:
+                        for path in content_extraction_paths:
+                            if path in content and isinstance(content[path], list):
+                                # Process items from this path
+                                nested_items = content[path]
+                                for nested_item in nested_items:
+                                    if not isinstance(nested_item, dict):
+                                        continue
+                                        
+                                    # Process each nested item    
+                                    try:
+                                        product = self._create_standardized_product(
+                                            nested_item, 
+                                            source=source,
+                                            query=query
+                                        )
+                                        
+                                        if product:
+                                        processed_products.append(product)
+                                        
+                                        if len(processed_products) >= max_results:
+                                            return processed_products
+                            except Exception as e:
+                                        logger.warning(f"Error processing nested {source} item from {path}: {str(e)}")
+                    
+                # Process the item directly
+                product = self._create_standardized_product(
+                    item, 
+                    source=source,
+                    query=query
+                )
+                
+                # Skip if we've already seen this product ID
+                if product['id'] in seen_product_ids:
+                    continue
+                    
+                seen_product_ids.add(product['id'])
+                processed_products.append(product)
+                
+                # Respect max_results limit
+                if len(processed_products) >= max_results:
+                    return processed_products
+                    
+            except Exception as e:
+                logger.warning(f"Error processing {source} item: {str(e)}")
+        
+        return processed_products
+
+    async def cleanup(self):
+        """Cleanup resources and ensure metrics are flushed.
+        
+        This method should be called when shutting down the service to ensure
+        all metrics are properly persisted and resources are released.
+        """
+        logger.info("Cleaning up OxylabsService resources")
+        
+        # Flush any remaining metrics
+        if self._metrics_batch:
+            logger.info(f"Flushing {len(self._metrics_batch)} remaining metrics on shutdown")
+            await self._flush_metrics_batch()
+            
+        # Close any open connections
+        if self.session:
+            await self.session.close()
+            self.session = None
+
+    async def _handle_api_response(
+        self,
+        response,
+        response_text: str,
+        endpoint: str,
+        market_type: str,
+        request_start_time: float,
+        cache_key: str,
+        cache_ttl: Optional[int]
+    ) -> Dict[str, Any]:
+        """Handle API response from Oxylabs.
+        
+        Args:
+            response: HTTP response object
+            response_text: Response text
+            endpoint: API endpoint
+            market_type: Market type for metrics
+            request_start_time: Request start time (epoch)
+            cache_key: Cache key for storing response
+            cache_ttl: Cache TTL in seconds
+            
+        Returns:
+            Processed API response
+        """
+        response_time = time.time() - request_start_time
+        
+        # Record request completion for rate limiting
+        self._record_request_completion(
+            market_type=market_type,
+            success=(response.status < 400),
+            response_time=response_time
+        )
+        
+        # Log basic response info
+        logger.debug(f"Response from {market_type} ({response.status}): {len(response_text)} bytes, {response_time:.2f}s")
+        
+        # Handle non-success responses
+        if response.status >= 400:
+            error_message = f"API error {response.status}: {response_text[:200]}..."
+            logger.error(f"API error response for {market_type}: {error_message}")
+            
+            # Record error metric
+            await self._record_market_metrics(
+                market_type=market_type,
+                success=False,
+                response_time=response_time,
+                error=error_message
+            )
+            
+            # Return error response
+            return {
+                "status": "error",
+                    "message": error_message,
+                "results": []
+            }
+            
+        # Parse JSON response
+        try:
+            resp_data = json.loads(response_text)
+            
+            # Check for API error in response body
+            if isinstance(resp_data, dict) and resp_data.get("status") == "error":
+                error_msg = resp_data.get("message", "Unknown API error")
+                logger.error(f"API error in response body for {market_type}: {error_msg[:100]}...")
+                
+                # Record error metric
+                await self._record_market_metrics(
+                    market_type=market_type,
+                    success=False,
+                    response_time=response_time,
+                    error=error_msg
+                )
+                
+                # Return the error response
+                return resp_data
+            
+            # Record successful metric
+            await self._record_market_metrics(
+                market_type=market_type,
+                success=True,
+                response_time=response_time
+            )
+            
+            # Process the results
+            if cache_ttl and self.redis_client:
+                # Cache the raw response before processing
+                try:
+                    cache_data = {
+                        "raw_data": resp_data,
+                        "market_type": market_type,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    await self._store_in_cache(cache_key + "_raw", cache_data, cache_ttl)
+                except Exception as e:
+                    logger.warning(f"Failed to cache raw results: {str(e)}")
+            
+            # Process the results
+            processed_results = self._process_results(resp_data, market_type)
+            
+            # Store processed results in cache if needed
+            if cache_ttl and processed_results and self.redis_client:
+                try:
+                    await self._store_in_cache(cache_key, processed_results, cache_ttl)
+                except Exception as e:
+                    logger.warning(f"Failed to cache processed results: {str(e)}")
+                
+            # If no processed results but we have raw data, return the raw data
+            if not processed_results and resp_data:
+                logger.warning(f"No products extracted from {market_type} response, returning raw data")
+                return resp_data
+                
+            return processed_results
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse JSON response for {market_type}: {str(e)}")
+            
+            # Record error metric
+            await self._record_market_metrics(
+                market_type=market_type,
+                success=False,
+                response_time=response_time,
+                error=f"Invalid JSON: {str(e)}"
+            )
+            
+                return {
+                    "status": "error", 
+                    "message": f"Invalid JSON response: {str(e)}",
+                    "results": []
+                }
+        except Exception as e:
+            logger.error(f"Error handling {market_type} response: {str(e)}")
+            
+            # Record error metric
+            await self._record_market_metrics(
+                market_type=market_type,
+                success=False,
+                response_time=response_time,
+                error=str(e)
+            )
+            
+            return {
+                "status": "error", 
+                    "message": f"Response processing error: {str(e)}",
+                "results": []
+            }
+
+    def _process_results(self, results: Any, market_type: str) -> List[Dict]:
+        """Process and standardize raw results from Oxylabs API.
+        
+        Args:
+            results: Raw results from the API (can be list, dict, or string)
+            market_type: Type of market
+            
+        Returns:
+            List of standardized product dictionaries
+        """
+        products = []
+        
+        # Handle case where results might be None or empty
+        if not results:
+            logger.warning(f"Empty results from {market_type}")
+            return []
+            
+        # Handle string results by trying to parse as JSON
+        if isinstance(results, str):
+            logger.warning(f"Received string instead of dict from {market_type} API: {results[:100]}...")
+            try:
+                results = json.loads(results)
+            except json.JSONDecodeError:
+                logger.error(f"Could not decode string result from {market_type} as JSON")
+                return []
+
+        # Handle error results
+        if isinstance(results, dict) and "error" in results:
+            logger.error(f"Error in results from {market_type}: {results.get('error')}")
+                return []
+
+        try:
+            # Different markets have different response structures
+            if market_type == "amazon":
+                # Handle universal_ecommerce source for Amazon
+                if isinstance(results, dict) and "results" in results:
+                    content = results.get("results", [])
+                    if content and isinstance(content, list) and len(content) > 0:
+                        result_content = content[0].get("content", {})
+                        # Extract products from universal_ecommerce response
+                        raw_products = result_content.get("results", result_content.get("products", []))
+                        
+                        for product in raw_products:
+                            if not product:
+                                continue
+
+                            # Extract product information
+                            product_id = product.get("id", product.get("asin", ""))
+                            price_raw = product.get("price", product.get("price_value", ""))
+                            price = self._extract_price(price_raw)
+                            currency = self._extract_currency(price_raw) or "USD"
+
+                            # Create standardized product dictionary
+                            products.append({
+                                "title": product.get("name", product.get("title", "")),
+                                "price": price,
+                                "currency": currency,
+                                "product_id": product_id,
+                                "url": product.get("url", product.get("link", "")),
+                                "image_url": product.get("image", product.get("thumbnail", "")),
+                                "rating": product.get("rating", 0),
+                                "reviews_count": product.get("reviews", 0),
+                                "marketplace": "amazon",
+                                "raw_data": product
+                            })
+                
+                # Fallback handling for older response format
+                elif isinstance(results, dict) and "results" in results and "organic" in results.get("results", {}):
+                    raw_products = results.get("results", {}).get("organic", [])
+                    
+                    for product in raw_products:
+                        if not product:
+                    continue
+                    
+                        product_id = product.get("asin", "")
+                        price_raw = product.get("price", {}).get("raw", "")
+                        price = self._extract_price(price_raw)
+                        currency = self._extract_currency(price_raw) or "USD"
+                        
+                        products.append({
+                            "title": product.get("title", ""),
+                            "price": price,
+                            "currency": currency,
+                            "product_id": product_id,
+                            "url": product.get("link", ""),
+                            "image_url": product.get("thumbnail", ""),
+                            "rating": product.get("rating", 0),
+                            "reviews_count": product.get("reviews_count", 0),
+                            "marketplace": "amazon",
+                            "raw_data": product
+                        })
+                
+            elif market_type == "walmart":
+                # Handle universal_ecommerce source for Walmart
+                if isinstance(results, dict) and "results" in results:
+                    content = results.get("results", [])
+                    if content and isinstance(content, list) and len(content) > 0:
+                        result_content = content[0].get("content", {})
+                        # Extract products from universal_ecommerce response
+                        raw_products = result_content.get("results", result_content.get("products", []))
+                        
+                        for product in raw_products:
+                            if not product:
+                    continue
+                
+                            # Extract product information
+                            product_id = product.get("id", "")
+                            price_raw = product.get("price", product.get("price_value", ""))
+                        price = self._extract_price(price_raw)
+                            currency = self._extract_currency(price_raw) or "USD"
+
+                            # Create standardized product dictionary
+                            products.append({
+                                "title": product.get("name", product.get("title", "")),
+                                "price": price,
+                                "currency": currency,
+                                "product_id": product_id,
+                                "url": product.get("url", product.get("link", "")),
+                                "image_url": product.get("image", product.get("thumbnail", "")),
+                                "rating": product.get("rating", 0),
+                                "reviews_count": product.get("reviews", 0),
+                                "marketplace": "walmart",
+                                "raw_data": product
+                            })
+                
+                # Fallback for older response format
+                elif isinstance(results, dict) and "search_results" in results:
+                    raw_products = results.get("search_results", [])
+                    
+                    for product in raw_products:
+                        if not product:
+                    continue
+                
+                        price_raw = product.get("price", "")
+                        price = self._extract_price(price_raw)
+                        currency = self._extract_currency(price_raw) or "USD"
+                        
+                        products.append({
+                            "title": product.get("title", ""),
+                            "price": price,
+                            "currency": currency,
+                            "product_id": product.get("product_id", ""),
+                            "url": product.get("url", ""),
+                            "image_url": product.get("image", ""),
+                            "rating": product.get("rating", 0),
+                            "reviews_count": product.get("reviews_count", 0),
+                            "marketplace": "walmart",
+                            "raw_data": product
+                        })
+                
+            elif market_type == "google_shopping":
+                # Handle Google Shopping response format
+                if isinstance(results, dict) and "results" in results:
+                    # First check if we have a universal format response
+                    content = results.get("results", [])
+                    if content and isinstance(content, list) and len(content) > 0:
+                        result_content = content[0].get("content", {})
+                        # Extract products
+                        raw_products = result_content.get("results", result_content.get("products", []))
+                        
+                        for product in raw_products:
+                            if not product:
+                                continue
+
+                            # Extract price from various possible fields
+                            price_raw = product.get("price", product.get("price_value", product.get("extracted_price", "")))
+                            price = self._extract_price(price_raw)
+                            currency = self._extract_currency(price_raw) or "USD"
+
+                            # Create standardized product dictionary
+                            products.append({
+                                "title": product.get("name", product.get("title", "")),
+                                "price": price,
+                                "currency": currency,
+                                "product_id": product.get("id", product.get("product_id", "")),
+                                "url": product.get("url", product.get("link", "")),
+                                "image_url": product.get("image", product.get("thumbnail", "")),
+                                "rating": product.get("rating", 0),
+                                "reviews_count": product.get("reviews", 0),
+                                "marketplace": "google_shopping",
+                                "raw_data": product
+                            })
+                
+                # Fallback to older format for Google Shopping
+                elif isinstance(results, dict) and "shopping_results" in results:
+                    raw_products = results.get("shopping_results", [])
+                    
+                    for product in raw_products:
+                        if not product:
+                continue
+        
+                        price_raw = product.get("price", "")
+                        price = self._extract_price(price_raw)
+                        currency = self._extract_currency(price_raw) or "USD"
+                        
+                        products.append({
+                            "title": product.get("title", ""),
+                            "price": price,
+                            "currency": currency,
+                            "product_id": product.get("product_id", product.get("id", "")),
+                            "url": product.get("link", ""),
+                            "image_url": product.get("thumbnail", ""),
+                            "rating": product.get("rating", 0),
+                            "reviews_count": product.get("reviews", 0),
+                            "marketplace": "google_shopping",
+                            "raw_data": product
+                        })
+                        
+            else:
+                logger.warning(f"Unknown market type: {market_type}")
+                
+            logger.info(f"Processed {len(products)} products from {market_type}")
+        return products
+            
+        except Exception as e:
+            logger.error(f"Error processing results from {market_type}: {str(e)}", exc_info=True)
+            return []
+
+    async def _record_market_metrics(
+        self,
+        market_type: str,
+        success: bool = True,
+        response_time: Optional[float] = None,
+        error: Optional[str] = None
+    ) -> None:
+        """Record metrics for a market request.
+        
+        Args:
+            market_type: Type of the market (e.g., amazon, walmart)
+            success: Whether the request was successful
+            response_time: Response time in seconds
+            error: Error message if the request failed
+        """
+        if not self.metrics_service:
+            return
+            
+        try:
+            # Convert string market_type to MarketType enum
+            try:
+                market_enum = MarketType(market_type.upper())
+            except (ValueError, AttributeError):
+                # Try to find a matching enum by value
+                market_enum = None
+                for mt in MarketType:
+                    if mt.value.lower() == market_type.lower():
+                        market_enum = mt
+                        break
+                
+                # If still not found, use a default
+                if market_enum is None:
+                    logger.warning(f"Unknown market type: {market_type}, using AMAZON as fallback")
+                    market_enum = MarketType.AMAZON
+            
+            await self.metrics_service.record_market_request(
+                market_type=market_enum,
+                success=success,
+                response_time=response_time,
+                error=error
+            )
+        except Exception as e:
+            logger.error(f"Error recording market metrics: {str(e)}")
+
+    async def _flush_metrics_batch(self) -> None:
+        """Flush any batched metrics to the database."""
+        if not self.metrics_service or not self._metrics_batch:
+            return
+            
+        try:
+            await self.metrics_service.record_market_metrics_batch(self._metrics_batch)
+            self._metrics_batch = []
+        except Exception as e:
+            logger.error(f"Error flushing metrics batch: {str(e)}")
+            self._metrics_batch = []
+
+    async def search_amazon(self, query: str, **kwargs) -> Dict[str, Any]:
+        """Search for products on Amazon.
+        
+        Args:
+            query: Search query
+            **kwargs: Additional parameters
+                - geo_location: Geographic location (e.g., "US", "CA", "90210")
+                - max_results: Maximum number of results to return
+            
+        Returns:
+            Dict containing search results
+        """
+        try:
+            logger.info(f"Searching Amazon for: {query}")
+            
+            # Based on Oxylabs docs and testing, amazon_search is the correct source
+            payload = {
+                "source": "amazon_search",
+                "domain": "com",
+                "query": query,
+                "parse": True,
+                "user_agent_type": "desktop"
+            }
+            
+            # Handle geo_location - for Amazon, we should use a ZIP code or country name
+            geo_location = kwargs.get('geo_location', 'United States')  # Default to United States
+            if geo_location and len(geo_location) == 2:
+                # Convert country code to full country name
+                if geo_location.lower() in COUNTRY_TO_LOCATION:
+                    geo_location = COUNTRY_TO_LOCATION[geo_location.lower()]
+            
+            # Add geo_location to payload
+                payload["geo_location"] = geo_location
+            
+            # If specific zipcode is provided, add it
+            if kwargs.get('zipcode'):
+                payload["zipcode"] = kwargs.get('zipcode')
+                
+            # Get max results
+            max_results = kwargs.get('max_results', kwargs.get('limit', 15))
+            # Add context for batch_max_items
+            payload["context"] = [
+                {
+                    "key": "batch_max_items", 
+                    "value": str(max_results)
+                }
+            ]
+                
+            logger.debug(f"Amazon payload: {payload}")
+            
+            # Make the request with longer cache time and more retries
+            result = await self._make_request(
+                endpoint="/v1/queries",
+                payload=payload,
+                cache_ttl=300,  # 5 minutes cache
+                market_type="amazon",
+                retries=3  # Number of retries
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in Amazon search: {str(e)}")
+            return {"error": str(e), "results": []}
+
+    async def search_walmart(self, query: str, **kwargs) -> Dict[str, Any]:
+        """Search for products on Walmart.
+        
+        Args:
+            query: Search query
+            **kwargs: Additional parameters
+                - geo_location: Geographic location (e.g., "us", "ca", "90210")
+                - max_results: Maximum number of results to return
+            
+        Returns:
+            Dict containing search results
+        """
+        try:
+            logger.info(f"Searching Walmart for: {query}")
+            
+            # Create URL for Walmart search (required by Oxylabs)
+            encoded_query = query.replace(' ', '+')
+            url = f"https://www.walmart.com/search?q={encoded_query}"
+            
+            # Based on Oxylabs docs and testing, universal_ecommerce is the correct source for Walmart
+            payload = {
+                "source": "universal_ecommerce",
+                "domain": "walmart.com",
+                "url": url,
+                "parse": True,
+                "user_agent_type": "desktop"
+            }
+            
+            # Add geo_location if provided
+            geo_location = kwargs.get('geo_location', 'United States')  # Default to United States
+            if geo_location and len(geo_location) <= 2 and geo_location.lower() in COUNTRY_TO_LOCATION:
+                    # Convert country code to full country name
+                    geo_location = COUNTRY_TO_LOCATION[geo_location.lower()]
+                
+                payload["geo_location"] = geo_location
+            
+            # Add zipcode if provided
+            if kwargs.get('zipcode'):
+                payload["zipcode"] = kwargs.get('zipcode')
+                
+            # Get max results
+            max_results = kwargs.get('max_results', kwargs.get('limit', 15))
+            # Add context for batch_max_items
+            payload["context"] = [
+                {
+                    "key": "batch_max_items", 
+                    "value": str(max_results)
+                }
+            ]
+            
+            logger.debug(f"Walmart payload: {payload}")
+            
+            # Make the request with cache
+            result = await self._make_request(
+                endpoint="/v1/queries",
+                payload=payload,
+                cache_ttl=300,  # 5 minutes cache
+                market_type="walmart",
+                retries=3  # Number of retries
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Unexpected error with Walmart request: {str(e)}")
+            return {"error": str(e), "results": []}
+
+    async def search_google_shopping(self, query: str, **kwargs) -> Dict[str, Any]:
+        """Search for products on Google Shopping.
+        
+        Args:
+            query: Search query
+            **kwargs: Additional parameters
+                - geo_location: Geographic location (e.g., "us", "ca", "90210")
+                - max_results: Maximum number of results to return
+                - min_price: Minimum price filter
+                - max_price: Maximum price filter
+                - sort_by: Sort order (r=relevance, rv=reviews, p=price asc, pd=price desc)
+                
+        Returns:
+            Dict containing search results
+        """
+        try:
+            logger.info(f"Searching Google Shopping for: {query}")
+            
+            # Create payload based on Oxylabs documentation and example
+            payload = {
+                "source": "google_shopping_search",
+                "domain": "com",
+                "query": query,
+                "parse": True,
+                "user_agent_type": "desktop",
+                "pages": 1  # Default to one page
+            }
+            
+            # Build context array for additional parameters
+            context = []
+            
+            # Add sort_by if provided (default to relevance)
+            sort_by = kwargs.get('sort_by', 'r')
+            if sort_by in ['r', 'rv', 'p', 'pd']:
+                context.append({"key": "sort_by", "value": sort_by})
+            
+            # Add price filters if provided
+            min_price = kwargs.get('min_price')
+            if min_price is not None:
+                context.append({"key": "min_price", "value": min_price})
+                
+            max_price = kwargs.get('max_price')
+            if max_price is not None:
+                context.append({"key": "max_price", "value": max_price})
+            
+            # Add context to payload if we have any parameters
+            if context:
+                payload["context"] = context
+            
+            # Add geo_location if provided
+            geo_location = kwargs.get('geo_location', 'United States')  # Default to United States
+            if geo_location and len(geo_location) <= 2 and geo_location.lower() in COUNTRY_TO_LOCATION:
+                # Convert country code to full country name
+                    geo_location = COUNTRY_TO_LOCATION[geo_location.lower()]
+                
+                payload["geo_location"] = geo_location
+            
+            # Set number of pages based on max_results
+            max_results = kwargs.get('max_results', kwargs.get('limit', 15))
+            if max_results > 15:
+                # Google Shopping typically shows about 15 results per page
+                pages = max(1, min(5, (max_results + 14) // 15))  # Cap at 5 pages
+                payload["pages"] = pages
+            
+            logger.debug(f"Google Shopping payload: {payload}")
+            
+            # Make the request with cache
+            result = await self._make_request(
+                endpoint="/v1/queries",
+                payload=payload,
+                cache_ttl=300,  # 5 minutes cache
+                market_type="google_shopping",
+                retries=3  # Number of retries
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Unexpected error with Google Shopping request: {str(e)}")
+            return {"error": str(e), "results": []}
+
+    async def search_ebay(self, query: str, **kwargs) -> Dict[str, Any]:
+        """Search for products on eBay.
+        
+        Args:
+            query: Search query
+            **kwargs: Additional parameters
+                - geo_location: Geographic location (e.g., "United States", "90210")
+                - limit: Maximum number of results to return
+                
+        Returns:
+            Dict containing search results
+        """
+        try:
+            logger.info(f"Searching eBay for: {query}")
+            
+            # Get geo location with proper format
+            geo_location = kwargs.get('geo_location', "United States")  # Default to United States
+            
+            # Build API params with correct source format
+            params = {
+                "source": "ebay_search",
+                "domain": "com",
+                "query": query,
+                "parse": True,
+                "limit": kwargs.get('limit', 25)
+            }
+            
+            # Add geo_location
+            params["geo_location"] = geo_location
+                
+            # Make the API request
+            result = await self._make_request(
+                endpoint="/v1/queries",
+                payload=params,
+                cache_ttl=3600,  # Cache for 1 hour
+                market_type="ebay"
+            )
+            
+            await self._flush_metrics_batch()
+            
+            return result
+        except Exception as e:
+            logger.error(f"Error searching eBay: {str(e)}")
+            return {"status": "error", "error": str(e), "results": []}
+
+# Global service instance for singleton pattern
+_oxylabs_service = None
+
+async def get_oxylabs(
+    username: Optional[Union[str, SecretStr]] = None,
+    password: Optional[Union[str, SecretStr]] = None,
+    db: Optional[AsyncSession] = None,
+    register_cleanup: bool = True
+) -> OxylabsService:
+    """Factory function to create or retrieve an OxylabsService instance.
+    
+    This function ensures a single instance of OxylabsService is used across the application.
+    
+    Args:
+        username: Optional username for Oxylabs API
+        password: Optional password for Oxylabs API
+        db: Optional database session for metrics recording
+        register_cleanup: Whether to register cleanup method with FastAPI shutdown event
+        
+    Returns:
+        An instance of OxylabsService
+    """
+    global _oxylabs_service
+    
+    # Return existing instance if available
+    if _oxylabs_service is not None:
+        return _oxylabs_service
+    
+    # Log the credentials we're going to use
+    settings_username = settings.OXYLABS_USERNAME
+    if hasattr(settings.OXYLABS_PASSWORD, 'get_secret_value'):
+        settings_password = settings.OXYLABS_PASSWORD.get_secret_value()
+    else:
+        settings_password = settings.OXYLABS_PASSWORD
+    
+    logger.info(f"Creating Oxylabs service with:")
+    logger.info(f"  Provided username: {username or 'None'}")
+    logger.info(f"  Using settings username: {settings_username}")
+    logger.info(f"  Password from settings available: {bool(settings_password)}")
+    
+    # Check if credentials are present in environment directly
+    env_username = os.environ.get('OXYLABS_USERNAME')
+    env_password = os.environ.get('OXYLABS_PASSWORD')
+    
+    logger.info(f"  Environment username: {env_username}")
+    logger.info(f"  Environment password present: {bool(env_password)}")
+    
+    # If no username is provided, but we have it in environment, use that
+    if not username and env_username:
+        logger.info(f"  Using username from environment: {env_username}")
+        username = env_username
+    
+    # If no password is provided, but we have it in environment, use that
+    if not password and env_password:
+        logger.info(f"  Using password from environment")
+        password = env_password
+    
+    # Get a database session if none provided
+    if db is None:
+        try:
+            from core.db.session import get_session
+            db_session = await get_session()
+            db = db_session
+        except ImportError:
+            logger.warning("Could not import get_session, metrics tracking will be disabled")
+    
+    # Create a new service instance
+    service = OxylabsService(
+        username=username,
+        password=password,
+        db=db
+    )
+    
+    # Initialize Redis client 
+    await service._init_redis_client()
+    
+    # Initialize HTTP session for reuse
+    service.session = aiohttp.ClientSession()
+    
+    # Store service instance in global variable
+    _oxylabs_service = service
+    
+    # Register cleanup with FastAPI if available
+    if register_cleanup:
+        try:
+            # Try to find the FastAPI app carefully - there are multiple ways it might be accessible
+            app = None
+            
+            # Method 1: Try to get the current running app
+            try:
+                from fastapi import FastAPI
+                from fastapi.applications import get_app
+                app = get_app()
+            except (ImportError, RuntimeError) as e:
+                logger.debug(f"Could not get FastAPI app via get_app(): {str(e)}")
+            
+            # Method 2: Try to get it from the main module
+            if app is None:
+                try:
+                    import sys
+                    if 'main' in sys.modules:
+                        main_module = sys.modules['main']
+                        if hasattr(main_module, 'app'):
+                            app = main_module.app
+                except Exception as e:
+                    logger.debug(f"Could not get FastAPI app from main module: {str(e)}")
+            
+            # If we found an app, register the shutdown handler
+            if app is not None and hasattr(app, 'on_event'):
+                @app.on_event("shutdown")
+                async def shutdown_oxylabs_service():
+                    logger.info("Shutting down Oxylabs service")
+                    try:
+                        # Flush any pending metrics
+                        if hasattr(service, '_flush_metrics_batch') and callable(service._flush_metrics_batch):
+                            logger.info("Flushing any pending metrics batch")
+                            await service._flush_metrics_batch()
+                            
+                        # Close any HTTP sessions
+                        if hasattr(service, 'session') and service.session is not None:
+                            logger.info("Closing HTTP session")
+                            if not service.session.closed:
+                                await service.session.close()
+                                
+                        # Run the main cleanup method
+                        await service.cleanup()
+            except Exception as e:
+                        logger.error(f"Error during Oxylabs service shutdown: {str(e)}")
+                
+                logger.info("Successfully registered Oxylabs service cleanup with FastAPI shutdown event")
+            else:
+                logger.warning("Could not find FastAPI app for shutdown event registration")
+                
+        except Exception as e:
+            logger.warning(f"Error registering cleanup with FastAPI: {str(e)}")
+            logger.warning("Service resources may not be properly released on shutdown")
+    
+    return service 

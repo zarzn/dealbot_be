@@ -2040,6 +2040,377 @@ class ScraperAPIService:
             cache_ttl=cache_ttl,
             limit=limit
         )
+    
+    async def search_ebay(
+        self,
+        query: str,
+        limit: int = 15,
+        cache_ttl: int = 1800  # 30 minutes
+    ) -> List[Dict[str, Any]]:
+        """Search eBay for products matching the query.
+        
+        Args:
+            query: Search query
+            limit: Maximum number of results to return
+            cache_ttl: Cache TTL in seconds (default: 30 minutes)
+            
+        Returns:
+            List of product dictionaries
+        """
+        logger.debug(f"Searching eBay for query: '{query}', limit: {limit}")
+        
+        # Start timing
+        start_time = time.time()
+        success = False
+        error_msg = None
+        
+        try:
+            # Properly encode the query for eBay
+            encoded_query = quote_plus(query)
+            target_url = f"https://api.scraperapi.com/structured/ebay/search"
+            
+            params = {
+                'api_key': self._get_api_key(),
+                'query': query,
+                'country_code': 'us'
+            }
+            
+            logger.debug(f"Using target URL for eBay search: {target_url}")
+            
+            result = await self._make_request(
+                target_url=target_url,
+                params=params,
+                cache_ttl=cache_ttl
+            )
+            
+            logger.debug(f"Raw eBay search result type: {type(result)}")
+            
+            # Handle different response structures
+            products = []
+            if isinstance(result, dict):
+                # Check for results in different possible locations
+                if 'organic_results' in result:
+                    products = result['organic_results']
+                    logger.debug("Found products in 'organic_results' key")
+                elif 'results' in result:
+                    products = result['results']
+                    logger.debug("Found products in 'results' key")
+                elif 'items' in result:
+                    products = result['items']
+                    logger.debug("Found products in 'items' key")
+                elif 'search_results' in result:
+                    products = result['search_results']
+                    logger.debug("Found products in 'search_results' key")
+                else:
+                    logger.warning(f"No recognized product array found in response. Available keys: {list(result.keys())}")
+            elif isinstance(result, list):
+                products = result
+                logger.debug("Response was directly a list of products")
+            
+            # Validate and normalize product data
+            normalized_products = []
+            for idx, product in enumerate(products):
+                try:
+                    if not isinstance(product, dict):
+                        logger.warning(f"Invalid product data at index {idx}: {product}")
+                        continue
+                    
+                    # Get product ID
+                    product_id = None
+                    if 'id' in product and product['id']:
+                        product_id = str(product['id'])
+                    elif 'item_id' in product and product['item_id']:
+                        product_id = str(product['item_id'])
+                    elif 'product_id' in product and product['product_id']:
+                        product_id = str(product['product_id'])
+                    elif 'url' in product and 'itm/' in product['url']:
+                        # Extract from URL
+                        product_id = product['url'].split('itm/')[1].split('/')[0].split('?')[0]
+                    
+                    if not product_id:
+                        logger.warning(f"Could not extract product ID from eBay product at index {idx}, skipping")
+                        continue
+                    
+                    # Extract title
+                    title = None
+                    if 'title' in product and product['title']:
+                        title = str(product['title']).strip()
+                    elif 'name' in product and product['name']:
+                        title = str(product['name']).strip()
+                    
+                    if not title:
+                        logger.warning(f"Missing title for eBay product {product_id}, skipping")
+                        continue
+                    
+                    # Extract price
+                    price = None
+                    try:
+                        for price_field in ['price', 'current_price', 'sale_price', 'offer_price']:
+                            if price_field in product and product[price_field]:
+                                price_str = str(product[price_field])
+                                # Clean up price string
+                                if isinstance(price_str, str):
+                                    price_str = re.sub(r'[^\d\.\-]', '', price_str.replace(',', '').strip())
+                                    if price_str and not price_str.isspace():
+                                        price = float(price_str)
+                                        break
+                                elif isinstance(price_str, (int, float)):
+                                    price = float(price_str)
+                                    break
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Error extracting price for eBay product {product_id}: {str(e)}")
+                    
+                    if price is None:
+                        logger.warning(f"Could not extract valid price for eBay product {product_id}, using 0.0")
+                        price = 0.0
+                    
+                    # Extract image URL
+                    image_url = None
+                    for img_field in ['image', 'thumbnail', 'image_url', 'main_image']:
+                        if img_field in product and product[img_field]:
+                            image_url = str(product[img_field])
+                            break
+                    
+                    # Extract description or create a default one
+                    description = None
+                    for desc_field in ['description', 'snippet', 'summary', 'details']:
+                        if desc_field in product and product[desc_field]:
+                            description = str(product[desc_field])
+                            break
+                    
+                    if not description:
+                        description = f"eBay listing: {title}"
+                    
+                    # Extract seller/store name
+                    seller = None
+                    if 'seller' in product:
+                        if isinstance(product['seller'], dict) and 'name' in product['seller']:
+                            seller = product['seller']['name']
+                        elif isinstance(product['seller'], str):
+                            seller = product['seller']
+                    
+                    if not seller:
+                        seller = product.get('store', 'Unknown Seller')
+                    
+                    # Create normalized product object
+                    normalized_product = {
+                        'id': product_id,
+                        'title': title,
+                        'price': price,
+                        'currency': 'USD',
+                        'url': product.get('url', f"https://www.ebay.com/itm/{product_id}"),
+                        'image_url': image_url or '',
+                        'description': description,
+                        'source': 'ebay',
+                        'market_type': 'ebay',
+                        'seller': seller,
+                        'is_available': True,  # Assume available in search results
+                        'metadata': {
+                            'source': 'ebay',
+                            'query': query,
+                            'timestamp': datetime.utcnow().isoformat(),
+                            'raw_fields': list(product.keys())
+                        }
+                    }
+                    
+                    normalized_products.append(normalized_product)
+                    
+                    # Limit results if needed
+                    if len(normalized_products) >= limit:
+                        break
+                
+                except Exception as e:
+                    logger.error(f"Error processing eBay product at index {idx}: {str(e)}")
+                    continue
+            
+            logger.info(f"Successfully normalized {len(normalized_products)} out of {len(products)} eBay products")
+            
+            # Record market metrics
+            await self._record_market_metrics(
+                market_type=MarketType.EBAY,
+                success=True,
+                response_time=time.time() - start_time,
+                error=None
+            )
+            
+            return normalized_products
+        
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"eBay search failed: {error_msg}")
+            
+            # Record market metrics with failure
+            await self._record_market_metrics(
+                market_type=MarketType.EBAY,
+                success=False,
+                response_time=time.time() - start_time,
+                error=error_msg
+            )
+            
+            # Return empty list instead of raising
+            return []
+    
+    async def get_ebay_product(
+        self,
+        product_id: str,
+        cache_ttl: int = 3600  # 1 hour
+    ) -> Dict[str, Any]:
+        """Get eBay product details by ID.
+        
+        Args:
+            product_id: eBay item ID
+            cache_ttl: Cache time-to-live in seconds (default: 1 hour)
+            
+        Returns:
+            Dict with product details
+        """
+        logger.debug(f"Getting eBay product details for: {product_id}")
+        
+        # Start timing
+        start_time = time.time()
+        success = False
+        error_msg = None
+        
+        try:
+            # Construct the target URL for eBay product
+            target_url = f"https://api.scraperapi.com/structured/ebay/product"
+            
+            params = {
+                'api_key': self._get_api_key(),
+                'country_code': 'us',
+                'url': f"https://www.ebay.com/itm/{product_id}"
+            }
+            
+            result = await self._make_request(
+                target_url=target_url,
+                params=params,
+                cache_ttl=cache_ttl
+            )
+            
+            if not result:
+                raise ProductNotFoundError(
+                    market="ebay",
+                    product_id=product_id
+                )
+            
+            logger.debug(f"Raw eBay product result type: {type(result)}")
+            
+            # Extract product details
+            if not isinstance(result, dict):
+                raise MarketIntegrationError(
+                    market="ebay",
+                    operation="get_product",
+                    reason=f"Unexpected response type: {type(result)}"
+                )
+            
+            # Extract title
+            title = result.get('title', result.get('name', f"eBay Item {product_id}"))
+            
+            # Extract price
+            price = 0.0
+            price_str = result.get('price', '')
+            
+            if isinstance(price_str, (int, float)):
+                price = float(price_str)
+            elif isinstance(price_str, str) and price_str:
+                # Remove currency symbols, commas, etc.
+                price_str = price_str.replace('$', '').replace('£', '').replace('€', '').replace(',', '').strip()
+                try:
+                    price = float(price_str)
+                except ValueError:
+                    # Try to extract only digits and decimal point
+                    digits = re.findall(r'[\d.]+', price_str)
+                    if digits:
+                        price = float(digits[0])
+            
+            # Extract description
+            description = ""
+            for field in ['description', 'product_description', 'about', 'details', 'item_description']:
+                if field in result and result[field]:
+                    description = result[field]
+                    break
+            
+            if not description:
+                description = f"eBay listing: {title}"
+            
+            # Extract seller information
+            seller = "Unknown Seller"
+            if 'seller' in result:
+                if isinstance(result['seller'], dict) and 'name' in result['seller']:
+                    seller = result['seller']['name']
+                elif isinstance(result['seller'], str):
+                    seller = result['seller']
+            
+            # Extract image URL
+            image_url = ""
+            for img_field in ['main_image', 'image', 'images', 'thumbnail']:
+                if img_field in result and result[img_field]:
+                    if isinstance(result[img_field], list) and result[img_field]:
+                        image_url = result[img_field][0]
+                    else:
+                        image_url = result[img_field]
+                    break
+            
+            # Create normalized product object
+            normalized_product = {
+                'id': product_id,
+                'title': title,
+                'description': description,
+                'price': price,
+                'currency': result.get('currency', 'USD'),
+                'url': f"https://www.ebay.com/itm/{product_id}",
+                'image_url': image_url,
+                'source': 'ebay',
+                'market_type': 'ebay',
+                'seller': seller,
+                'shipping': result.get('shipping', 'Unknown'),
+                'condition': result.get('condition', 'Unknown'),
+                'is_available': result.get('is_available', True),
+                'metadata': {
+                    'source': 'ebay',
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'raw_fields': list(result.keys())
+                }
+            }
+            
+            # Record market metrics with success
+            await self._record_market_metrics(
+                market_type=MarketType.EBAY,
+                success=True,
+                response_time=time.time() - start_time,
+                error=None
+            )
+            
+            return normalized_product
+        
+        except ProductNotFoundError:
+            # Record market metrics with error
+            await self._record_market_metrics(
+                market_type=MarketType.EBAY,
+                success=False,
+                response_time=time.time() - start_time,
+                error="Product not found"
+            )
+            raise
+        
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Error getting eBay product: {error_msg}")
+            
+            # Record market metrics with error
+            await self._record_market_metrics(
+                market_type=MarketType.EBAY,
+                success=False,
+                response_time=time.time() - start_time,
+                error=error_msg
+            )
+            
+            # Raise a standardized exception
+            raise MarketIntegrationError(
+                market="ebay",
+                operation="get_product_details",
+                reason=error_msg
+            )
 
 async def get_scraper_api() -> ScraperAPIService:
     """Get or create a ScraperAPIService instance.

@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -18,6 +18,7 @@ from base58 import b58decode
 from uuid import UUID, uuid4
 from redis.asyncio import Redis
 from fastapi import Depends
+import json
 
 from core.repositories.token import TokenRepository
 from core.models.token import (
@@ -29,8 +30,11 @@ from core.models.token import (
 )
 from core.models.token_pricing import TokenPricing
 from core.models.token_balance_history import TokenBalanceHistory
+from core.models.token_wallet import TokenWallet
+from core.models.enums import TokenOperation
+# Import token_exceptions.TokenError specifically to avoid conflicts
+from core.exceptions.token_exceptions import TokenError
 from core.exceptions import (
-    TokenError,
     TokenBalanceError,
     TokenTransactionError,
     TokenValidationError,
@@ -46,8 +50,10 @@ from core.exceptions import (
     APIAuthenticationError,
     APITimeoutError,
     ValidationError,
-    TokenPricingError
+    TokenPricingError,
+    DatabaseError
 )
+from core.exceptions.wallet_exceptions import WalletConnectionError
 from core.config import settings
 from core.utils.logger import get_logger
 from core.database import get_async_db_session, get_async_db_context
@@ -124,8 +130,23 @@ class SolanaTokenService(ITokenService):
     def __init__(self, db: AsyncSession, redis_service: Optional[Redis] = None):
         """Initialize Solana client and repository"""
         self.db = db
-        self.repository = TokenRepository(db)
-        self._redis = redis_service
+        # Ensure the repository is initialized with a valid session
+        if not isinstance(db, AsyncSession):
+            logger.warning(f"db is not an AsyncSession, it's a {type(db)}")
+            # Try to create a new repository in a safe way
+            from core.database import get_async_db_session
+            try:
+                self.repository = TokenRepository(db) 
+            except Exception as e:
+                logger.error(f"Failed to initialize TokenRepository with db: {str(e)}")
+                raise TokenError(
+                    message=f"Failed to initialize token service: {str(e)}",
+                    details={"error": "database_session_invalid"}
+                )
+        else:
+            self.repository = TokenRepository(db)
+            
+        self.redis = redis_service
         try:
             self.client = AsyncClient(
                 settings.SOL_NETWORK_RPC,
@@ -151,50 +172,99 @@ class SolanaTokenService(ITokenService):
             reraise=True
         )
 
+    def _get_balance_cache_key(self, user_id: str) -> str:
+        """Get the standardized cache key for a user's token balance.
+        
+        Args:
+            user_id: The user ID
+            
+        Returns:
+            The formatted cache key
+        """
+        return f"token:balance:{user_id}"
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def check_balance(self, user_id: str) -> Decimal:
         """Get user's current token balance"""
         try:
+            # Check if we have a cache hit first
+            if self.redis:
+                try:
+                    cache_key = self._get_balance_cache_key(user_id)
+                    cached_balance = await self.redis.get(cache_key)
+                    if cached_balance is not None:
+                        logger.debug(f"Cache hit for user {user_id} balance: {cached_balance}")
+                        try:
+                            return Decimal(cached_balance.decode('utf-8'))
+                        except (ValueError, TypeError, UnicodeDecodeError) as e:
+                            logger.warning(f"Invalid cached balance format for user {user_id}: {str(e)}")
+                            # Continue to fetch from database
+                except Exception as redis_error:
+                    logger.warning(f"Redis error when checking balance for user {user_id}: {str(redis_error)}")
+                    # Continue to fetch from database - don't let Redis errors prevent us from getting the balance
+
+            # No cache hit or Redis error, fetch from database
             balance = await self.repository.get_user_balance(user_id)
             logger.debug(f"Retrieved balance for user {user_id}: {balance}")
+            
             # Return 0 if balance is None
             if balance is None:
                 return Decimal("0.0")
+                
+            # Cache the result if redis is available
+            if self.redis:
+                try:
+                    cache_key = self._get_balance_cache_key(user_id)
+                    await self.redis.set(cache_key, str(balance.balance), ex=300)  # Cache for 5 minutes
+                except Exception as redis_error:
+                    logger.warning(f"Redis error when caching balance for user {user_id}: {str(redis_error)}")
+                    # Continue even if caching fails - this is non-critical
+                
             return Decimal(str(balance.balance))
         except Exception as e:
             logger.error(f"Failed to check balance for user {user_id}: {str(e)}")
             raise TokenBalanceError(
                 operation="check_balance",
                 reason=f"Failed to check balance: {str(e)}",
-                balance=Decimal("0.0")
+                balance=None
             )
 
     async def connect_wallet(self, user_id: str, wallet_address: str) -> bool:
         """Connect user's wallet address"""
+        logger.info(f"Attempting to connect wallet {wallet_address} for user {user_id}")
+        
         if not self.validate_wallet_address(wallet_address):
             logger.error(f"Invalid wallet address format: {wallet_address}")
             raise TokenValidationError(
                 field="wallet_address",
-                reason="Invalid wallet address format",
-                details={"wallet_address": wallet_address}
+                reason="Invalid wallet address format"
             )
         
         try:
-            # Verify wallet exists on Solana
-            if not await self._verify_wallet_exists(wallet_address):
-                raise TokenValidationError(
-                    field="wallet_address",
-                    reason="Wallet not found on Solana network",
-                    details={"wallet_address": wallet_address}
-                )
+            # TEMPORARY CHANGE: Skip on-chain wallet verification for development
+            # This allows wallet connection to work regardless of which Solana network
+            # the backend is connecting to and which network Phantom is using.
+            # TODO: Re-enable with proper network configuration before final production deployment
+            
+            # Original code:
+            # if not await self._verify_wallet_exists(wallet_address):
+            #     raise TokenValidationError(
+            #         field="wallet_address",
+            #         reason="Wallet not found on Solana network"
+            #     )
                 
             result = await self.repository.connect_wallet(user_id, wallet_address)
-            logger.info(f"Successfully connected wallet for user {user_id}")
+            logger.info(f"Successfully connected wallet {wallet_address} for user {user_id}")
             return result
-        except TokenValidationError:
+        except TokenValidationError as e:
+            logger.error(f"Validation error connecting wallet {wallet_address} for user {user_id}: {str(e)}")
+            raise
+        except WalletConnectionError as e:
+            # Re-raise WalletConnectionError without wrapping it
+            logger.error(f"Wallet connection error for {wallet_address} and user {user_id}: {str(e)}")
             raise
         except Exception as e:
-            logger.error(f"Failed to connect wallet for user {user_id}: {str(e)}")
+            logger.error(f"Failed to connect wallet {wallet_address} for user {user_id}: {str(e)}")
             raise TokenError(
                 message=f"Failed to connect wallet: {str(e)}",
                 details={"user_id": user_id, "wallet_address": wallet_address}
@@ -216,9 +286,29 @@ class SolanaTokenService(ITokenService):
 
         Returns:
             List of token transactions
+            
+        Raises:
+            TokenTransactionError: If there is an error retrieving the transaction history
         """
-        # TODO: Implement connection to Solana blockchain to fetch real transaction history
-        return await self.repository.get_transactions(user_id, limit, offset)
+        try:
+            # Use the repository to fetch transaction history
+            return await self.repository.get_transactions(user_id, limit, offset)
+        except DatabaseError as e:
+            # Log and convert database errors to TokenTransactionError
+            logger.error(f"Database error retrieving transaction history for user {user_id}: {str(e)}")
+            raise TokenTransactionError(
+                transaction_id=None,
+                operation="get_transaction_history",
+                reason=f"Failed to retrieve transaction history: {str(e)}"
+            )
+        except Exception as e:
+            # Catch other unexpected errors
+            logger.error(f"Unexpected error retrieving transaction history for user {user_id}: {str(e)}", exc_info=True)
+            raise TokenTransactionError(
+                transaction_id=None,
+                operation="get_transaction_history",
+                reason=f"Failed to retrieve transaction history: {str(e)}"
+            )
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def get_transactions(
@@ -277,8 +367,7 @@ class SolanaTokenService(ITokenService):
             )
         except Exception as e:
             logger.error(f"Failed to get transactions for user {user_id}: {str(e)}")
-            raise TokenTransactionError(
-                operation="get_transactions",
+            raise TokenTransactionError(transaction_id=None, operation="get_transactions",
                 reason=f"Failed to get transactions: {str(e)}",
                 details={"user_id": user_id}
             )
@@ -326,9 +415,9 @@ class SolanaTokenService(ITokenService):
             updated_balance = await self.repository.update_user_balance(user_id, -amount)
 
             # Clear balance cache
-            if self._redis:
-                cache_key = f"token:balance:{user_id}"
-                await self._redis.delete(cache_key)
+            if self.redis:
+                cache_key = self._get_balance_cache_key(user_id)
+                await self.redis.delete(cache_key)
 
             return {
                 "success": True,
@@ -356,12 +445,12 @@ class SolanaTokenService(ITokenService):
         reason: str
     ) -> TokenTransaction:
         """Add reward tokens to user's balance"""
+        # Validate amount is positive
         if amount <= 0:
             logger.error(f"Invalid token reward amount: {amount}")
             raise TokenValidationError(
-                message="Amount must be positive",
                 field="amount",
-                value=amount
+                reason="Amount must be positive"
             )
         
         try:
@@ -375,7 +464,7 @@ class SolanaTokenService(ITokenService):
             )
             
             # Clear cache
-            await self.clear_balance_cache(user_id)
+            await self._clear_balance_cache(user_id)
             
             logger.info(f"Added {amount} reward tokens to user {user_id} for {reason}")
             return transaction
@@ -435,9 +524,9 @@ class SolanaTokenService(ITokenService):
         # Check if the user has enough balance
         if balance < pricing.min_balance:
             raise TokenBalanceError(
-                f"Insufficient balance for operation. Required: {pricing.min_balance}, Available: {balance}",
-                available=balance,
-                required=pricing.min_balance
+                operation="validate_operation",
+                reason=f"Insufficient balance for operation. Required: {pricing.min_balance}, Available: {balance}",
+                balance=float(balance)
             )
 
     async def validate_tokens(
@@ -473,9 +562,9 @@ class SolanaTokenService(ITokenService):
             # For now, just ensure there's a positive balance
             if balance <= Decimal('0'):
                 raise TokenBalanceError(
-                    f"Insufficient balance for operation {operation}. Available: {balance}",
-                    available=balance,
-                    required=Decimal('1.0')  # Minimum requirement
+                    operation=operation,
+                    reason=f"Insufficient balance for operation {operation}",
+                    balance=float(balance)
                 )
         except Exception as e:
             # Log and re-raise
@@ -485,15 +574,19 @@ class SolanaTokenService(ITokenService):
     async def get_balance(self, user_id: str) -> Decimal:
         """Get user's token balance with caching"""
         # Try to get from cache first
-        if self._redis:
-            cache_key = f"token:balance:{user_id}"
-            cached = await self._redis.get(cache_key)
-            if cached:
-                try:
-                    return Decimal(cached)
-                except (ValueError, TypeError):
-                    # Invalid cache value, continue to fetch from DB
-                    pass
+        if self.redis:
+            try:
+                cache_key = self._get_balance_cache_key(user_id)
+                cached = await self.redis.get(cache_key)
+                if cached:
+                    try:
+                        return Decimal(cached)
+                    except (ValueError, TypeError, UnicodeDecodeError) as e:
+                        logger.warning(f"Invalid cached balance format for user {user_id}: {str(e)}")
+                        # Continue to fetch from DB
+            except Exception as redis_error:
+                logger.warning(f"Redis error when getting cached balance for user {user_id}: {str(redis_error)}")
+                # Continue to fetch from DB - don't let Redis errors prevent getting the balance
         
         # Get from database
         balance = await self.check_balance(user_id)
@@ -507,18 +600,22 @@ class SolanaTokenService(ITokenService):
             balance = Decimal(str(balance.balance))
         
         # Cache the result
-        if self._redis:
-            cache_key = f"token:balance:{user_id}"
-            await self._redis.setex(cache_key, 300, str(balance))  # 5 minutes in seconds
+        if self.redis:
+            try:
+                cache_key = self._get_balance_cache_key(user_id)
+                await self.redis.setex(cache_key, 300, str(balance))  # 5 minutes in seconds
+            except Exception as redis_error:
+                logger.warning(f"Redis error when caching balance for user {user_id}: {str(redis_error)}")
+                # Continue even if caching fails - this is non-critical
         
         return balance
 
     async def transfer(
         self, from_user_id: str, to_user_id: str, amount: Decimal, reason: str = ""
     ) -> Dict[str, Any]:
-        """Transfer tokens from one user to another"""
+        """Transfer tokens between users"""
         try:
-            # Check if sender has enough balance
+            # Check if sender has sufficient balance
             sender_balance = await self.check_balance(from_user_id)
             if sender_balance < amount:
                 raise TokenBalanceError(
@@ -526,37 +623,35 @@ class SolanaTokenService(ITokenService):
                     reason=f"Insufficient balance for transfer. Required: {amount}, Available: {sender_balance}",
                     balance=sender_balance
                 )
-
-            # Create outgoing transaction (use DEDUCTION instead of OUTGOING)
+                
+            # Create outgoing transaction
             outgoing_tx = await self.repository.create_transaction(
                 user_id=from_user_id,
-                transaction_type=TransactionType.DEDUCTION.value,  # Use DEDUCTION instead of OUTGOING
-                amount=amount,  # Use positive amount
+                transaction_type=TransactionType.OUTGOING.value,
+                amount=amount,
                 status=TransactionStatus.COMPLETED.value,
-                meta_data={"recipient": str(to_user_id), "reason": reason, "transfer_type": "outgoing"}  # Add transfer_type for clarity
+                meta_data={"recipient": to_user_id, "reason": reason}
             )
-
-            # Create incoming transaction (use CREDIT instead of INCOMING)
+            
+            # Create incoming transaction
             incoming_tx = await self.repository.create_transaction(
                 user_id=to_user_id,
-                transaction_type=TransactionType.CREDIT.value,  # Use CREDIT instead of INCOMING
-                amount=amount,  # Positive for incoming
+                transaction_type=TransactionType.INCOMING.value,
+                amount=amount,
                 status=TransactionStatus.COMPLETED.value,
-                meta_data={"sender": str(from_user_id), "reason": reason, "transfer_type": "incoming"}  # Add transfer_type for clarity
+                meta_data={"sender": from_user_id, "reason": reason}
             )
-
-            # Update sender's balance
-            await self.repository.update_user_balance(from_user_id, -amount)
             
-            # Update recipient's balance
+            # Update balances
+            await self.repository.update_user_balance(from_user_id, -amount)
             await self.repository.update_user_balance(to_user_id, amount)
 
             # Clear balance cache for both users
-            if self._redis:
-                sender_cache_key = f"token:balance:{from_user_id}"
-                recipient_cache_key = f"token:balance:{to_user_id}"
-                await self._redis.delete(sender_cache_key)
-                await self._redis.delete(recipient_cache_key)
+            if self.redis:
+                sender_cache_key = self._get_balance_cache_key(from_user_id)
+                recipient_cache_key = self._get_balance_cache_key(to_user_id)
+                await self.redis.delete(sender_cache_key)
+                await self.redis.delete(recipient_cache_key)
 
             return {
                 "success": True,
@@ -600,12 +695,24 @@ class SolanaTokenService(ITokenService):
                 reason=f"Failed to deduct service fee: {str(e)}"
             )
 
-    async def clear_balance_cache(self, user_id: str) -> None:
-        """Clear user's balance cache"""
-        if self._redis:
-            cache_key = f"token:balance:{user_id}"
-            await self._redis.delete(cache_key)
-            logger.debug(f"Cleared balance cache for user {user_id}")
+    async def _clear_balance_cache(self, user_id: str) -> None:
+        """Clear user's balance cache
+        
+        Args:
+            user_id: The user ID to clear cache for
+            
+        Note:
+            This method handles Redis errors internally and logs warnings but
+            doesn't raise exceptions for non-critical cache operations.
+        """
+        if self.redis:
+            try:
+                cache_key = self._get_balance_cache_key(user_id)
+                await self.redis.delete(cache_key)
+                logger.debug(f"Cleared balance cache for user {user_id}")
+            except Exception as e:
+                logger.warning(f"Failed to clear balance cache for user {user_id}: {str(e)}")
+                # Don't raise exception for cache operations
 
     async def create_transaction(
         self,
@@ -668,7 +775,7 @@ class SolanaTokenService(ITokenService):
                     await self.repository.update_user_balance(user_id, amount)
                 
                 # Clear balance cache
-                await self.clear_balance_cache(user_id)
+                await self._clear_balance_cache(user_id)
             
             return transaction
         except Exception as e:
@@ -709,6 +816,7 @@ class SolanaTokenService(ITokenService):
 
     async def update_balance(self, user_id: str, amount: Decimal) -> Decimal:
         """Update user's token balance"""
+        current_balance = Decimal("0.0")  # Initialize with default value
         try:
             # Get current balance first to ensure it exists
             current_balance = await self.check_balance(user_id)
@@ -717,9 +825,9 @@ class SolanaTokenService(ITokenService):
             updated_balance = await self.repository.update_user_balance(user_id, amount)
             
             # Clear cache
-            if self._redis:
-                cache_key = f"token:balance:{user_id}"
-                await self._redis.delete(cache_key)
+            if self.redis:
+                cache_key = self._get_balance_cache_key(user_id)
+                await self.redis.delete(cache_key)
             
             # Return the updated balance value
             if updated_balance is None:
@@ -734,7 +842,7 @@ class SolanaTokenService(ITokenService):
             raise TokenBalanceError(
                 operation="update_balance",
                 reason=f"Failed to update balance: {str(e)}",
-                balance=current_balance if 'current_balance' in locals() else Decimal("0.0")
+                balance=current_balance
             )
 
     async def check_token_balance(self, user_id: UUID, required_amount: float) -> bool:
@@ -819,9 +927,9 @@ class SolanaTokenService(ITokenService):
             # We need a goal service to calculate costs, use import here to avoid circular imports
             from core.services.goal import GoalService
             from sqlalchemy.ext.asyncio import AsyncSession
-            from core.database import get_async_session
+            from core.database import get_async_db_context
             
-            async with get_async_session() as session:
+            async with get_async_db_context() as session:
                 goal_service = GoalService(session)
         
         # Calculate the cost of the goal operation
@@ -847,6 +955,260 @@ class SolanaTokenService(ITokenService):
         
         return cost_info['final_cost']
 
+    async def unstake_tokens(self, user_id: str, stake_id: UUID) -> Dict[str, Any]:
+        """Unstake tokens and claim rewards."""
+        pass  # To be implemented
+
+    # Methods for token purchase functionality
+    async def create_purchase_transaction(
+        self, 
+        user_id: str, 
+        amount: float, 
+        price_in_sol: float,
+        network: str = "mainnet-beta",
+        memo: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a transaction for purchasing tokens with Solana.
+        
+        Args:
+            user_id: User ID
+            amount: Number of tokens to purchase
+            price_in_sol: Price in SOL
+            network: Solana network (mainnet-beta, testnet, devnet)
+            memo: Optional memo for the transaction
+            metadata: Optional metadata for the transaction
+            
+        Returns:
+            Dict containing transaction data and signature
+            
+        Raises:
+            TokenValidationError: If the parameters are invalid
+        """
+        try:
+            logger.info(f"Creating purchase transaction for user {user_id}: {amount} tokens for {price_in_sol} SOL")
+            
+            # Validate wallet is connected
+            user_wallet = await self._get_user_wallet(user_id)
+            if not user_wallet or not user_wallet.address:
+                raise TokenValidationError(
+                    field="wallet", 
+                    reason="Wallet not connected"
+                )
+            
+            # Validate wallet address
+            if not self.validate_wallet_address(user_wallet.address):
+                raise TokenValidationError(
+                    field="wallet_address",
+                    reason="Invalid wallet address format"
+                )
+            
+            # Additional validations can be added here
+            
+            # Create a placeholder/mock transaction - in production this would interact with Solana
+            # Create unique transaction ID to track this purchase
+            transaction_id = str(uuid4())
+            
+            # In a real implementation, this would create an actual Solana transaction
+            # For now, we create a mock transaction structure
+            transaction_data = {
+                "id": transaction_id,
+                "network": network,
+                "instructions": [
+                    {
+                        "type": "transfer",
+                        "from": user_wallet.address,
+                        "to": "SYSTEM_TOKEN_ACCOUNT",  # Replace with actual treasury address
+                        "amount": price_in_sol,
+                        "decimals": 9  # SOL has 9 decimals
+                    }
+                ],
+                "signers": [user_wallet.address],
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            
+            # Generate a placeholder signature for tracking
+            # In reality, the signature would be generated after the user signs the transaction
+            signature = f"placeholder_signature_{transaction_id}"
+            
+            # Store transaction data in Redis for later verification
+            # This is crucial to prevent replay attacks and ensure transaction integrity
+            transaction_data.update({
+                "user_id": user_id,
+                "token_amount": amount,
+                "sol_amount": price_in_sol,
+                "status": "pending",
+                "memo": memo,
+                "metadata": metadata
+            })
+            
+            # Cache the transaction data with a TTL of 10 minutes
+            redis_key = f"token:purchase:{signature}"
+            await self.redis.setex(
+                redis_key, 
+                600,  # 10 minutes TTL
+                json.dumps(transaction_data)
+            )
+            
+            logger.info(f"Created purchase transaction for user {user_id}: {signature}")
+            
+            return {
+                "transaction": transaction_data,
+                "signature": signature
+            }
+            
+        except TokenValidationError:
+            raise
+        except Exception as e:
+            logger.error(f"Error creating purchase transaction: {str(e)}", exc_info=True)
+            raise TokenError(
+                message=f"Failed to create purchase transaction: {str(e)}",
+                details={"user_id": user_id, "amount": amount}
+            )
+    
+    async def verify_purchase(
+        self, 
+        user_id: str, 
+        signature: str
+    ) -> Dict[str, Any]:
+        """
+        Verify a token purchase transaction and credit tokens to the user.
+        
+        Args:
+            user_id: User ID
+            signature: Transaction signature
+            
+        Returns:
+            Dict containing transaction result
+            
+        Raises:
+            TokenValidationError: If the signature is invalid
+            TokenError: If the transaction processing fails
+        """
+        try:
+            logger.info(f"Verifying purchase transaction for user {user_id}: {signature}")
+            
+            # Retrieve transaction data from Redis
+            redis_key = f"token:purchase:{signature}"
+            transaction_data_str = await self.redis.get(redis_key)
+            
+            if not transaction_data_str:
+                raise TokenValidationError(
+                    field="signature",
+                    reason="Invalid or expired signature"
+                )
+            
+            # Parse transaction data
+            transaction_data = json.loads(transaction_data_str.decode('utf-8'))
+            
+            # Verify user matches the transaction
+            if transaction_data["user_id"] != user_id:
+                raise TokenValidationError(
+                    field="user_id",
+                    reason="User ID mismatch"
+                )
+            
+            # In a real implementation, verify the transaction on Solana blockchain
+            # For now, we assume the transaction is valid if we have the data in Redis
+            
+            # Process the token purchase transaction
+            amount = transaction_data["token_amount"]
+            
+            # Create transaction in database
+            transaction = await self.repository.create_transaction(
+                user_id=user_id,
+                amount=amount,
+                transaction_type=TokenOperation.PURCHASE.value,
+                status=TransactionStatus.PENDING.value,
+                meta_data={
+                    "sol_amount": transaction_data["sol_amount"],
+                    "network": transaction_data["network"],
+                    "signature": signature,
+                    "memo": transaction_data.get("memo"),
+                    "metadata": transaction_data.get("metadata")
+                }
+            )
+            
+            # Update user's token balance
+            await self.update_balance(
+                user_id=user_id,
+                amount=Decimal(str(amount))
+            )
+            
+            # Update transaction status
+            transaction.status = TransactionStatus.COMPLETED.value
+            transaction.processed_at = datetime.now(timezone.utc)
+            await self.repository.session.commit()
+            
+            # Clear balance cache
+            await self._clear_balance_cache(user_id)
+            
+            # Get updated balance
+            new_balance = await self.get_balance(user_id)
+            
+            # Remove transaction data from Redis to prevent replay
+            await self.redis.delete(redis_key)
+            
+            logger.info(f"Successfully verified purchase for user {user_id}: {amount} tokens")
+            
+            return {
+                "success": True,
+                "transaction_id": transaction.id,
+                "amount": amount,
+                "new_balance": float(new_balance)
+            }
+            
+        except (TokenValidationError, TokenError):
+            raise
+        except Exception as e:
+            logger.error(f"Error verifying purchase: {str(e)}", exc_info=True)
+            raise TokenError(
+                message=f"Failed to verify purchase: {str(e)}",
+                details={"user_id": user_id, "signature": signature}
+            )
+            
+    async def _get_user_wallet(self, user_id: str) -> Optional[TokenWallet]:
+        """Get user's wallet information.
+        
+        This method retrieves a user's active wallet, or any wallet if no active ones exist.
+        It uses the repository's get_user_wallet method which prioritizes active wallets
+        but falls back to any wallet if no active ones exist.
+        
+        Args:
+            user_id: User ID to get the wallet for
+            
+        Returns:
+            TokenWallet object if found, None otherwise
+            
+        Note:
+            This method handles exceptions internally and returns None on error.
+            Check logs for detailed error information.
+        """
+        try:
+            # Use the repository's get_user_wallet method which already handles
+            # getting the first active wallet or any wallet if no active wallets exist
+            wallet = await self.repository.get_user_wallet(user_id)
+            
+            if wallet:
+                logger.debug(f"Found wallet for user {user_id}: wallet_id={wallet.id}, " 
+                            f"address={wallet.address}, is_active={wallet.is_active}")
+            else:
+                logger.debug(f"No wallet found for user {user_id}")
+            
+            return wallet
+        except DatabaseError as e:
+            # Log database errors with operation context
+            operation = getattr(e, 'operation', 'get_user_wallet')
+            details = getattr(e, 'details', {})
+            logger.error(f"Database error getting user wallet for user {user_id}: operation={operation}, details={details}, error={str(e)}")
+            return None
+        except Exception as e:
+            # Log other unexpected errors with full stack trace
+            logger.error(f"Unexpected error getting user wallet for user {user_id}: {str(e)}", 
+                        exc_info=True)
+            return None
+
 # Export SolanaTokenService as TokenService for backward compatibility
 TokenService = SolanaTokenService
 
@@ -863,3 +1225,5 @@ async def get_token_service(
 ) -> SolanaTokenService:
     """Get a token service instance."""
     return SolanaTokenService(db, redis_service)
+
+

@@ -10,6 +10,7 @@ import datetime
 
 from core.config import settings
 from core.services.email.backends.console import ConsoleEmailBackend
+from core.services.email.backends.ses import SESEmailBackend
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,16 @@ class EmailService:
     """Service for sending emails"""
 
     def __init__(self):
-        self.backend = ConsoleEmailBackend() if settings.EMAIL_BACKEND == "core.services.email.backends.console.ConsoleEmailBackend" else None
+        # Determine which backend to use based on settings
+        if settings.EMAIL_BACKEND == "ses":
+            self.backend = SESEmailBackend()
+            logger.info("Initialized EmailService with AWS SES backend")
+        elif settings.EMAIL_BACKEND == "core.services.email.backends.console.ConsoleEmailBackend":
+            self.backend = ConsoleEmailBackend()
+            logger.info("Initialized EmailService with Console backend")
+        else:
+            self.backend = None
+            logger.info("Initialized EmailService with default SMTP backend")
 
     async def send_email(
         self,
@@ -42,7 +52,7 @@ class EmailService:
             if env is None:
                 raise ValueError("Email templates not initialized")
 
-            # If using console backend
+            # If using a backend
             if self.backend is not None:
                 return await self.backend.send_email(
                     to_email=to_email,

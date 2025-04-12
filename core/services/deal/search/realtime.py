@@ -13,6 +13,7 @@ import hashlib
 from typing import List, Dict, Any, Optional, Union
 from uuid import UUID, uuid4
 from decimal import Decimal
+from datetime import datetime
 
 from sqlalchemy import select, or_, cast, String
 
@@ -110,11 +111,7 @@ async def perform_realtime_scraping(
         market_query_task = asyncio.create_task(
             self.db.execute(
                 select(Market).where(
-                    Market.is_active == True,
-                    or_(
-                        Market._status == MarketStatus.ACTIVE.value.lower(),
-                        cast(Market._status, String).ilike('active')
-                    )
+                    Market.is_active == True
                 )
             )
         )
@@ -165,16 +162,32 @@ async def perform_realtime_scraping(
         logger.info(f"Found {len(markets)} active markets for real-time scraping")
         
         # Process markets and prepare for search
-        market_factory = MarketIntegrationFactory()
+        market_factory = MarketIntegrationFactory(scraper_type="oxylabs", db=self.db)
         
-        for market in markets:
-            try:
-                market_id = market.id
-                market_name = market.name
-                market_type = market.type.lower() if hasattr(market, 'type') else "unknown"
-                search_markets.append((market_name, market_type, market_id))
-            except Exception as e:
-                logger.error(f"Error processing market {market.name}: {str(e)}")
+        # Get Redis client - try to use the one from the service if available
+        if not hasattr(self, "redis_client") or self.redis_client is None:
+            # If the service has a _redis attribute, use that
+            if hasattr(self, "_redis") and self._redis is not None:
+                redis_client = self._redis
+            else:
+                # Otherwise, use the one we got earlier
+                redis_client = await redis_client_task
+        else:
+            redis_client = self.redis_client
+        
+        # Process markets from database
+        search_markets = []
+        if not markets:
+            logger.warning("No markets found in database for Oxylabs integration. Only using markets from database.")
+        else:
+            for market in markets:
+                try:
+                    market_id = market.id
+                    market_name = market.name
+                    market_type = market.type.lower() if hasattr(market, 'type') else "unknown"
+                    search_markets.append((market_name, market_type, market_id))
+                except Exception as e:
+                    logger.error(f"Error processing market {market.name}: {str(e)}")
         
         # Get optimized queries for all markets in a single AI request
         market_types = [market_type for _, market_type, _ in search_markets]
@@ -191,101 +204,170 @@ async def perform_realtime_scraping(
         async def process_market_search(market_info):
             market_name, market_type, market_id = market_info
             
-            # Set a shorter timeout based on market type to ensure we meet our time budget
-            market_timeout = 20.0  # Default timeout: 20 seconds (increased from 10)
-            if market_type.lower() == 'google_shopping':
-                market_timeout = 30.0  # Google Shopping gets more time (increased from 15)
+            # Set a timeout based on market type
+            timeout = 25.0  # Default timeout: 25 seconds
             
-            logger.info(f"Starting search for {market_name} with timeout of {market_timeout} seconds")
+            # Adaptive timeouts based on market type
+            if market_type.lower() == 'google_shopping':
+                timeout = 60.0  # Google Shopping needs more time
+            elif market_type.lower() == 'amazon':
+                timeout = 20.0  # Amazon timeout
+            elif market_type.lower() == 'walmart':
+                timeout = 25.0  # Walmart timeout
+            
+            # Create a cache key specific to this market
+            market_cache_key = f"{cache_key}:{market_type.lower()}"
+            cached_results = None
             
             try:
-                # Get the optimized query for this marketplace from the batch results
-                # or format it individually if the batch formatting failed
-                if market_type in optimized_queries:
-                    optimization_result = optimized_queries[market_type]
-                    optimized_query = optimization_result['formatted_query']
-                    parameters = optimization_result['parameters']
-                else:
-                    # Fallback to individual formatting if batch formatting failed
+                # Try to get cached results first
+                if redis_client:
                     try:
-                        optimization_result = await get_optimized_query_for_marketplace(
-                            query, market_type, ai_service
-                        )
-                        optimized_query = optimization_result['formatted_query']
-                        parameters = optimization_result['parameters']
+                        cached_data = await redis_client.get(market_cache_key)
+                        if cached_data:
+                            cached_results = json.loads(cached_data)
+                            logger.info(f"Using cached results for {market_type}")
                     except Exception as e:
-                        logger.error(f"Error optimizing query for {market_name}: {str(e)}. Using original query.")
-                        optimized_query = query
-                        parameters = {}
+                        # Don't attempt to reconnect to localhost if the redis_client fails
+                        logger.warning(f"Error accessing Redis cache for {market_type}: {str(e)}")
                 
-                logger.info(
-                    f"Optimized query for {market_name}: '{query}' -> '{optimized_query}'"
-                )
-                
-                # Use the _search_products method with appropriate timeout based on market type
-                logger.debug(f"Initiating search for {market_name} with query: '{optimized_query}'")
-                search_task = market_factory.search_products(
-                    market=market_type,
-                    query=optimized_query,
-                    limit=15  # Limit results to avoid excessive processing
-                )
-                
-                # Apply timeout at this level
-                products = await asyncio.wait_for(search_task, timeout=market_timeout)
-                
-                # Check if we got valid products
-                if products and isinstance(products, list):
-                    logger.info(f"Found {len(products)} raw products from {market_name}")
-                    
-                    # Apply post-scraping filtering
-                    logger.debug(f"Applying post-scraping filters for {market_name} products")
-                    filtered_products = post_process_products(
-                        products=products,
-                        query=query,
-                        min_price=min_price,
-                        max_price=max_price,
-                        brands=brands
+                if cached_results:
+                    # Process cached results
+                    return process_products_from_results(
+                        cached_results, 
+                        market_type, 
+                        market_id,
+                        market_name
                     )
                     
-                    logger.info(
-                        f"Post-filtering: {len(products)} -> {len(filtered_products)} products from {market_name}"
-                    )
-                    
-                    # Add market info to products
-                    for product in filtered_products:
-                        if isinstance(product, dict):
-                            product['market'] = market_type
-                            product['market_id'] = str(market_id)
-                            product['market_name'] = market_name
-                            
-                            # Save relevance score for later sorting
-                            product_id = product.get('id', str(uuid4()))
-                            product['_id'] = product_id
-                            relevance_score = product.get('_relevance_score', 0.0)
-                            product_scores[product_id] = relevance_score
-                    
-                    return filtered_products
-                else:
-                    logger.warning(f"No valid products returned from {market_name} or products not in expected format")
-                    if products:
-                        logger.debug(f"Received data type: {type(products)}")
+                # If not cached, perform actual search
+                logger.info(f"Starting search for {market_name} with timeout of {timeout} seconds")
+                
+                # Format query for this specific market if needed
+                formatted_query = query
+                if market_type.lower() in optimized_queries:
+                    formatted_query = optimized_queries[market_type.lower()].get("formatted_query", query)
+                    logger.info(f"Optimized query for {market_name}: '{query}' -> '{formatted_query}'")
+                
+                # Create search params with country/geo_location
+                search_params = {
+                    "limit": max_products,
+                    "geo_location": "US"  # Default location (uppercase for Amazon compatibility)
+                }
+                
+                # Make the search request through the market factory
+                try:
+                    async with asyncio.timeout(timeout):
+                        # Search for products in the specified market
+                        result = await market_factory.search_products(
+                            market=market_type.lower(),
+                            query=formatted_query,
+                            **search_params
+                        )
+                        
+                        # Cache the result if successful
+                        if result and not isinstance(result, list) and "error" not in result:
+                            try:
+                                if redis_client:
+                                    import json  # Import json in this scope
+                                    await redis_client.setex(
+                                        market_cache_key,
+                                        600,  # 10 minutes TTL
+                                        json.dumps(result)
+                                    )
+                            except Exception as e:
+                                logger.warning(f"Failed to cache {market_type} results: {str(e)}")
+                except asyncio.TimeoutError:
+                    logger.warning(f"Search for {market_type} timed out after {timeout} seconds")
                     return []
-                    
-            except asyncio.TimeoutError:
-                logger.warning(f"Search for {market_name} timed out after {market_timeout} seconds")
-                return []
+                except Exception as e:
+                    logger.error(f"Error searching {market_type}: {str(e)}")
+                    return []
+                
+                logger.info(f"Search for {market_name} completed in {time.time() - start_time:.2f} seconds")
+                
+                # Process the results and create deals
+                return process_products_from_results(
+                    result, 
+                    market_type, 
+                    market_id,
+                    market_name
+                )
+                
             except Exception as e:
-                logger.error(f"Error searching {market_name}: {str(e)}", exc_info=True)
+                logger.error(f"Error processing market search for {market_type}: {str(e)}")
                 return []
+                
+        def process_products_from_results(products, market_type, market_id, market_name):
+            # Check if we got valid products
+            if not products:
+                logger.warning(f"No products returned from {market_type}")
+                return []
+                
+            # Extract products list from various result structures
+            products_list = []
+            
+            if isinstance(products, dict):
+                # Try different paths for extracting products
+                if "results" in products:
+                    products_list = products["results"]
+                elif "content" in products and isinstance(products["content"], dict):
+                    if "products" in products["content"]:
+                        products_list = products["content"]["products"]
+                    elif "organic" in products["content"]:
+                        products_list = products["content"]["organic"]
+                    elif "shopping_results" in products["content"]:
+                        products_list = products["content"]["shopping_results"]
+            elif isinstance(products, list):
+                # The result itself is a list of products
+                products_list = products
+                
+            # Log number of products found
+            logger.info(f"Found {len(products_list)} raw products from {market_name}")
+            
+            # Apply post-scraping filters
+            logger.debug(f"Applying post-scraping filters for {market_name} products")
+            filtered_products = post_process_products(
+                products=products_list,
+                query=query,
+                min_price=min_price,
+                max_price=max_price,
+                brands=brands
+            )
+            
+            logger.info(f"Post-filtering: {len(products_list)} -> {len(filtered_products)} products from {market_name}")
+            
+            # Add search query and market data to products
+            for product in filtered_products:
+                product["search_query"] = query
+                product["source"] = market_type.lower()
+                product["market_type"] = market_type
+                product["market_id"] = str(market_id)
+                product["market_name"] = market_name
+                
+            # Filter out products with zero or negative prices
+            valid_products = [p for p in filtered_products if 
+                             "price" in p and 
+                             p["price"] is not None and 
+                             (isinstance(p["price"], (int, float, Decimal)) and float(p["price"]) > 0)]
+            
+            if len(valid_products) < len(filtered_products):
+                logger.warning(f"Filtered out {len(filtered_products) - len(valid_products)} products with invalid prices from {market_name}")
+            
+            # Return the valid products for later processing instead of creating deals here
+            return valid_products
         
         # Execute all market searches in true parallel, with a global timeout
         overall_search_timeout = 45.0  # Increased from 15.0 seconds to 45.0 seconds
         
         logger.info(f"Starting parallel market searches with {len(search_markets)} markets and global timeout of {overall_search_timeout} seconds")
         
+        # Collect all products from all markets
+        all_valid_products = []
+        
         try:
             # Execute all market searches in parallel with a global timeout
-            task_results = await asyncio.wait_for(
+            products_by_market = await asyncio.wait_for(
                 asyncio.gather(
                     *[process_market_search(market_info) for market_info in search_markets],
                     return_exceptions=False  # We handle exceptions in the process_market_search function
@@ -293,122 +375,48 @@ async def perform_realtime_scraping(
                 timeout=overall_search_timeout
             )
             
-            # Combine results from all tasks
-            for product_list in task_results:
-                if product_list:  # Skip empty lists
-                    all_filtered_products.extend(product_list)
+            # Combine products from all markets
+            for market_products in products_by_market:
+                if market_products:  # Skip empty lists
+                    all_valid_products.extend(market_products)
             
             logger.info(f"All market searches completed successfully within {overall_search_timeout} seconds")
                     
         except asyncio.TimeoutError:
             logger.warning(f"Global market search timeout after {overall_search_timeout} seconds - using partial results")
         
-        logger.info(f"Collected a total of {len(all_filtered_products)} filtered products from all markets")
+        logger.info(f"Collected a total of {len(all_valid_products)} valid products from all markets")
         
-        # Sort by relevance score (already calculated during filtering)
-        all_filtered_products.sort(
-            key=lambda p: product_scores.get(p.get('_id', ''), 0.0),
-            reverse=True
-        )
+        # Sort by relevance score (if available)
+        if hasattr(self, 'compute_relevance_score'):
+            for product in all_valid_products:
+                product['_relevance_score'] = self.compute_relevance_score(product, query)
+            
+            all_valid_products.sort(key=lambda p: p.get('_relevance_score', 0.0), reverse=True)
         
         # Limit to max_products
-        all_filtered_products = all_filtered_products[:max_products]
+        all_valid_products = all_valid_products[:max_products]
         
-        # Create deals from products
-        for product in all_filtered_products:
+        # Now create deals from the products
+        created_deals = []
+        for product in all_valid_products:
             try:
-                # Extract deal data
-                # Determine the source based on market information
-                source = "scraper"  # Default fallback
-                
-                # Try to extract market type from URL
-                market_url = product.get("url", "")
-                if "amazon" in market_url.lower():
-                    source = "amazon"
-                elif "walmart" in market_url.lower():
-                    source = "walmart"
-                elif "ebay" in market_url.lower():
-                    source = "ebay"
-                elif "target" in market_url.lower():
-                    source = "target"
-                elif "bestbuy" in market_url.lower():
-                    source = "bestbuy"
-                elif "google" in market_url.lower():
-                    source = "google_shopping"  # Use underscore format instead of space
-                
-                # If market_id is available, query the database to get the market name
-                market_id = product.get("market_id")
-                if market_id and hasattr(self, "db"):
-                    try:
-                        from sqlalchemy import select
-                        from core.models.market import Market
-                        
-                        # Get market by ID
-                        market_query = select(Market).where(Market.id == market_id)
-                        market_result = await self.db.execute(market_query)
-                        market = market_result.scalar_one_or_none()
-                        
-                        if market:
-                            # Use market name in lowercase as source
-                            source = market.name.lower()
-                            # Ensure Google Shopping uses correct format
-                            if source == "google shopping":
-                                source = "google_shopping"
-                            logger.info(f"Using market name '{source}' as deal source")
-                    except Exception as market_error:
-                        logger.warning(f"Error getting market name: {str(market_error)}")
-                
-                # Create deal_metadata
-                deal_metadata = {
-                    "search_query": query
-                }
-                
-                # Add an external_id if the product has an ID
-                product_id = product.get("id")
-                if product_id and isinstance(product_id, str) and product_id.strip():
-                    deal_metadata["external_id"] = product_id
+                logger.debug(f"Creating deal from product: {product.get('title', 'Unknown')[:30]}...")
+                deal = await self._create_deal_from_scraped_data(product)
+                if deal:
+                    created_deals.append(deal)
                 else:
-                    deal_metadata["external_id"] = str(uuid4())
-                
-                # Add any other metadata from the product
-                product_metadata = product.get("metadata", {})
-                if product_metadata and isinstance(product_metadata, dict):
-                    deal_metadata.update(product_metadata)
-                
-                deal_data = {
-                    "title": product.get("title", ""),
-                    "description": product.get("description", ""),
-                    "price": float(product.get("price", 0)),
-                    "market_id": product.get("market_id"),
-                    "url": product.get("url", ""),
-                    "image_url": product.get("image", "") or product.get("image_url", ""),
-                    "category": category or "other",
-                    "status": "active",
-                    "source": source,  # Use the market name in lowercase instead of hardcoded "scraper"
-                    "user_id": user_id,  # Add user_id to deal_data
-                    "deal_metadata": deal_metadata
-                }
-                
-                # Create the deal
-                try:
-                    from core.services.deal.search.deal_creation import create_deal_from_dict
-                    
-                    deal_create = await self.create_deal_from_dict(deal_data)
-                    if deal_create:
-                        created_deals.append(deal_create)
-                except Exception as e:
-                    logger.error(f"Failed to create deal from product: {str(e)}")
-                    continue
+                    logger.warning(f"Failed to create deal from product: {product.get('title', 'Unknown')[:30]}...")
             except Exception as e:
-                logger.error(f"Error processing product: {str(e)}")
-                continue
-                
-        logger.info(f"Created {len(created_deals)} deals from scraped products")
+                logger.error(f"Failed to create deal from product: {str(e)}")
+
+        logger.info(f"Created {len(created_deals)} deals from {len(all_valid_products)} valid products")
         
         # Cache the results for future searches
         if redis_client and created_deals:
             try:
                 # Serialize the deals
+                import json  # Import json in this scope
                 serialized_deals = []
                 for deal in created_deals:
                     deal_dict = {
@@ -429,7 +437,7 @@ async def perform_realtime_scraping(
                 logger.info(f"Cached {len(serialized_deals)} deals for key {cache_key}")
             except Exception as e:
                 logger.error(f"Error caching search results: {str(e)}")
-        
+                
         return created_deals
         
     except Exception as e:
@@ -470,35 +478,96 @@ async def search_products(
         
         # Set different timeouts based on market type
         timeout = 30.0  # Default timeout (increased from 20.0)
+        
+        # Check if we have a cache hit
+        cache_key = f"{market_type.lower()}_search:{query}"
+        use_cache = kwargs.pop('use_cache', True)
+        
+        # Get the redis client - try to use the one from the service if available
+        redis_client = None
+        if hasattr(self, "_redis") and self._redis is not None:
+            redis_client = self._redis
+        elif hasattr(self, "redis_client") and self.redis_client is not None:
+            redis_client = self.redis_client
+        
+        # Try to get results from cache first
+        if use_cache and redis_client:
+            try:
+                cached_data = await redis_client.get(cache_key)
+                if cached_data:
+                    try:
+                        cached_products = json.loads(cached_data)
+                        logger.info(f"Cache hit for {market_type} search: '{query}'")
+                        return cached_products
+                    except json.JSONDecodeError:
+                        logger.warning(f"Invalid JSON in cache for {market_type}: {cache_key}")
+            except Exception as e:
+                logger.warning(f"Error checking cache for {market_type}: {str(e)}")
+        
+        # Set adaptive timeouts
         if market_type.lower() == 'google_shopping':
-            timeout = 60.0  # Extended timeout for Google Shopping to match ScraperAPI setting
+            timeout = 60.0  # Google Shopping needs more time (increased from 40.0)
+        elif market_type.lower() == 'amazon':
+            timeout = 20.0  # Amazon is usually faster
         
-        # Create async task for search
-        task = search_provider(
-            query=query,
-            limit=limit,
-            **kwargs
-        )
+        logger.info(f"Starting search for {market_type} with timeout {timeout}s")
         
-        logger.debug(f"Created search task for {market_type} with timeout {timeout} seconds")
-        
-        # Call the search provider with a timeout
         try:
-            products = await asyncio.wait_for(task, timeout=timeout)
-            
-            if products:
-                logger.info(f"Successfully retrieved {len(products) if isinstance(products, list) else 'unknown'} products from {market_type}")
-            else:
-                logger.warning(f"No products found for '{query}' in {market_type}")
-            
-            return products
+            # Run the search with a timeout
+            async with asyncio.timeout(timeout):
+                try:
+                    # Execute the search
+                    # If we have a max_results param, use it for limit
+                    search_kwargs = kwargs.copy()
+                    if 'max_results' in search_kwargs:
+                        search_kwargs['limit'] = search_kwargs.pop('max_results')
+                    
+                    # Ensure limit is set if not already
+                    if 'limit' not in search_kwargs:
+                        search_kwargs['limit'] = limit
+                    
+                    # Make the search request
+                    products = await search_provider(query, **search_kwargs)
+                    
+                    # Cache the results if successful
+                    if products and use_cache and redis_client:
+                        try:
+                            # Use a reasonable cache TTL based on market
+                            cache_ttl = 3600  # Default: 1 hour
+                            if market_type.lower() == 'amazon':
+                                cache_ttl = 1800  # 30 minutes for Amazon
+                            await redis_client.set(cache_key, json.dumps(products), ex=cache_ttl)
+                            logger.info(f"Cached {market_type} search results with TTL {cache_ttl}s")
+                        except Exception as e:
+                            logger.warning(f"Error caching {market_type} search results: {str(e)}")
+                    
+                    return products
+                except Exception as e:
+                    logger.error(f"Error in {market_type} search: {str(e)}", exc_info=True)
+                    return None
         except asyncio.TimeoutError:
             logger.warning(f"Search for {market_type} timed out after {timeout} seconds")
-            return None
-        except Exception as e:
-            logger.error(f"Error searching {market_type}: {str(e)}", exc_info=True)
+            
+            # Try to use stale cache data if available
+            stale_cache_key = f"{market_type.lower()}_search:{query}"
+            if redis_client:
+                try:
+                    stale_data = await redis_client.get(stale_cache_key)
+                    if stale_data:
+                        try:
+                            stale_products = json.loads(stale_data)
+                            logger.info(f"Using stale cached data for {market_type} after timeout")
+                            return stale_products
+                        except json.JSONDecodeError:
+                            logger.warning(f"Invalid JSON in stale cache for {market_type}")
+                except Exception as e:
+                    logger.warning(f"Error checking stale cache for {market_type}: {str(e)}")
+            
+            # Skip the results for this market as requested
+            logger.info(f"Skipping {market_type} results for query: {query} due to timeout")
             return None
             
     except Exception as e:
-        logger.error(f"Error in search_products for {market_type}: {str(e)}", exc_info=True)
+        logger.error(f"Error searching {market_type}: {str(e)}", exc_info=True)
+        logger.info(f"Skipping {market_type} results for query: {query} due to error")
         return None 

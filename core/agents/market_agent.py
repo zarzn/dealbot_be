@@ -2,7 +2,6 @@ from typing import List, Dict, Any, Optional
 from core.models.deal import Deal
 from core.models.enums import MarketCategory
 from core.services.market_search import MarketSearchService
-from core.integrations.scraper_api import ScraperAPIService
 from core.agents.base.base_agent import BaseAgent
 from core.agents.config.agent_config import AgentConfig
 from core.repositories.market import MarketRepository

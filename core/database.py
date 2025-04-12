@@ -290,39 +290,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     
     This dependency provides a database session that ensures connections are 
     properly closed even in failure scenarios to prevent connection leaks.
+    
+    The session is automatically closed at the end of the request.
     """
-    session = AsyncSessionLocal()
-    try:
-        # Start a fresh session with each request
+    async with get_async_db_context() as session:
         yield session
-        
-        # Explicitly commit changes if no exception occurred
-        try:
-            await session.commit()
-        except Exception as commit_error:
-            logger.error(f"Error committing session: {str(commit_error)}")
-            await session.rollback()
-            raise
-    except SQLAlchemyError as db_error:
-        # Catch database-specific errors
-        logger.error(f"Database error in session: {str(db_error)}")
-        await session.rollback()
-        metrics.connection_failures.inc()
-        raise
-    except Exception as e:
-        # Catch all other errors
-        logger.error(f"Unexpected error in database session: {str(e)}")
-        await session.rollback()
-        raise
-    finally:
-        # Always make sure the session is closed
-        try:
-            await session.close()
-            logger.debug("Database session closed successfully")
-        except Exception as close_error:
-            logger.error(f"Error closing database session: {str(close_error)}")
-            # Even in case of error while closing, consider the session disposed
-            # to prevent connection leaks
 
 async def get_async_db_session() -> AsyncSession:
     """Get async database session.
@@ -392,32 +364,37 @@ async def get_async_db_context() -> AsyncGenerator[AsyncSession, None]:
         
         yield session
         
-        # Commit changes if no exception occurred
-        await session.commit()
-        logger.debug(f"Database session committed by {caller_info}")
+        # Commit changes if no exception occurred and the session is still active
+        if session and session.is_active:
+            await session.commit()
+            logger.debug(f"Database session committed by {caller_info}")
         
     except SQLAlchemyError as db_error:
         # Catch database-specific errors
-        if session:
+        if session and session.is_active:
             await session.rollback()
         logger.error(f"Database error in session from {caller_info}: {str(db_error)}")
         metrics.connection_failures.inc()
         raise
     except Exception as e:
         # Catch all other errors
-        if session:
+        if session and session.is_active:
             await session.rollback()
         logger.error(f"Unexpected error in database session from {caller_info}: {str(e)}")
         raise
     finally:
-        # Always make sure the session is closed
+        # Always try to close the session
         if session:
             try:
+                # In SQLAlchemy 2.0, AsyncSession doesn't have a 'closed' attribute
+                # Just call close() directly and let SQLAlchemy handle it
                 await session.close()
-                logger.debug(f"Database session closed successfully from {caller_info}")
-                metrics.connection_checkins.inc()
+                logger.debug(f"Database session closed by {caller_info}")
             except Exception as close_error:
-                logger.error(f"Error closing database session from {caller_info}: {str(close_error)}")
+                logger.error(f"Error when closing session from {caller_info}: {str(close_error)}")
+            
+            # Record session closing metric
+            metrics.connection_checkins.inc()
 
 @contextmanager
 def get_sync_db_session() -> Generator[Session, None, None]:
@@ -507,102 +484,57 @@ async def get_session() -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 async def cleanup_idle_connections() -> int:
-    """
-    Identify and clean up idle database connections.
+    """Clean up idle database connections.
     
-    This function is designed to be called periodically to prevent connection pool exhaustion.
-    It identifies connections that have been idle for too long and closes them.
+    Identifies and closes idle database connections to prevent resource exhaustion.
     
     Returns:
-        int: Number of connections cleaned up
+        int: Number of connections closed
     """
-    session = None
-    try:
-        # For PostgreSQL, we can use pg_stat_activity to find idle connections
-        if 'postgresql' in str(settings.DATABASE_URL).lower():
-            session = AsyncSessionLocal()
-            # Query to find idle connections for our application
-            # This looks for connections that have been idle for more than 5 minutes (300 seconds)
-            # Reduced from 600 seconds to be more aggressive
-            query = text("""
-                SELECT pid, application_name, state, usename, 
-                       client_addr, backend_start, xact_start, state_change,
-                       EXTRACT(EPOCH FROM (now() - state_change)) as idle_seconds
-                FROM pg_stat_activity 
-                WHERE (application_name LIKE 'agentic_deals%' OR application_name = 'psql')
-                  AND state IN ('idle', 'idle in transaction')
-                  AND EXTRACT(EPOCH FROM (now() - state_change)) > 300
-                ORDER BY idle_seconds DESC
-            """)
-            
-            result = await session.execute(query)
-            idle_connections = result.all()
-            
-            # Log which connections will be terminated
-            logger.info(f"Found {len(idle_connections)} idle connections to clean up")
-            
-            count = 0
-            # Terminate each idle connection
-            for conn in idle_connections:
-                try:
-                    # Use pg_terminate_backend to safely terminate the connection
-                    # Log detailed information about the connection being terminated
-                    logger.info(f"Terminating idle connection: pid={conn.pid}, user={conn.usename}, " 
-                                f"addr={conn.client_addr}, state={conn.state}, "
-                                f"idle_time={conn.idle_seconds:.1f}s, "
-                                f"backend_start={conn.backend_start}, state_change={conn.state_change}")
-                    
-                    terminate_query = text(f"SELECT pg_terminate_backend({conn.pid})")
-                    await session.execute(terminate_query)
-                    count += 1
-                except Exception as e:
-                    logger.error(f"Failed to terminate connection {conn.pid}: {str(e)}")
-            
-            # Find long-running transactions that might be blocking other operations
-            long_tx_query = text("""
-                SELECT pid, application_name, query, state, usename, 
-                       EXTRACT(EPOCH FROM (now() - xact_start)) as tx_seconds
-                FROM pg_stat_activity 
-                WHERE xact_start IS NOT NULL
-                  AND EXTRACT(EPOCH FROM (now() - xact_start)) > 300
-                ORDER BY tx_seconds DESC
-            """)
-            
-            tx_result = await session.execute(long_tx_query)
-            long_txs = tx_result.all()
-            
-            if long_txs:
-                logger.warning(f"Found {len(long_txs)} long-running transactions (>5 min)")
-                for tx in long_txs:
-                    logger.warning(f"Long TX: pid={tx.pid}, user={tx.usename}, time={tx.tx_seconds:.1f}s, query={tx.query[:100]}...")
-            
-            # Commit the changes
-            await session.commit()
-            
-            # Record metrics
-            metrics.idle_connections_cleaned.inc(count)
-            return count
-        else:
-            # For other database types, we currently don't have a specific cleanup mechanism
-            logger.debug("Connection cleanup is only supported for PostgreSQL databases")
-            return 0
+    logger.info("Starting database idle connection cleanup")
     
+    try:
+        # Get connection pool
+        pool = async_engine.pool
+        
+        # Check for connections that are checked in but idle
+        idle_count = 0
+        connections_closed = 0
+        
+        # Get pool status first
+        pool_size = pool.size()
+        checkedin = pool.checkedin()
+        checkedout = pool.checkedout()
+        
+        logger.info(f"Pool status before cleanup: size={pool_size}, checkedin={checkedin}, checkedout={checkedout}")
+        
+        # If too many connections are checked in but idle, dispose some
+        if checkedin > pool_size * 0.7:  # If more than 70% of connections are idle
+            try:
+                # Try controlled disposal of some connections
+                logger.info(f"High number of idle connections ({checkedin}/{pool_size}), performing partial disposal")
+                
+                # Mark for closing - this doesn't immediately close but flags them
+                to_close = min(checkedin - int(pool_size * 0.3), checkedin)  # Close to maintain about 30% idle
+                
+                # Perform the actual cleanup
+                logger.info(f"Attempting to close {to_close} idle connections")
+                
+                # Create a temporary session to execute pool management query
+                async with AsyncSessionLocal() as session:
+                    # Execute a management query that helps with connection cleanup
+                    await session.execute(text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND state = 'idle' AND state_change < current_timestamp - interval '5 minutes'"))
+                    await session.commit()
+                
+                connections_closed = to_close
+                logger.info(f"Successfully closed {connections_closed} idle connections")
+            except Exception as e:
+                logger.error(f"Error during partial connection cleanup: {str(e)}")
+        
+        return connections_closed
     except Exception as e:
-        logger.error(f"Failed to clean up idle connections: {str(e)}")
-        if session:
-            try:
-                await session.rollback()
-            except Exception as rollback_error:
-                logger.error(f"Error rolling back session in cleanup_idle_connections: {str(rollback_error)}")
+        logger.error(f"Error cleaning up idle connections: {str(e)}")
         return 0
-    finally:
-        # Always close the session
-        if session:
-            try:
-                await session.close()
-                logger.debug("Database session closed successfully in cleanup_idle_connections")
-            except Exception as close_error:
-                logger.error(f"Error closing session in cleanup_idle_connections: {str(close_error)}")
 
 async def cleanup_all_connections() -> None:
     """

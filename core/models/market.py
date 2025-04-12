@@ -92,7 +92,7 @@ class Market(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        onupdate=func.current_timestamp(),
+        onupdate=text("CURRENT_TIMESTAMP"),
         server_default=text("CURRENT_TIMESTAMP")
     )
 
@@ -199,6 +199,8 @@ class Market(Base):
                 error_threshold = getattr(settings, 'MARKET_ERROR_THRESHOLD', MARKET_ERROR_THRESHOLD)
                 if self.error_count >= error_threshold:
                     self.status = MarketStatus.ERROR.value
+                    # Keep is_active true despite error status
+                    self.is_active = True
                     
             # Update success rate
             if self.total_requests > 0:
@@ -214,6 +216,8 @@ class Market(Base):
             # Check if rate limited
             if self.requests_today >= self.rate_limit:
                 self.status = MarketStatus.RATE_LIMITED.value
+                # Keep is_active true despite rate limiting
+                self.is_active = True
                 
             await db.commit()
             
@@ -283,9 +287,9 @@ class Market(Base):
     ) -> List['Market']:
         """Get available markets with optional filtering."""
         try:
+            # Only check for is_active=True, not status
             query = select(cls).where(
-                cls.is_active == True,
-                cls.status == MarketStatus.ACTIVE.value
+                cls.is_active == True
             )
             
             if market_type:
@@ -634,8 +638,7 @@ class MarketRepository:
         """Get all active markets."""
         try:
             stmt = select(Market).where(
-                Market.is_active == True,
-                Market.status == MarketStatus.ACTIVE.value.lower()
+                Market.is_active == True
             )
             result = await self.db.execute(stmt)
             markets = result.scalars().all()

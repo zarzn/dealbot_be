@@ -225,6 +225,11 @@ class TokenTransactionStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 
+class PaymentMethod(str, Enum):
+    """Payment method enumeration."""
+    PHANTOM = "phantom"
+    STRIPE = "stripe"
+
 class BalanceChangeType(str, Enum):
     """Balance change type enumeration."""
     DEDUCTION = "deduction"

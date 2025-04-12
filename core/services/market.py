@@ -232,6 +232,27 @@ class MarketService(BaseService[Market, MarketCreate, MarketUpdate]):
     async def get_active_markets(self) -> List[Market]:
         return await self.market_repository.get_all_active()
 
+    async def get_markets_by_types(self, market_types: List[MarketType], only_active: bool = True) -> List[Market]:
+        """Get markets matching any of the specified types.
+        
+        Args:
+            market_types: List of MarketType enum values to filter by
+            only_active: If True, only return active markets
+            
+        Returns:
+            List[Market]: List of markets matching any of the specified types
+            
+        Raises:
+            DatabaseError: If there is an error retrieving the markets
+        """
+        try:
+            return await self.market_repository.get_markets_by_types(market_types, only_active)
+        except Exception as e:
+            raise DatabaseError(
+                operation="get_markets_by_types",
+                message=f"Failed to get markets by types: {str(e)}"
+            )
+
     async def update_market(self, market_id: UUID, **kwargs) -> Market:
         """Update a market.
         

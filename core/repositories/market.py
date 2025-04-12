@@ -74,8 +74,8 @@ class MarketRepository(BaseRepository[Market]):
             all_markets = await self.db.execute(select(Market))
             markets = list(all_markets.scalars().all())
             
-            # Filter in Python
-            active_markets = [m for m in markets if m.is_active and m.status == 'active']
+            # Filter in Python - only check is_active, not status
+            active_markets = [m for m in markets if m.is_active]
             
             logger.info(f"Retrieved {len(active_markets)} truly active markets")
             return active_markets
@@ -285,16 +285,16 @@ class MarketRepository(BaseRepository[Market]):
     async def get_market_metrics(self) -> Dict:
         """Get aggregate market metrics"""
         try:
-            # Use scalar() with a select that wraps the count function
-            total_query = select(func.count()).select_from(Market)
+            # Use scalar() with a select statement that wraps the count function
+            total_query = select(func.count(Market.id)).select_from(Market)
             total = await self.db.scalar(total_query)
             
-            # For active markets count
-            active_query = select(func.count()).select_from(Market).where(Market.status == MarketStatus.ACTIVE)
+            # For active markets count - only filter by is_active
+            active_query = select(func.count(Market.id)).select_from(Market).where(Market.is_active == True)
             active = await self.db.scalar(active_query)
             
             # For category distribution
-            categories_query = select(Market.category, func.count()).select_from(Market).group_by(Market.category)
+            categories_query = select(Market.category, func.count(Market.id)).select_from(Market).group_by(Market.category)
             categories_result = await self.db.execute(categories_query)
             
             return {
@@ -336,7 +336,7 @@ class MarketRepository(BaseRepository[Market]):
             result = await self.db.execute(
                 select(Market)
                 .options(selectinload(Market.deals))
-                .where(Market.status == MarketStatus.ACTIVE)
+                .where(Market.is_active == True)
             )
             return list(result.scalars().all())
         except SQLAlchemyError as e:
@@ -360,7 +360,11 @@ class MarketRepository(BaseRepository[Market]):
         return list(result.scalars().all())
 
     async def get_markets_by_status(self, status: MarketStatus) -> List[Market]:
-        """Get markets by their operational status."""
+        """Get markets by their operational status.
+        
+        Note: While this method filters by status, the preferred approach is to filter
+        by is_active=True to determine market activity in the system.
+        """
         result = await self.db.execute(
             select(Market)
             .where(
@@ -384,4 +388,46 @@ class MarketRepository(BaseRepository[Market]):
             )
             .order_by(Market.total_requests.desc())
         )
-        return list(result.scalars().all()) 
+        return list(result.scalars().all())
+
+    async def get_markets_by_types(self, market_types: List[MarketType], only_active: bool = True) -> List[Market]:
+        """Get markets matching any of the specified types.
+        
+        Args:
+            market_types: List of MarketType enum values to filter by
+            only_active: If True, only return active markets
+            
+        Returns:
+            List[Market]: List of markets matching any of the specified types
+        """
+        try:
+            # Convert enum values to strings for comparison
+            type_values = [market_type.value.lower() for market_type in market_types]
+            
+            # Build the query
+            query = select(Market)
+            
+            # Add conditions
+            conditions = []
+            conditions.append(Market.type.in_(type_values))
+            
+            if only_active:
+                conditions.append(Market.is_active == True)
+                
+            if conditions:
+                query = query.where(and_(*conditions))
+                
+            # Execute the query
+            result = await self.db.execute(query)
+            markets = list(result.scalars().all())
+            
+            logger.info(f"Retrieved {len(markets)} markets matching types: {type_values}")
+            return markets
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Failed to get markets by types: {str(e)}")
+            raise DatabaseError(
+                message=f"Database error: {str(e)}",
+                operation="get_markets_by_types",
+                details={"market_types": [mt.value for mt in market_types]}
+            ) 

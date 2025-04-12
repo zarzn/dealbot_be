@@ -161,7 +161,7 @@ class DealBase(BaseModel):
     """Base deal model."""
     title: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    url: HttpUrl
+    url: str  # Changed from HttpUrl to str to allow more flexibility
     price: Decimal
     original_price: Optional[Decimal] = None
     currency: str = Field(default="USD", min_length=3, max_length=3)
@@ -171,6 +171,29 @@ class DealBase(BaseModel):
     price_metadata: Optional[Dict[str, Any]] = None
     expires_at: Optional[datetime] = None
     status: DealStatus = Field(default=DealStatus.ACTIVE)
+
+    @field_validator('url')
+    @classmethod
+    def validate_and_sanitize_url(cls, v) -> str:
+        """Fix and validate URL format."""
+        if not v:
+            raise ValueError("URL cannot be empty")
+            
+        # Convert to string if it's not already
+        url_str = str(v)
+        
+        # Fix common URL issues
+        # Handle triple slash issue (https:/// -> https://www.amazon.com/)
+        if url_str.startswith("https:///"):
+            url_str = url_str.replace("https:///", "https://www.amazon.com/")
+        
+        # Handle other known patterns
+        if "amazon" in url_str.lower() or "/dp/" in url_str or "/gp/product/" in url_str:
+            if not re.match(r'^https?://[^/]+', url_str):
+                url_str = f"https://www.amazon.com{url_str if url_str.startswith('/') else '/' + url_str}"
+                
+        # Return the fixed URL
+        return url_str
 
     @field_validator('original_price')
     @classmethod
@@ -339,7 +362,7 @@ class Deal(Base):
     notifications = relationship("Notification", back_populates="deal", cascade="all, delete-orphan")
     scores = relationship("DealScore", back_populates="deal", cascade="all, delete-orphan")
     trackers = relationship("TrackedDeal", back_populates="deal", cascade="all, delete-orphan")
-    goal_matches = relationship("DealMatch", back_populates="deal", cascade="all, delete-orphan")
+    goal_matches = relationship("DealMatch", back_populates="deal", cascade="all, delete-orphan", lazy="raise")
     tracked_by_users = relationship("TrackedDeal", back_populates="deal", cascade="all, delete-orphan", overlaps="trackers")
     price_histories = relationship("PriceHistory", back_populates="deal", cascade="all, delete-orphan")
     price_trackers = relationship("PriceTracker", back_populates="deal", cascade="all, delete-orphan")

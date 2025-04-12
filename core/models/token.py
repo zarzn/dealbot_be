@@ -558,4 +558,114 @@ class TokenStakeRequest(BaseModel):
         valid_networks = {'mainnet-beta', 'testnet', 'devnet'}
         if v not in valid_networks:
             raise ValueError(f"Invalid network. Must be one of: {', '.join(valid_networks)}")
-        return v 
+        return v
+
+class TokenPurchaseRequest(BaseModel):
+    """Schema for token purchase request."""
+    amount: float
+    price_in_sol: float = Field(alias="priceInSOL")
+    network: str = Field(default="mainnet-beta")
+    payment_method: str = Field(default="phantom")
+    memo: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+    
+    @field_validator('amount')
+    @classmethod
+    def validate_amount(cls, v: float) -> float:
+        """Validate purchase amount."""
+        if v <= 0:
+            raise ValueError("Purchase amount must be positive")
+        return v
+        
+    @field_validator('price_in_sol')
+    @classmethod
+    def validate_price(cls, v: float) -> float:
+        """Validate purchase price."""
+        if v <= 0:
+            raise ValueError("Purchase price must be positive")
+        return v
+        
+    @field_validator('payment_method')
+    @classmethod
+    def validate_payment_method(cls, v: str) -> str:
+        """Validate payment method."""
+        valid_methods = {'phantom', 'stripe'}
+        if v not in valid_methods:
+            raise ValueError(f"Invalid payment method. Must be one of: {', '.join(valid_methods)}")
+        return v
+        
+    @field_validator('network')
+    @classmethod
+    def validate_network(cls, v: str) -> str:
+        """Validate network type."""
+        valid_networks = {'mainnet-beta', 'testnet', 'devnet'}
+        if v not in valid_networks:
+            raise ValueError(f"Invalid network. Must be one of: {', '.join(valid_networks)}")
+        return v
+
+class TokenPurchaseResponse(BaseModel):
+    """Schema for token purchase response."""
+    transaction: Dict[str, Any]
+    signature: str
+    
+    model_config = ConfigDict(from_attributes=True)
+
+class TokenPurchaseVerifyRequest(BaseModel):
+    """Schema for token purchase verification request."""
+    signature: str
+    
+    model_config = ConfigDict(from_attributes=True)
+
+class TokenPurchaseVerifyResponse(BaseModel):
+    """Schema for token purchase verification response."""
+    success: bool
+    transaction_id: UUID
+    amount: float
+    new_balance: float
+    
+    model_config = ConfigDict(from_attributes=True)
+
+# Stripe-specific models
+class StripePaymentRequest(BaseModel):
+    """Schema for Stripe payment request."""
+    amount: float
+    currency: str = Field(default="usd")
+    payment_method_types: List[str] = Field(default=["card"])
+    metadata: Optional[Dict[str, Any]] = None
+    
+    model_config = ConfigDict(from_attributes=True)
+    
+    @field_validator('amount')
+    @classmethod
+    def validate_amount(cls, v: float) -> float:
+        """Validate payment amount."""
+        if v <= 0:
+            raise ValueError("Payment amount must be positive")
+        return v
+    
+    @field_validator('currency')
+    @classmethod
+    def validate_currency(cls, v: str) -> str:
+        """Validate currency."""
+        valid_currencies = {'usd', 'eur', 'gbp'}
+        if v not in valid_currencies:
+            raise ValueError(f"Invalid currency. Must be one of: {', '.join(valid_currencies)}")
+        return v
+
+class StripePaymentResponse(BaseModel):
+    """Schema for Stripe payment response."""
+    client_secret: str
+    payment_intent_id: str
+    amount: float
+    currency: str
+    status: str
+    
+    model_config = ConfigDict(from_attributes=True)
+
+class StripePaymentVerifyRequest(BaseModel):
+    """Schema for Stripe payment verification request."""
+    payment_intent_id: str
+    
+    model_config = ConfigDict(from_attributes=True) 

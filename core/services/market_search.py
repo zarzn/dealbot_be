@@ -1156,7 +1156,7 @@ class MarketSearchService:
             
             # Get all active markets
             if market_types:
-                markets = await self.market_repository.get_markets_by_types(market_types)
+                markets = await self.market_repository.get_markets_by_types(market_types, only_active=True)
             else:
                 markets = await self._get_all_active_markets()
                 

@@ -34,12 +34,12 @@ from core.models.token_pricing import TokenPricing
 from core.models.user import User
 from core.exceptions import (
     InsufficientBalanceError,
-    WalletConnectionError,
     TokenNetworkError,
     TokenOperationError,
     DatabaseError,
     RepositoryError
 )
+from core.exceptions.wallet_exceptions import WalletConnectionError
 from core.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -598,7 +598,7 @@ class TokenRepository:
             query = (
                 select(TokenTransaction)
                 .where(TokenTransaction.user_id == user_id)
-                .order_by(TokenTransaction.timestamp.desc())
+                .order_by(TokenTransaction.created_at.desc())
                 .offset(offset)
                 .limit(limit)
             )
@@ -697,7 +697,11 @@ class TokenRepository:
             
         except SQLAlchemyError as e:
             logger.error(f"Error getting wallet: {str(e)}")
-            raise DatabaseError(f"Failed to get wallet: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to get wallet: {str(e)}",
+                operation="get_wallet",
+                details={"wallet_id": wallet_id}
+            )
 
     async def get_wallet_by_address(
         self,
@@ -724,7 +728,11 @@ class TokenRepository:
             
         except SQLAlchemyError as e:
             logger.error(f"Error getting wallet by address: {str(e)}")
-            raise DatabaseError(f"Failed to get wallet by address: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to get wallet by address: {str(e)}",
+                operation="get_wallet_by_address",
+                details={"address": address}
+            )
 
     async def get_user_wallets(
         self,
@@ -756,7 +764,59 @@ class TokenRepository:
             
         except SQLAlchemyError as e:
             logger.error(f"Error getting user wallets: {str(e)}")
-            raise DatabaseError(f"Failed to get user wallets: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to get user wallets: {str(e)}",
+                operation="get_user_wallets",
+                details={"user_id": user_id, "active_only": active_only}
+            )
+
+    async def get_user_wallet(
+        self,
+        user_id: str
+    ) -> Optional[TokenWallet]:
+        """Get a single wallet for a user.
+        
+        This method retrieves the first active wallet for a user, or any wallet if no active ones exist.
+        
+        Args:
+            user_id: The ID of the user
+            
+        Returns:
+            The first active wallet if found, or the first wallet of any status if no active wallets,
+            or None if the user has no wallets
+            
+        Raises:
+            DatabaseError: If there is an error retrieving the wallet
+        """
+        try:
+            # First try to get an active wallet
+            active_query = select(TokenWallet).where(
+                and_(
+                    TokenWallet.user_id == user_id,
+                    TokenWallet.is_active == True
+                )
+            ).order_by(TokenWallet.last_used.desc().nullslast())
+            
+            result = await self.session.execute(active_query)
+            wallet = result.scalar_one_or_none()
+            
+            if wallet:
+                return wallet
+                
+            # If no active wallet, get any wallet
+            any_query = select(TokenWallet).where(
+                TokenWallet.user_id == user_id
+            ).order_by(TokenWallet.last_used.desc().nullslast())
+            
+            result = await self.session.execute(any_query)
+            return result.scalar_one_or_none()
+            
+        except SQLAlchemyError as e:
+            logger.error(f"Error getting user wallet: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to get user wallet: {str(e)}",
+                operation="get_user_wallet"
+            )
 
     async def update_wallet_status(
         self,
@@ -825,7 +885,11 @@ class TokenRepository:
             
         except SQLAlchemyError as e:
             logger.error(f"Error getting pricing info: {str(e)}")
-            raise DatabaseError(f"Failed to get pricing info: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to get pricing info: {str(e)}",
+                operation="get_pricing_info",
+                details={"service_type": query.service_type, "active_only": query.active_only}
+            )
 
     async def get_pricing_by_service(self, service_type: str) -> Optional[TokenPricing]:
         """Get token pricing for a specific service type.
@@ -881,7 +945,11 @@ class TokenRepository:
             
         except SQLAlchemyError as e:
             logger.error(f"Error getting pricing info for service {service_type}: {str(e)}")
-            raise DatabaseError(f"Failed to get pricing info: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to get pricing info: {str(e)}",
+                operation="get_pricing_by_service",
+                details={"service_type": service_type}
+            )
 
     async def clean_up_transactions(self, cutoff_date: datetime) -> int:
         """Clean up transactions older than a specified date.
@@ -919,7 +987,11 @@ class TokenRepository:
         except SQLAlchemyError as e:
             await self.session.rollback()
             logger.error(f"Error cleaning up transactions: {str(e)}")
-            raise DatabaseError(f"Failed to clean up transactions: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to clean up transactions: {str(e)}",
+                operation="clean_up_transactions",
+                details={"cutoff_date": cutoff_date.isoformat()}
+            )
 
     async def connect_wallet(
         self,
@@ -948,20 +1020,34 @@ class TokenRepository:
             existing_wallet = result.scalar_one_or_none()
             
             if existing_wallet:
-                if existing_wallet.user_id != user_id:
+                if existing_wallet.user_id != user_id and existing_wallet.is_active:
+                    # Only prevent connection if wallet is active and belongs to another user
                     raise WalletConnectionError(
-                        address=wallet_address,
+                        wallet_address=wallet_address,
                         reason="Wallet already connected to another user"
                     )
-                # Wallet already belongs to this user
-                return True
+                elif existing_wallet.user_id == user_id:
+                    # If wallet already belongs to this user, just activate it if needed
+                    if not existing_wallet.is_active:
+                        existing_wallet.is_active = True
+                        existing_wallet.last_used = datetime.now(timezone.utc)
+                        await self.session.commit()
+                    return True
+                else:
+                    # Wallet exists but is inactive and belongs to another user
+                    # Update it to belong to current user
+                    existing_wallet.user_id = user_id
+                    existing_wallet.is_active = True
+                    existing_wallet.last_used = datetime.now(timezone.utc)
+                    await self.session.commit()
+                    return True
                 
             # Create new wallet
             wallet = TokenWallet(
                 user_id=user_id,
                 address=wallet_address,
                 is_active=True,
-                connected_at=datetime.now(timezone.utc)
+                last_used=datetime.now(timezone.utc)
             )
             
             self.session.add(wallet)
@@ -972,7 +1058,11 @@ class TokenRepository:
         except SQLAlchemyError as e:
             await self.session.rollback()
             logger.error(f"Error connecting wallet: {str(e)}")
-            raise DatabaseError(f"Failed to connect wallet: {str(e)}")
+            raise DatabaseError(
+                message=f"Failed to connect wallet: {str(e)}",
+                operation="connect_wallet",
+                details={"user_id": user_id, "wallet_address": wallet_address}
+            )
 
     async def disconnect_wallet(
         self,
@@ -990,13 +1080,13 @@ class TokenRepository:
             DatabaseError: If there is an error disconnecting the wallets
         """
         try:
-            # Update all user's wallets to inactive
+            # Update all user's wallets to inactive and update the last_used timestamp
             await self.session.execute(
                 update(TokenWallet)
                 .where(TokenWallet.user_id == user_id)
                 .values(
                     is_active=False,
-                    disconnected_at=datetime.now(timezone.utc)
+                    last_used=datetime.now(timezone.utc)
                 )
             )
             

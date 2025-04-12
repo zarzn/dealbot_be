@@ -777,15 +777,16 @@ async def verify_token_balance(
 ) -> bool:
     """Verify if a user has sufficient token balance."""
     try:
-        # Get cached balance
-        cached_balance = await redis.get(f"balance:{user.id}")
+        # Get cached balance using consistent key format
+        cache_key = f"token:balance:{user.id}"
+        cached_balance = await redis.get(cache_key)
         if cached_balance is not None:
             current_balance = Decimal(cached_balance.decode())
         else:
             current_balance = user.token_balance
             # Cache the balance
             await redis.setex(
-                f"balance:{user.id}",
+                cache_key,
                 300,  # 5 minutes TTL
                 str(current_balance)
             )
@@ -818,9 +819,10 @@ async def update_token_balance(
         user.token_balance += amount
         await db.commit()
         
-        # Update cache
+        # Update cache using consistent key format
+        cache_key = f"token:balance:{user.id}"
         await redis.setex(
-            f"balance:{user.id}",
+            cache_key,
             300,  # 5 minutes TTL
             str(user.token_balance)
         )
@@ -840,14 +842,15 @@ async def get_token_balance(
 ) -> Decimal:
     """Get a user's current token balance."""
     try:
-        # Try to get from cache first
-        cached_balance = await redis.get(f"balance:{user.id}")
+        # Try to get from cache first using consistent key format
+        cache_key = f"token:balance:{user.id}"
+        cached_balance = await redis.get(cache_key)
         if cached_balance is not None:
             return Decimal(cached_balance.decode())
         
         # If not in cache, return from user object and cache it
         await redis.setex(
-            f"balance:{user.id}",
+            cache_key,
             300,  # 5 minutes TTL
             str(user.token_balance)
         )
