@@ -2,14 +2,15 @@
 
 import logging
 from typing import Any, Dict, List, Optional, Union
+import asyncio
 
-from core.integrations.oxylabs.base import OxylabsBaseService, OxylabsResult
+from core.integrations.oxylabs.market_base import OxylabsMarketBaseService, OxylabsResult
 from core.integrations.oxylabs.utils import extract_price, detect_currency
 
 logger = logging.getLogger(__name__)
 
 
-class GoogleShoppingOxylabsService(OxylabsBaseService):
+class GoogleShoppingOxylabsService(OxylabsMarketBaseService):
     """Service for scraping Google Shopping using Oxylabs."""
 
     def __init__(self, username: Optional[str] = None, password: Optional[str] = None):
@@ -20,71 +21,78 @@ class GoogleShoppingOxylabsService(OxylabsBaseService):
             password: Oxylabs password
         """
         super().__init__(username, password)
-        self.source = "google_shopping_search"
+        # Set Google Shopping-specific source configurations
+        self.search_source = "google_shopping_search"
         self.product_source = "google_shopping_product"
+        self.fallback_source = "universal"
+        self.market_name = "Google Shopping"
 
     async def search_products(
         self, 
         query: str,
+        limit: int = 10,
+        region: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        min_price: Optional[float] = None,
+        max_price: Optional[float] = None,
+        parse: bool = True,
+        cache_ttl: Optional[int] = None,
         domain: str = "com",
         start_page: int = 1,
         pages: int = 1,
-        limit: int = 10,
-        parse: bool = True,
-        cache_ttl: Optional[int] = None,
+        extract_details: bool = False,
+        batch_size: int = 10,
         **kwargs
     ) -> OxylabsResult:
         """Search for products on Google Shopping.
         
         Args:
             query: Search query
+            limit: Maximum number of results
+            region: Region or country code for geo-location
+            sort_by: Sorting option (r=relevance, rv=reviews, p=price asc, pd=price desc)
+            min_price: Minimum price filter
+            max_price: Maximum price filter
+            parse: Whether to parse the results automatically
+            cache_ttl: Cache time-to-live in seconds (None for no caching)
             domain: Domain localization for Google (e.g., 'com', 'co.uk')
             start_page: Starting page number
             pages: Number of pages to retrieve
-            limit: Maximum number of results
-            parse: Whether to parse the results automatically
-            cache_ttl: Cache time-to-live in seconds (None for no caching)
+            extract_details: If True, attempt to extract additional details for each product
+            batch_size: Number of products to process in a single batch (for optimization)
             **kwargs: Additional parameters including:
-                - geo_location: Geographical location for results
                 - locale: Accept-Language header value (interface language)
-                - sort_by: Sort order (r=relevance, rv=reviews, p=price asc, pd=price desc)
-                - min_price: Minimum price filter
-                - max_price: Maximum price filter
                 - results_language: Results language
                 - nfpr: Turn off spelling auto-correction (true/false)
             
         Returns:
             OxylabsResult object with search results
         """
-        # Create parameters according to Oxylabs API documentation
-        params = {
-            "source": self.source,
-            "domain": domain,
-            "query": query,
-            "parse": parse,
-            "start_page": start_page,
-            "pages": pages,
-            "limit": limit
-        }
+        # Build parameters with base implementation
+        params = self._prepare_search_params(
+            query=query,
+            limit=limit,
+            parse=parse,
+            region=region,
+            sort_by=None,  # We'll handle sort_by specially for Google
+            min_price=min_price,
+            max_price=max_price,
+            **kwargs
+        )
+        
+        # Add Google Shopping-specific parameters
+        params["domain"] = domain
+        params["start_page"] = start_page
+        params["pages"] = pages
         
         # Build context array for additional parameters
-        context = []
+        context = params.get("context", [])
         
-        # Add sorting parameter if provided
-        if "sort_by" in kwargs:
-            sort_by = kwargs.pop("sort_by")
+        # Add sorting parameter if provided with Google's special format
+        if sort_by is not None:
             if sort_by in ["r", "rv", "p", "pd"]:
                 context.append({"key": "sort_by", "value": sort_by})
-        
-        # Add price filters if provided
-        if "min_price" in kwargs:
-            min_price = kwargs.pop("min_price")
-            context.append({"key": "min_price", "value": min_price})
-            
-        if "max_price" in kwargs:
-            max_price = kwargs.pop("max_price")
-            context.append({"key": "max_price", "value": max_price})
-        
+                
         # Add results language if provided
         if "results_language" in kwargs:
             results_language = kwargs.pop("results_language")
@@ -95,14 +103,10 @@ class GoogleShoppingOxylabsService(OxylabsBaseService):
             nfpr = kwargs.pop("nfpr")
             context.append({"key": "nfpr", "value": nfpr})
         
-        # Add the context array if we have any parameters
+        # Update context if we have any parameters
         if context:
             params["context"] = context
         
-        # Add geo_location if provided
-        if "geo_location" in kwargs:
-            params["geo_location"] = kwargs.pop("geo_location")
-            
         # Add locale if provided
         if "locale" in kwargs:
             params["locale"] = kwargs.pop("locale")
@@ -113,47 +117,136 @@ class GoogleShoppingOxylabsService(OxylabsBaseService):
         else:
             params["user_agent_type"] = "desktop"
             
-        # Add any remaining kwargs to the params
-        params.update(kwargs)
+        # Log the final parameters for debugging
+        logger.info(f"Google Shopping search - Query: {query}, Domain: {domain}")
+        logger.debug(f"Google Shopping search parameters: {params}")
         
-        logger.debug(f"Google Shopping search params: {params}")
+        # Execute with standardized fallback handling
+        search_result = await self._execute_with_fallback(params, cache_ttl, "search")
         
-        return await self.scrape_url(params, cache_ttl=cache_ttl)
+        # No need for additional processing if we don't have data or don't need details
+        if not search_result.success or not extract_details:
+            return search_result
+        
+        # If extract_details is True, we'll enrich the search results
+        # with additional product data when available
+        try:
+            # Extract product IDs from search results
+            product_ids = self._extract_product_ids_from_search(search_result.results)
+            
+            # Limit the number of product IDs to process
+            product_ids = product_ids[:limit]
+            
+            # If no product IDs found, return the original results
+            if not product_ids:
+                return search_result
+                
+            # Process product IDs in batches for better performance
+            all_product_details = {}
+            
+            for i in range(0, len(product_ids), batch_size):
+                batch_ids = product_ids[i:i+batch_size]
+                
+                # Process each batch concurrently
+                batch_tasks = [
+                    self.get_product_details(
+                        product_id, 
+                        region=region,
+                        domain=domain,
+                        parse=True,
+                        cache_ttl=cache_ttl
+                    ) for product_id in batch_ids
+                ]
+                
+                # Wait for all batch requests to complete
+                batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+                
+                # Process results from the batch
+                for product_id, result in zip(batch_ids, batch_results):
+                    if isinstance(result, Exception):
+                        logger.warning(f"Error fetching details for Google Shopping product {product_id}: {result}")
+                        continue
+                        
+                    if result and result.success and result.results:
+                        # Extract and store the detailed product data
+                        all_product_details[product_id] = self.extract_product_data(result.results[0] if result.results else {})
+            
+            # Enhance the original search results with the detailed data
+            enhanced_results = []
+            
+            for product in search_result.results:
+                product_id = product.get("product_id") or product.get("item_id") or product.get("id")
+                if product_id and product_id in all_product_details:
+                    # Merge the detailed data with the search result
+                    detailed_data = all_product_details[product_id]
+                    for key, value in detailed_data.items():
+                        if key not in product or not product[key]:
+                            product[key] = value
+                enhanced_results.append(product)
+            
+            # Update the results with enhanced data
+            search_result.results = enhanced_results
+            
+            return search_result
+            
+        except Exception as e:
+            logger.error(f"Error processing Google Shopping search results for detailed information: {e}")
+            # Fall back to the original search results if enhancement fails
+            return search_result
+
+    def _extract_product_ids_from_search(self, results: List[Dict[str, Any]]) -> List[str]:
+        """Extract product IDs from search results.
+        
+        Args:
+            results: Search results list
+            
+        Returns:
+            List of product IDs
+        """
+        product_ids = []
+        
+        for product in results:
+            product_id = product.get("product_id") or product.get("item_id") or product.get("id")
+            if product_id:
+                product_ids.append(product_id)
+                
+        return product_ids
 
     async def get_product_details(
         self, 
         product_id: str,
-        domain: str = "com",
+        region: Optional[str] = None,
         parse: bool = True,
         cache_ttl: Optional[int] = None,
+        domain: str = "com",
         **kwargs
     ) -> OxylabsResult:
         """Get details of a specific product on Google Shopping.
         
         Args:
             product_id: Google Shopping product ID
-            domain: Domain localization for Google (e.g., 'com', 'co.uk')
+            region: Region or country code for geo-location
             parse: Whether to parse the results automatically
             cache_ttl: Cache time-to-live in seconds (None for no caching)
+            domain: Domain localization for Google (e.g., 'com', 'co.uk')
             **kwargs: Additional parameters including:
-                - geo_location: Geographical location for results
                 - locale: Accept-Language header value (interface language)
             
         Returns:
             OxylabsResult object with product details
         """
-        # Create parameters according to Oxylabs API documentation
-        params = {
-            "source": self.product_source,
-            "domain": domain,
-            "product_id": product_id,
-            "parse": parse
-        }
+        # Build parameters with base implementation
+        params = self._prepare_product_params(
+            product_id=product_id,
+            parse=parse,
+            region=region,
+            **kwargs
+        )
         
-        # Add geo_location if provided
-        if "geo_location" in kwargs:
-            params["geo_location"] = kwargs.pop("geo_location")
-            
+        # Add Google Shopping-specific parameters
+        params["domain"] = domain
+        params["product_id"] = product_id
+        
         # Add locale if provided
         if "locale" in kwargs:
             params["locale"] = kwargs.pop("locale")
@@ -164,12 +257,12 @@ class GoogleShoppingOxylabsService(OxylabsBaseService):
         else:
             params["user_agent_type"] = "desktop"
             
-        # Add any remaining kwargs to the params
-        params.update(kwargs)
+        # Log the final parameters for debugging
+        logger.info(f"Google Shopping product details - Product ID: {product_id}, Domain: {domain}")
+        logger.debug(f"Google Shopping product details parameters: {params}")
         
-        logger.debug(f"Google Shopping product details params: {params}")
-        
-        return await self.scrape_url(params, cache_ttl=cache_ttl)
+        # Execute with standardized fallback handling
+        return await self._execute_with_fallback(params, cache_ttl, "product details")
 
     def extract_product_data(self, raw_data: Dict[str, Any]) -> Dict[str, Any]:
         """Extract useful product data from Oxylabs response.
@@ -196,7 +289,8 @@ class GoogleShoppingOxylabsService(OxylabsBaseService):
                     # Default to USD if detection fails
                     currency = "USD"
                     
-            return {
+            # Create standardized product data structure
+            product_data = {
                 "title": title,
                 "price": price_value,
                 "currency": currency,
@@ -210,6 +304,14 @@ class GoogleShoppingOxylabsService(OxylabsBaseService):
                 "variants": raw_data.get("variants", []),
                 "category": raw_data.get("category", None),
             }
+            
+            # Add any additional fields that might be present
+            for key, value in raw_data.items():
+                if key not in product_data and value is not None:
+                    product_data[key] = value
+                    
+            return product_data
+            
         except Exception as e:
             logger.error(f"Error extracting Google Shopping product data: {e}")
             return {} 

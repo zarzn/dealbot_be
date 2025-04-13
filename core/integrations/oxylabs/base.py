@@ -334,57 +334,155 @@ class OxylabsBaseService:
         return hashlib.md5(param_str.encode('utf-8')).hexdigest()
 
     async def scrape_url(self, params: Dict[str, Any], cache_ttl: Optional[int] = None) -> OxylabsResult:
-        """Scrape a URL using Oxylabs scraping API with caching support.
+        """Scrape a URL using Oxylabs API.
         
         Args:
-            params: Dictionary with scraping parameters (source, domain, query, etc.)
-            cache_ttl: Time to live for cache in seconds (None for no caching)
+            params: Request parameters
+            cache_ttl: Cache time-to-live in seconds (None for no caching)
             
         Returns:
-            OxylabsResult object with scraping results
-            
-        Raises:
-            OxylabsRequestException: If the request fails
+            OxylabsResult object
         """
-        # Only use caching if cache_ttl is not None
+        # Generate a cache key from params
+        cache_key = self._generate_cache_key(params)
+        
+        # Try to get from cache if TTL is provided
         if cache_ttl is not None:
-            # Generate cache key
-            cache_key = self._generate_cache_key(params)
-            
-            # Try to get from cache first
-            cached_result = await self._get_from_cache(cache_key)
-            if cached_result:
-                logger.info(f"Cache hit for {params.get('source', 'unknown source')}")
-                
-                # Construct OxylabsResult from cached data
+            cached_data = await self._get_from_cache(cache_key)
+            if cached_data:
+                logger.debug(f"Cache hit for key: {cache_key[:20]}...")
                 return OxylabsResult(
-                    success=cached_result.get("success", True),
-                    start_url=cached_result.get("start_url", ""),
-                    results=cached_result.get("results", []),
-                    raw_results=cached_result.get("raw_results", {}),
-                    errors=cached_result.get("errors", []),
-                    status_code=cached_result.get("status_code", 200)
+                    success=cached_data.get("success", True),
+                    start_url=cached_data.get("start_url", ""),
+                    results=cached_data.get("results", []),
+                    raw_results=cached_data,
+                    errors=cached_data.get("errors", [])
                 )
         
-        # If not in cache or caching is disabled, make the actual request
-        result = await self._make_request_with_retry("/v1/queries", params)
+        # Prepare API endpoint
+        url = f"{self.base_url}/v1/queries"
         
-        # Store successful results in cache if caching is enabled
-        if cache_ttl is not None and result.success:
-            # Prepare data for caching
-            cache_data = {
-                "success": result.success,
-                "start_url": result.start_url,
-                "results": result.results,
-                "raw_results": result.raw_results,
-                "errors": result.errors,
-                "status_code": result.status_code
-            }
+        # Record start time for metrics
+        start_time = time.time()
+        success = False
+        
+        try:
+            # Get or create an HTTP session
+            session = await self._get_session()
             
-            # Store in cache
-            await self._store_in_cache(cache_key, cache_data, cache_ttl)
+            # Log the request details (at DEBUG level to reduce noise)
+            logger.debug(f"Making request to Oxylabs API: {url}")
+            if "source" in params:
+                logger.debug(f"Oxylabs API request source: {params['source']}")
+            if "domain" in params:
+                logger.debug(f"Oxylabs API request domain: {params['domain']}")
             
-        return result
+            # Set authentication
+            auth = aiohttp.BasicAuth(self.username, self.password)
+            
+            # Send the request
+            async with session.post(url, json=params, auth=auth, timeout=self.timeout) as response:
+                # Calculate response time
+                response_time = time.time() - start_time
+                
+                # Get response data
+                status_code = response.status
+                try:
+                    data = await response.json()
+                except Exception:
+                    data = await response.text()
+                
+                # Log response info (DEBUG for success, INFO for errors)
+                if status_code == 200:
+                    logger.debug(f"Oxylabs API response status: {status_code} in {response_time:.2f}s")
+                else:
+                    logger.info(f"Oxylabs API response status: {status_code} in {response_time:.2f}s")
+                
+                # Handle error responses
+                if status_code != 200:
+                    error_msg = f"Oxylabs API error: {data}"
+                    logger.error(error_msg)
+                    logger.error(f"Failed request payload: {json.dumps(params)}")
+                    return OxylabsResult(
+                        success=False,
+                        start_url=params.get("url", ""),
+                        results=[],
+                        raw_results={},
+                        errors=[error_msg],
+                        status_code=status_code
+                    )
+                
+                # Process successful response
+                results = []
+                
+                # Extract results based on response structure
+                if isinstance(data, dict):
+                    if "results" in data:
+                        for result in data["results"]:
+                            if "content" in result:
+                                if result["content"]:
+                                    results.append(result["content"])
+                            elif "result" in result:
+                                if result["result"]:
+                                    results.append(result["result"])
+                    elif "content" in data:
+                        results = [data["content"]]
+                elif isinstance(data, list):
+                    results = data
+                
+                # Mark success
+                success = True
+                
+                # Cache the results if TTL is provided
+                if cache_ttl is not None and cache_ttl > 0:
+                    await self._store_in_cache(cache_key, data, cache_ttl)
+                
+                # Return structured result
+                return OxylabsResult(
+                    success=True,
+                    start_url=params.get("url", ""),
+                    results=results,
+                    raw_results=data,
+                    errors=[],
+                    status_code=status_code
+                )
+                
+        except asyncio.TimeoutError:
+            elapsed = time.time() - start_time
+            error_msg = f"Oxylabs API request timed out after {elapsed:.2f}s"
+            logger.error(error_msg)
+            return OxylabsResult(
+                success=False,
+                start_url=params.get("url", ""),
+                results=[],
+                raw_results={},
+                errors=[error_msg]
+            )
+            
+        except Exception as e:
+            elapsed = time.time() - start_time
+            error_msg = f"Error making Oxylabs API request: {str(e)}"
+            logger.error(error_msg)
+            return OxylabsResult(
+                success=False,
+                start_url=params.get("url", ""),
+                results=[],
+                raw_results={},
+                errors=[error_msg]
+            )
+            
+        finally:
+            # Record metrics if implemented in subclasses
+            try:
+                if hasattr(self, '_record_metrics'):
+                    await self._record_metrics(
+                        market_type=params.get("source", "unknown"),
+                        success=success,
+                        response_time=time.time() - start_time,
+                        error=None if success else "API Error"
+                    )
+            except Exception as e:
+                logger.debug(f"Error recording metrics: {str(e)}")
 
     async def _make_request_with_retry(
         self, endpoint: str, payload: Dict[str, Any], retries: int = None

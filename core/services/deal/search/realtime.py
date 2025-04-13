@@ -36,6 +36,87 @@ from core.services.ai import get_ai_service
 
 logger = get_logger(__name__)
 
+# Custom JSON encoder that can handle complex structures and circular references
+class SafeJSONEncoder(json.JSONEncoder):
+    """JSON encoder that can handle complex structures and circular references."""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._seen = set()
+        
+    def default(self, obj):
+        obj_id = id(obj)
+        
+        # Check for circular references
+        if obj_id in self._seen:
+            return str(obj)
+        
+        self._seen.add(obj_id)
+        
+        # Handle different object types
+        if isinstance(obj, (datetime, UUID)):
+            return str(obj)
+        elif isinstance(obj, Decimal):
+            return float(obj)
+        elif hasattr(obj, '__dict__'):
+            return {k: v for k, v in obj.__dict__.items() if not k.startswith('_')}
+        
+        try:
+            return super().default(obj)
+        except TypeError:
+            return str(obj)
+
+def safe_json_dumps(obj):
+    """Safe JSON serialization that can handle circular references.
+    
+    Args:
+        obj: Object to serialize
+        
+    Returns:
+        JSON string representation of the object
+    """
+    try:
+        return json.dumps(obj, cls=SafeJSONEncoder)
+    except Exception as e:
+        logger.warning(f"Error in safe_json_dumps: {str(e)}")
+        
+        # Fallback approach: Convert to simpler structure
+        if isinstance(obj, dict):
+            # Create a simplified version of the dictionary
+            simplified = {}
+            for k, v in obj.items():
+                try:
+                    # Attempt to serialize key and value, use string representation if it fails
+                    json.dumps({k: v})
+                    simplified[k] = v
+                except:
+                    try:
+                        # Try to add just the key with a string value
+                        simplified[k] = str(v)
+                    except:
+                        # If key cannot be serialized either, skip this pair
+                        pass
+            return json.dumps(simplified)
+        elif isinstance(obj, list):
+            # Create a simplified version of the list
+            simplified = []
+            for item in obj:
+                try:
+                    # Attempt to serialize the item
+                    json.dumps(item)
+                    simplified.append(item)
+                except:
+                    # If item cannot be serialized, use string representation
+                    try:
+                        simplified.append(str(item))
+                    except:
+                        # If even string representation fails, skip this item
+                        pass
+            return json.dumps(simplified)
+        else:
+            # For other types, return an empty structure
+            return json.dumps({})
+
 async def perform_realtime_scraping(
     self, 
     query: str, 
@@ -211,7 +292,7 @@ async def perform_realtime_scraping(
             if market_type.lower() == 'google_shopping':
                 timeout = 60.0  # Google Shopping needs more time
             elif market_type.lower() == 'amazon':
-                timeout = 20.0  # Amazon timeout
+                timeout = 60.0  # Amazon timeout
             elif market_type.lower() == 'walmart':
                 timeout = 25.0  # Walmart timeout
             
@@ -252,8 +333,13 @@ async def perform_realtime_scraping(
                 # Create search params with country/geo_location
                 search_params = {
                     "limit": max_products,
-                    "geo_location": "US"  # Default location (uppercase for Amazon compatibility)
                 }
+                
+                # Only add geo_location for non-Amazon markets
+                if market_type.lower() != "amazon":
+                    search_params["geo_location"] = "US"  # Default location
+                else:
+                    logger.info(f"Skipping geo_location parameter for Amazon search")
                 
                 # Make the search request through the market factory
                 try:
@@ -270,11 +356,17 @@ async def perform_realtime_scraping(
                             try:
                                 if redis_client:
                                     import json  # Import json in this scope
-                                    await redis_client.setex(
-                                        market_cache_key,
-                                        600,  # 10 minutes TTL
-                                        json.dumps(result)
-                                    )
+                                    # Use safe_json_dumps to handle circular references
+                                    serialized_result = safe_json_dumps(result)
+                                    if serialized_result:
+                                        await redis_client.setex(
+                                            market_cache_key,
+                                            600,  # 10 minutes TTL
+                                            serialized_result
+                                        )
+                                        logger.info(f"Successfully cached {market_type} results")
+                                    else:
+                                        logger.warning(f"Could not serialize {market_type} results for caching")
                             except Exception as e:
                                 logger.warning(f"Failed to cache {market_type} results: {str(e)}")
                 except asyncio.TimeoutError:
@@ -287,8 +379,15 @@ async def perform_realtime_scraping(
                 logger.info(f"Search for {market_name} completed in {time.time() - start_time:.2f} seconds")
                 
                 # Process the results and create deals
+                # Check for OxylabsResult object - if we get one, extract just the results field
+                if hasattr(result, 'results') and not isinstance(result, dict) and not isinstance(result, list):
+                    logger.info(f"Got OxylabsResult object from {market_type} search, extracting results field")
+                    processed_result = result.results
+                else:
+                    processed_result = result
+                
                 return process_products_from_results(
-                    result, 
+                    processed_result, 
                     market_type, 
                     market_id,
                     market_name
@@ -307,35 +406,150 @@ async def perform_realtime_scraping(
             # Extract products list from various result structures
             products_list = []
             
+            # Detailed logging of product structure for debugging
+            logger.debug(f"Processing {market_type} products of type {type(products)}")
             if isinstance(products, dict):
-                # Try different paths for extracting products
-                if "results" in products:
-                    products_list = products["results"]
-                elif "content" in products and isinstance(products["content"], dict):
-                    if "products" in products["content"]:
-                        products_list = products["content"]["products"]
-                    elif "organic" in products["content"]:
-                        products_list = products["content"]["organic"]
-                    elif "shopping_results" in products["content"]:
-                        products_list = products["content"]["shopping_results"]
-            elif isinstance(products, list):
-                # The result itself is a list of products
-                products_list = products
-                
+                logger.debug(f"{market_type} product keys: {list(products.keys())}")
+            
+            # Handle the Amazon special case
+            if market_type.lower() == 'amazon':
+                # Handle different Amazon response structures
+                try:
+                    # Log structure of the response
+                    if isinstance(products, dict):
+                        logger.info(f"Amazon response keys: {list(products.keys())}")
+                        
+                        # Direct paid/organic structure
+                        if "paid" in products and isinstance(products["paid"], list):
+                            logger.info(f"Found {len(products['paid'])} paid products in Amazon direct structure")
+                            products_list.extend(products["paid"])
+                        
+                        if "organic" in products and isinstance(products["organic"], list):
+                            logger.info(f"Found {len(products['organic'])} organic products in Amazon direct structure")
+                            products_list.extend(products["organic"])
+                        
+                        # Nested content structure
+                        if "content" in products and isinstance(products["content"], dict):
+                            content = products["content"]
+                            logger.info(f"Amazon content keys: {list(content.keys())}")
+                            
+                            # Direct content.results structure
+                            if "results" in content and isinstance(content["results"], dict):
+                                results = content["results"]
+                                logger.info(f"Amazon content.results keys: {list(results.keys())}")
+                                
+                                if "paid" in results and isinstance(results["paid"], list):
+                                    logger.info(f"Found {len(results['paid'])} paid products in content.results")
+                                    products_list.extend(results["paid"])
+                                
+                                if "organic" in results and isinstance(results["organic"], list):
+                                    logger.info(f"Found {len(results['organic'])} organic products in content.results")
+                                    products_list.extend(results["organic"])
+                            
+                            # Direct content.organic/paid structure
+                            if "paid" in content and isinstance(content["paid"], list):
+                                logger.info(f"Found {len(content['paid'])} paid products in content")
+                                products_list.extend(content["paid"])
+                            
+                            if "organic" in content and isinstance(content["organic"], list):
+                                logger.info(f"Found {len(content['organic'])} organic products in content")
+                                products_list.extend(content["organic"])
+                        
+                        # Search results in top level
+                        if "results" in products and isinstance(products["results"], list):
+                            logger.info(f"Found {len(products['results'])} products in direct results list")
+                            products_list.extend(products["results"])
+                    
+                    # In case the products object is already a list
+                    elif isinstance(products, list):
+                        logger.info(f"Amazon products returned as direct list of {len(products)} items")
+                        products_list = products
+                        
+                    logger.info(f"Successfully extracted {len(products_list)} Amazon products")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing Amazon products: {str(e)}", exc_info=True)
+                    # Return empty list on error
+                    return []
+            else:
+                # For other markets, use standard processing
+                if isinstance(products, dict):
+                    # First check for paid/organic sections
+                    paid_products = []
+                    organic_products = []
+                    
+                    if "paid" in products and isinstance(products["paid"], list):
+                        paid_products = products["paid"]
+                        logger.info(f"Found {len(paid_products)} paid/sponsored products from {market_name}")
+                    
+                    if "organic" in products and isinstance(products["organic"], list):
+                        organic_products = products["organic"]
+                        logger.info(f"Found {len(organic_products)} organic products from {market_name}")
+                    
+                    # Combine paid and organic, prioritizing organic results up to limit
+                    if paid_products or organic_products:
+                        # Prioritize organic results but include some sponsored if needed
+                        products_list = organic_products.copy()
+                        
+                        # Add some paid results at the beginning if we got any
+                        # but limit them to about 20% of the total desired products
+                        sponsored_limit = min(len(paid_products), max(2, int(max_products * 0.2)))
+                        if sponsored_limit > 0:
+                            products_list = paid_products[:sponsored_limit] + products_list
+                    
+                    # If still no products, try standard paths
+                    if not products_list:
+                        # Try different paths for extracting products
+                        if "results" in products:
+                            results = products["results"]
+                            if isinstance(results, dict):
+                                # Check for nested paid/organic structure
+                                if "paid" in results and isinstance(results["paid"], list):
+                                    products_list.extend(results["paid"])
+                                if "organic" in results and isinstance(results["organic"], list):
+                                    products_list.extend(results["organic"])
+                            elif isinstance(results, list):
+                                products_list = results
+                        elif "content" in products and isinstance(products["content"], dict):
+                            content = products["content"]
+                            if "products" in content and isinstance(content["products"], list):
+                                products_list = content["products"]
+                            elif "organic" in content and isinstance(content["organic"], list):
+                                products_list = content["organic"]
+                            elif "paid" in content and isinstance(content["paid"], list):
+                                products_list = content["paid"]
+                            elif "shopping_results" in content and isinstance(content["shopping_results"], list):
+                                products_list = content["shopping_results"]
+                elif isinstance(products, list):
+                    # The result itself is a list of products
+                    products_list = products
+            
             # Log number of products found
             logger.info(f"Found {len(products_list)} raw products from {market_name}")
             
             # Apply post-scraping filters
             logger.debug(f"Applying post-scraping filters for {market_name} products")
-            filtered_products = post_process_products(
-                products=products_list,
-                query=query,
-                min_price=min_price,
-                max_price=max_price,
-                brands=brands
-            )
             
-            logger.info(f"Post-filtering: {len(products_list)} -> {len(filtered_products)} products from {market_name}")
+            # Skip post-processing if no products were found
+            if not products_list:
+                logger.warning(f"No products to post-process for {market_name}")
+                return []
+                
+            try:
+                filtered_products = post_process_products(
+                    products=products_list,
+                    query=query,
+                    min_price=min_price,
+                    max_price=max_price,
+                    brands=brands
+                )
+                
+                logger.info(f"Post-filtering: {len(products_list)} -> {len(filtered_products)} products from {market_name}")
+            except Exception as e:
+                logger.error(f"Error in post-processing products: {str(e)}", exc_info=True)
+                # If post-processing fails, return the raw products
+                filtered_products = products_list
+                logger.info(f"Using raw products due to post-processing failure: {len(filtered_products)} products")
             
             # Add search query and market data to products
             for product in filtered_products:
@@ -429,12 +643,16 @@ async def perform_realtime_scraping(
                     serialized_deals.append(deal_dict)
                     
                 # Store in Redis with TTL
-                await redis_client.set(
-                    cache_key,
-                    json.dumps(serialized_deals),
-                    expire=3600  # Cache for 1 hour
-                )
-                logger.info(f"Cached {len(serialized_deals)} deals for key {cache_key}")
+                serialized_deals_json = safe_json_dumps(serialized_deals)
+                if serialized_deals_json:
+                    await redis_client.set(
+                        cache_key,
+                        serialized_deals_json,
+                        expire=3600  # Cache for 1 hour
+                    )
+                    logger.info(f"Cached {len(serialized_deals)} deals for key {cache_key}")
+                else:
+                    logger.warning(f"Could not serialize deals for caching")
             except Exception as e:
                 logger.error(f"Error caching search results: {str(e)}")
                 
@@ -536,8 +754,14 @@ async def search_products(
                             cache_ttl = 3600  # Default: 1 hour
                             if market_type.lower() == 'amazon':
                                 cache_ttl = 1800  # 30 minutes for Amazon
-                            await redis_client.set(cache_key, json.dumps(products), ex=cache_ttl)
-                            logger.info(f"Cached {market_type} search results with TTL {cache_ttl}s")
+                            
+                            # Use safe_json_dumps to handle circular references
+                            serialized_products = safe_json_dumps(products)
+                            if serialized_products:
+                                await redis_client.set(cache_key, serialized_products, ex=cache_ttl)
+                                logger.info(f"Cached {market_type} search results with TTL {cache_ttl}s")
+                            else:
+                                logger.warning(f"Could not serialize {market_type} products for caching")
                         except Exception as e:
                             logger.warning(f"Error caching {market_type} search results: {str(e)}")
                     

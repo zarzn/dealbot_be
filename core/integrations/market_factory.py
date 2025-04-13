@@ -96,17 +96,62 @@ class MarketIntegrationFactory:
         
         if market.lower() == "amazon":
             if self.scraper_type == "oxylabs":
-                kwargs = {"max_results": limit}
+                region = "us"  # Default region
+                
+                # Extract region from geo_location if provided
                 if geo_location:
-                    kwargs["geo_location"] = geo_location
-                result = await scraper.search_amazon(query, **kwargs)
+                    geo_lower = geo_location.lower()
+                    if geo_lower in ["us", "uk", "ca", "de", "fr", "it", "es", "jp"]:
+                        region = geo_lower
                 
-                # Log the structure of the result for debugging
-                if isinstance(result, dict):
-                    logger.debug(f"Amazon search result keys: {list(result.keys())}")
+                # Additional Amazon-specific parameters - removing 'parse' to avoid duplicate parameter
+                kwargs = {
+                    "region": region,
+                    "limit": limit
+                    # Don't set parse here, it's already set in the OxylabsClient.search_amazon method
+                }
                 
-                # Return the raw result to let the caller handle the structure
-                return result
+                try:
+                    # Get the Amazon search results
+                    success, products, errors = await scraper.search_amazon(query, **kwargs)
+                    
+                    if not success:
+                        logger.warning(f"Amazon search failed: {errors}")
+                        return []
+                    
+                    # Process the products to ensure they are serializable
+                    processed_products = []
+                    
+                    # Handle potentially complex product structures
+                    if isinstance(products, list):
+                        for product in products:
+                            if isinstance(product, dict):
+                                # Only include serializable fields
+                                processed_product = {}
+                                
+                                # Essential fields
+                                for key in ["asin", "title", "url", "image_url", "price", "currency", "price_string",
+                                           "rating", "reviews_count", "sponsored", "manufacturer", "marketplace", 
+                                           "product_id", "price_value", "availability"]:
+                                    if key in product:
+                                        processed_product[key] = product[key]
+                                
+                                # Ensure we have an ID field
+                                if "asin" in processed_product:
+                                    processed_product["id"] = processed_product["asin"]
+                                elif "product_id" in processed_product:
+                                    processed_product["id"] = processed_product["product_id"]
+                                    
+                                # Add to processed list
+                                processed_products.append(processed_product)
+                    
+                    logger.info(f"Amazon search returned {len(processed_products)} processed products")
+                    
+                    # Return the processed products directly
+                    return processed_products
+                except Exception as e:
+                    logger.error(f"Error processing Amazon search results: {str(e)}", exc_info=True)
+                    return []
             else:
                 return await scraper.search_amazon(query, limit=limit)
         elif market.lower() == "walmart":
