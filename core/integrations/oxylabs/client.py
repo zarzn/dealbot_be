@@ -325,6 +325,8 @@ class OxylabsClient:
         self,
         query: str,
         limit: int = 10,
+        page: int = 1,
+        pages: int = 1,
         region: str = "us",
         sort_by: Optional[str] = None,
         min_price: Optional[float] = None,
@@ -338,6 +340,8 @@ class OxylabsClient:
         Args:
             query: Search query
             limit: Maximum number of results to return (default: 10)
+            page: Page number to retrieve (default: 1)
+            pages: Number of pages to retrieve (default: 1)
             region: Amazon region (default: us)
             sort_by: Sort results by (default: None)
             min_price: Minimum price filter (default: None)
@@ -353,7 +357,7 @@ class OxylabsClient:
         
         try:
             # Log the search request
-            logger.info(f"OxylabsClient: Searching Amazon for '{query}' in region '{region}'")
+            logger.info(f"OxylabsClient: Searching Amazon for '{query}' in region '{region}', page {page}, pages {pages}")
             
             # Get the Amazon service
             amazon_service = self.get_service(MarketType.AMAZON)
@@ -363,6 +367,8 @@ class OxylabsClient:
                 query=query,
                 region=region,
                 limit=limit,
+                page=page,
+                pages=pages,
                 parse=True,
                 cache_ttl=cache_ttl,
                 sort_by=sort_by,

@@ -74,17 +74,21 @@ class MarketIntegrationFactory:
         market: str,
         query: str,
         page: int = 1,
+        pages: int = 1,
         limit: int = 15,
-        geo_location: Optional[str] = None
+        geo_location: Optional[str] = None,
+        category: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Search for products in the specified market.
         
         Args:
             market: Market identifier (amazon, walmart, google_shopping, ebay)
             query: Search query string
-            page: Result page number (ignored in simplified API)
+            page: Result page number (default: 1)
+            pages: Number of pages to retrieve (default: 1)
             limit: Maximum number of products to return (default: 15)
             geo_location: Geographic location for localized results (optional)
+            category: Product category to filter results (optional)
             
         Returns:
             List of product dictionaries or dictionary with 'results' field containing product list
@@ -107,9 +111,15 @@ class MarketIntegrationFactory:
                 # Additional Amazon-specific parameters - removing 'parse' to avoid duplicate parameter
                 kwargs = {
                     "region": region,
-                    "limit": limit
+                    "limit": limit,
+                    "page": page,
+                    "pages": pages
                     # Don't set parse here, it's already set in the OxylabsClient.search_amazon method
                 }
+                
+                # Note: For Amazon, category is not directly supported by the Oxylabs API
+                # It should be used for post-scraping filtering only, not passed to the API
+                # We'll still include it in the method signature but won't pass it to search_amazon
                 
                 try:
                     # Get the Amazon search results
@@ -129,12 +139,53 @@ class MarketIntegrationFactory:
                                 # Only include serializable fields
                                 processed_product = {}
                                 
-                                # Essential fields
-                                for key in ["asin", "title", "url", "image_url", "price", "currency", "price_string",
-                                           "rating", "reviews_count", "sponsored", "manufacturer", "marketplace", 
-                                           "product_id", "price_value", "availability"]:
+                                # Essential fields - include both image_url and url_image 
+                                for key in ["asin", "title", "url", "image_url", "url_image", "price", "currency", "price_string",
+                                           "sponsored", "manufacturer", "marketplace", 
+                                           "product_id", "price_value", "availability", "original_price", "price_strikethrough",
+                                           "best_seller", "is_amazons_choice"]:
                                     if key in product:
                                         processed_product[key] = product[key]
+                                
+                                # Create seller_info if it doesn't exist
+                                if "seller_info" not in processed_product:
+                                    processed_product["seller_info"] = {}
+                                
+                                # Move rating and reviews_count into seller_info
+                                if "rating" in product:
+                                    processed_product["seller_info"]["rating"] = product["rating"]
+                                if "reviews_count" in product:
+                                    processed_product["seller_info"]["reviews"] = product["reviews_count"]
+                                
+                                # If we have price_strikethrough but not original_price, use it
+                                if "price_strikethrough" in product and product["price_strikethrough"] and not processed_product.get("original_price"):
+                                    try:
+                                        if isinstance(product["price_strikethrough"], (int, float)):
+                                            processed_product["original_price"] = float(product["price_strikethrough"])
+                                        elif isinstance(product["price_strikethrough"], str):
+                                            # Try to extract numeric price from string
+                                            import re
+                                            cleaned_price = re.sub(r'[^\d.]', '', product["price_strikethrough"])
+                                            if cleaned_price:
+                                                processed_product["original_price"] = float(cleaned_price)
+                                        logger.debug(f"Mapped price_strikethrough to original_price: {processed_product.get('original_price')}")
+                                    except Exception as e:
+                                        logger.warning(f"Failed to convert price_strikethrough to original_price: {e}")
+                                
+                                # Ensure we have an image_url field, prioritizing url_image if available
+                                if "url_image" in product and product["url_image"] and not processed_product.get("image_url"):
+                                    processed_product["image_url"] = product["url_image"]
+                                    logger.debug(f"Mapped url_image to image_url: {product['url_image']}")
+                                elif "image" in product and product["image"] and not processed_product.get("image_url"):
+                                    processed_product["image_url"] = product["image"]
+                                    logger.debug(f"Mapped image to image_url: {product['image']}")
+                                elif "images" in product and isinstance(product["images"], list) and product["images"] and not processed_product.get("image_url"):
+                                    # Extract first image from images array
+                                    if isinstance(product["images"][0], dict) and "url" in product["images"][0]:
+                                        processed_product["image_url"] = product["images"][0]["url"]
+                                    elif isinstance(product["images"][0], str):
+                                        processed_product["image_url"] = product["images"][0]
+                                    logger.debug(f"Extracted image_url from images array: {processed_product.get('image_url')}")
                                 
                                 # Ensure we have an ID field
                                 if "asin" in processed_product:
@@ -146,6 +197,10 @@ class MarketIntegrationFactory:
                                 processed_products.append(processed_product)
                     
                     logger.info(f"Amazon search returned {len(processed_products)} processed products")
+                    
+                    # Log image URL status for debugging
+                    image_urls_found = sum(1 for p in processed_products if "image_url" in p and p["image_url"])
+                    logger.info(f"Found image URLs for {image_urls_found} out of {len(processed_products)} products")
                     
                     # Return the processed products directly
                     return processed_products
@@ -159,7 +214,21 @@ class MarketIntegrationFactory:
                 kwargs = {"max_results": limit}
                 if geo_location:
                     kwargs["geo_location"] = geo_location
+                # Note: Category is not used directly in the scraper API, only for post-processing
                 result = await scraper.search_walmart(query, **kwargs)
+                
+                # Process the results to ensure consistent structure for the frontend
+                if isinstance(result, dict) and "results" in result and isinstance(result["results"], list):
+                    for product in result["results"]:
+                        # Create seller_info object if needed
+                        if "seller_info" not in product:
+                            product["seller_info"] = {}
+                        
+                        # Move rating and reviews to seller_info
+                        if "rating" in product:
+                            product["seller_info"]["rating"] = product["rating"]
+                        if "reviews_count" in product:
+                            product["seller_info"]["reviews"] = product["reviews_count"]
                 
                 # Log the structure of the result for debugging
                 if isinstance(result, dict):
@@ -174,7 +243,21 @@ class MarketIntegrationFactory:
                 kwargs = {"max_results": limit}
                 if geo_location:
                     kwargs["geo_location"] = geo_location
+                # Note: Category is not used directly in the scraper API, only for post-processing
                 result = await scraper.search_google_shopping(query, **kwargs)
+                
+                # Process the results to ensure consistent structure for the frontend
+                if isinstance(result, dict) and "results" in result and isinstance(result["results"], list):
+                    for product in result["results"]:
+                        # Create seller_info object if needed
+                        if "seller_info" not in product:
+                            product["seller_info"] = {}
+                        
+                        # Move rating and reviews to seller_info
+                        if "rating" in product:
+                            product["seller_info"]["rating"] = product["rating"]
+                        if "reviews_count" in product:
+                            product["seller_info"]["reviews"] = product["reviews_count"]
                 
                 # Log the structure of the result for debugging
                 if isinstance(result, dict):
@@ -189,7 +272,21 @@ class MarketIntegrationFactory:
                 kwargs = {"max_results": limit}
                 if geo_location:
                     kwargs["geo_location"] = geo_location
+                # Note: Category is not used directly in the scraper API, only for post-processing
                 result = await scraper.search_ebay(query, **kwargs)
+                
+                # Process the results to ensure consistent structure for the frontend
+                if isinstance(result, dict) and "results" in result and isinstance(result["results"], list):
+                    for product in result["results"]:
+                        # Create seller_info object if needed
+                        if "seller_info" not in product:
+                            product["seller_info"] = {}
+                        
+                        # Move rating and reviews to seller_info
+                        if "rating" in product:
+                            product["seller_info"]["rating"] = product["rating"]
+                        if "reviews_count" in product:
+                            product["seller_info"]["reviews"] = product["reviews_count"]
                 
                 # Log the structure of the result for debugging
                 if isinstance(result, dict):

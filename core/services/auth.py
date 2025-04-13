@@ -180,6 +180,10 @@ async def create_access_token(
 ) -> str:
     """Create a new JWT access token."""
     try:
+        # Log detailed info for debugging token issues
+        logger.info(f"Creating access token with data: {data}")
+        logger.info(f"Token expiration delta: {expires_delta}")
+        
         # Create a copy of the data to avoid modifying the original
         to_encode = data.copy()
         
@@ -188,6 +192,9 @@ async def create_access_token(
             expire = datetime.utcnow() + expires_delta
         else:
             expire = datetime.utcnow() + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+        
+        # Log token expiration details
+        logger.info(f"Token will expire at: {expire} (UTC)")
         
         # Ensure expiration time is properly formatted as timestamp
         to_encode.update({
@@ -214,21 +221,30 @@ async def create_access_token(
         # Get the JWT secret key
         jwt_secret = get_jwt_secret_key()
         
+        # Check if we got a valid secret key
+        if not jwt_secret:
+            logger.error("JWT secret key is empty or None")
+            raise ValueError("JWT secret key is missing")
+        
         # Make sure the JWT secret key is a string
         if not isinstance(jwt_secret, str):
+            logger.info(f"Converting JWT secret from {type(jwt_secret)} to string")
             jwt_secret = str(jwt_secret)
         
         # Encode the JWT token
+        logger.info(f"Encoding JWT with algorithm: {settings.JWT_ALGORITHM}")
         token = jwt.encode(
             to_encode,
             jwt_secret,
             algorithm=settings.JWT_ALGORITHM
         )
         
+        logger.info(f"Successfully created access token for user: {to_encode.get('sub', 'unknown')}")
         return token
     except Exception as e:
-        # Log the error
+        # Log the error with full details
         logger.error(f"JWT token creation error: {str(e)}", exc_info=True)
+        logger.error(f"Token data: {data}")
         
         # For testing environment, return a properly formatted JWT test token
         if settings.TESTING or os.environ.get("TESTING") == "true":

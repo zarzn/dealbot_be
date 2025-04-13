@@ -43,7 +43,7 @@ async def setup_middleware(app: FastAPI) -> None:
     # Add CORS middleware first
     cors_origins = settings.CORS_ORIGINS
     # In development environment, use specific origins for local development
-    if settings.APP_ENVIRONMENT.lower() == "development":
+    if str(settings.APP_ENVIRONMENT).lower() == "development":
         # Can't use wildcard with credentials, so specify exact origins
         cors_origins = ["http://localhost:3000", "http://127.0.0.1:3000", "https://localhost:3000"]
         
@@ -52,7 +52,9 @@ async def setup_middleware(app: FastAPI) -> None:
         allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-        allow_headers=["Content-Type", "X-Amz-Date", "Authorization", "X-Api-Key", "X-Amz-Security-Token", "X-Requested-With"],
+        allow_headers=["Content-Type", "X-Amz-Date", "Authorization", "X-Api-Key", "X-Amz-Security-Token", 
+                       "X-Requested-With", "Accept", "Origin", "Access-Control-Request-Method", 
+                       "Access-Control-Request-Headers"],
         expose_headers=["Content-Type", "X-Amz-Date", "Authorization", "X-Api-Key", "X-Amz-Security-Token", "X-Requested-With"],
         max_age=600  # 10 minutes
     )

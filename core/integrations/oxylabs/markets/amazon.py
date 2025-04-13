@@ -101,9 +101,12 @@ class AmazonOxylabsService(OxylabsMarketBaseService):
         self, 
         query: str, 
         region: str = "us", 
-        limit: int = 10,
+        limit: int = None,
+        page: int = 1,
+        pages: int = 1,
         parse: bool = True,
         geo_location: Optional[str] = None,
+        category: Optional[str] = None,
         **kwargs
     ) -> OxylabsResult:
         """Search for products on Amazon.
@@ -111,9 +114,12 @@ class AmazonOxylabsService(OxylabsMarketBaseService):
         Args:
             query: Search query
             region: Amazon region (default: us)
-            limit: Maximum number of results to return (default: 10)
+            limit: Maximum number of results to return (optional, legacy parameter)
+            page: Page number to fetch (default: 1)
+            pages: Number of pages to fetch (default: 1)
             parse: Whether to parse results (default: True)
             geo_location: Geo location for the request (default: None)
+            category: Category to filter results (default: None)
             **kwargs: Additional parameters for the search
         
         Returns:
@@ -124,7 +130,7 @@ class AmazonOxylabsService(OxylabsMarketBaseService):
             logger.info(f"Searching Amazon for '{query}' in region '{region}'")
             
             # Set up parameters
-            cache_key = f"amazon:search:{region}:{query}:{limit}"
+            cache_key = f"amazon:search:{region}:{query}:{page}:{pages}:{category}"
             cache_ttl = kwargs.pop("cache_ttl", self.default_cache_ttl)
 
             # Check cache for existing results
@@ -145,7 +151,9 @@ class AmazonOxylabsService(OxylabsMarketBaseService):
                 "domain": self._get_domain(region),  # e.g., "com" for US
                 "query": query,
                 "parse": parse,
-                "user_agent_type": "desktop"
+                "user_agent_type": "desktop",
+                "page": page,
+                "pages": pages
             }
             
             # Add sorting if specified
@@ -158,12 +166,15 @@ class AmazonOxylabsService(OxylabsMarketBaseService):
             if max_price is not None:
                 params["max_price"] = max_price
                 
-            # Add limit for results
+            # Add limit for results if specified (for backwards compatibility)
             if limit:
                 params["limit"] = limit
             
             # Add any remaining custom parameters
-            params.update({k: v for k, v in kwargs.items() if k not in ["cache_ttl", "geo_location"]})
+            params.update({k: v for k, v in kwargs.items() if k not in ["cache_ttl", "geo_location", "category"]})
+            
+            # Note: category parameter is intentionally not added to params as it's not supported by the Amazon parser API
+            # It's kept in the method signature and cache key for post-processing purposes
             
             # Execute the request
             start_time = time.time()
@@ -581,8 +592,10 @@ class AmazonOxylabsService(OxylabsMarketBaseService):
         image_url = None
         if "url_image" in content and content["url_image"]:
             image_url = content["url_image"]
+            logger.debug(f"Using url_image for product: {product_data.get('asin', 'unknown')}: {image_url}")
         elif "image_url" in content and content["image_url"]:
             image_url = content["image_url"]
+            logger.debug(f"Using image_url for product: {product_data.get('asin', 'unknown')}: {image_url}")
         elif "images" in content:
             images = content.get("images", [])
             if isinstance(images, list) and images:
@@ -592,6 +605,7 @@ class AmazonOxylabsService(OxylabsMarketBaseService):
                     image_url = images[0]
             elif isinstance(images, dict) and "main" in images:
                 image_url = images["main"]
+            logger.debug(f"Using images data for product: {product_data.get('asin', 'unknown')}: {image_url}")
                 
         product_data["image_url"] = image_url
         
@@ -643,6 +657,8 @@ class AmazonOxylabsService(OxylabsMarketBaseService):
         
         # Extract additional product details
         product_data["brand"] = content.get("brand", None)
+        # Map brand to manufacturer for consistency with expected field names
+        product_data["manufacturer"] = content.get("brand", None)
         product_data["description"] = content.get("description", None)
         product_data["features"] = content.get("features", [])
         product_data["categories"] = content.get("categories", [])
@@ -681,11 +697,30 @@ class AmazonOxylabsService(OxylabsMarketBaseService):
         
         # Extract bestseller information
         if "bestseller" in content:
+            # Store original bestseller data
             product_data["bestseller"] = content["bestseller"]
+            # Add best_seller (with underscore) for consistency with expected field names
+            product_data["best_seller"] = content["bestseller"]
             # Extract bestseller rank if available
             if isinstance(content["bestseller"], dict):
                 product_data["bestseller_rank"] = content["bestseller"].get("rank", None)
                 product_data["bestseller_category"] = content["bestseller"].get("category", None)
+        else:
+            # If no bestseller information is available, set best_seller to False by default
+            product_data["best_seller"] = False
+        
+        # Extract Amazon's Choice information
+        if "amazons_choice" in content:
+            # Store original amazons_choice data
+            product_data["amazons_choice"] = content["amazons_choice"]
+            # Add is_amazons_choice (with is_ prefix) for consistency with expected field names
+            product_data["is_amazons_choice"] = content["amazons_choice"]
+            # Extract Amazon's Choice category if available
+            if isinstance(content["amazons_choice"], dict):
+                product_data["amazons_choice_category"] = content["amazons_choice"].get("category", None)
+        else:
+            # If no Amazon's Choice information is available, set is_amazons_choice to False by default
+            product_data["is_amazons_choice"] = False
         
         # Extract review highlights
         reviews = content.get("reviews", {})
@@ -708,6 +743,11 @@ class AmazonOxylabsService(OxylabsMarketBaseService):
         # Extract Prime information
         if "prime" in content:
             product_data["prime"] = content["prime"]
+            # Add is_prime (with is_ prefix) for consistency with expected field names
+            product_data["is_prime"] = content["prime"]
+        else:
+            # If no prime information is available, set is_prime to False by default
+            product_data["is_prime"] = False
         
         # Remove None values for a cleaner response
         return {k: v for k, v in product_data.items() if v is not None} 

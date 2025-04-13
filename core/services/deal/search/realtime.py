@@ -19,7 +19,7 @@ from sqlalchemy import select, or_, cast, String
 
 from core.models.deal import Deal
 from core.models.market import Market
-from core.models.enums import MarketStatus
+from core.models.enums import MarketStatus, MarketCategory
 from core.services.deal.search.post_scraping_filter import (
     post_process_products,
     extract_price_constraints,
@@ -155,6 +155,7 @@ async def perform_realtime_scraping(
         all_filtered_products = []
         product_scores = {}
         search_markets = []
+        ai_detected_category = None
         
         # Extract price constraints if not provided
         if min_price is None or max_price is None:
@@ -273,11 +274,35 @@ async def perform_realtime_scraping(
         # Get optimized queries for all markets in a single AI request
         market_types = [market_type for _, market_type, _ in search_markets]
         try:
+            # Use the new enhanced AI analysis that includes category detection
             optimized_queries = await get_optimized_queries_for_marketplaces(
                 query, market_types, ai_service
             )
+            
+            # Check if we have any valid optimized queries with category information
+            if optimized_queries and any(isinstance(optimized_queries.get(market_type), dict) for market_type in market_types):
+                # Loop through market types to find a consistent category
+                categories_detected = []
+                for market_type in market_types:
+                    market_data = optimized_queries.get(market_type, {})
+                    if isinstance(market_data, dict) and market_data.get("category"):
+                        categories_detected.append(market_data["category"])
+                
+                # Use the most common category if we found any
+                if categories_detected:
+                    from collections import Counter
+                    category_counts = Counter(categories_detected)
+                    ai_detected_category = category_counts.most_common(1)[0][0]
+                    
+                    logger.info(f"AI detected product category: {ai_detected_category}")
+                    
+                    # If no category was provided in the arguments, use the AI-detected one
+                    if not category:
+                        logger.info(f"Using AI-detected category: {ai_detected_category}")
+                        category = ai_detected_category
+            
         except Exception as e:
-            logger.error(f"Error getting optimized queries in batch: {str(e)}")
+            logger.error(f"Error getting optimized queries with category in batch: {str(e)}")
             # Create empty dict that will be filled with individual formatting in the market search loop
             optimized_queries = {}
         
@@ -285,16 +310,19 @@ async def perform_realtime_scraping(
         async def process_market_search(market_info):
             market_name, market_type, market_id = market_info
             
+            # Import json at the beginning of the function
+            import json
+            
             # Set a timeout based on market type
-            timeout = 25.0  # Default timeout: 25 seconds
+            timeout = 20.0  # Default timeout: 25 seconds
             
             # Adaptive timeouts based on market type
             if market_type.lower() == 'google_shopping':
-                timeout = 60.0  # Google Shopping needs more time
+                timeout = 20.0  # Google Shopping needs more time
             elif market_type.lower() == 'amazon':
-                timeout = 60.0  # Amazon timeout
+                timeout = 20.0  # Amazon timeout
             elif market_type.lower() == 'walmart':
-                timeout = 25.0  # Walmart timeout
+                timeout = 20.0  # Walmart timeout
             
             # Create a cache key specific to this market
             market_cache_key = f"{cache_key}:{market_type.lower()}"
@@ -324,16 +352,32 @@ async def perform_realtime_scraping(
                 # If not cached, perform actual search
                 logger.info(f"Starting search for {market_name} with timeout of {timeout} seconds")
                 
-                # Format query for this specific market if needed
+                # Extract AI-optimized data for this market if available
                 formatted_query = query
-                if market_type.lower() in optimized_queries:
-                    formatted_query = optimized_queries[market_type.lower()].get("formatted_query", query)
-                    logger.info(f"Optimized query for {market_name}: '{query}' -> '{formatted_query}'")
+                market_specific_category = category
                 
-                # Create search params with country/geo_location
+                if market_type.lower() in optimized_queries:
+                    market_data = optimized_queries[market_type.lower()]
+                    # Use optimized query if available
+                    if isinstance(market_data, dict) and "formatted_query" in market_data:
+                        formatted_query = market_data["formatted_query"]
+                        logger.info(f"Optimized query for {market_name}: '{query}' -> '{formatted_query}'")
+                        
+                        # Use market-specific category if available and no explicit category was provided
+                        if not category and "category" in market_data and market_data["category"]:
+                            market_specific_category = market_data["category"]
+                            logger.info(f"Using AI-detected category for {market_name}: {market_specific_category}")
+                
+                # Set up parameters
                 search_params = {
-                    "limit": max_products,
+                    "page": 1,
+                    "pages": 1
+                    # Don't include limit parameter - using page/pages approach instead
                 }
+                
+                # Add category parameter if available
+                if market_specific_category:
+                    search_params["category"] = market_specific_category
                 
                 # Only add geo_location for non-Amazon markets
                 if market_type.lower() != "amazon":
@@ -355,7 +399,6 @@ async def perform_realtime_scraping(
                         if result and not isinstance(result, list) and "error" not in result:
                             try:
                                 if redis_client:
-                                    import json  # Import json in this scope
                                     # Use safe_json_dumps to handle circular references
                                     serialized_result = safe_json_dumps(result)
                                     if serialized_result:
@@ -551,13 +594,18 @@ async def perform_realtime_scraping(
                 filtered_products = products_list
                 logger.info(f"Using raw products due to post-processing failure: {len(filtered_products)} products")
             
-            # Add search query and market data to products
+            # Add search query, market data, and category to products
             for product in filtered_products:
                 product["search_query"] = query
                 product["source"] = market_type.lower()
                 product["market_type"] = market_type
                 product["market_id"] = str(market_id)
                 product["market_name"] = market_name
+                # Add the category if available
+                if category:
+                    product["category"] = category
+                elif ai_detected_category:
+                    product["category"] = ai_detected_category
                 
             # Filter out products with zero or negative prices
             valid_products = [p for p in filtered_products if 
@@ -638,17 +686,19 @@ async def perform_realtime_scraping(
                         "title": deal.title,
                         "price": float(deal.price) if deal.price else 0,
                         "market_id": str(deal.market_id) if deal.market_id else None,
-                        "url": deal.url
+                        "url": deal.url,
+                        # Include category if available
+                        "category": deal.category if hasattr(deal, 'category') and deal.category else None
                     }
                     serialized_deals.append(deal_dict)
                     
                 # Store in Redis with TTL
                 serialized_deals_json = safe_json_dumps(serialized_deals)
                 if serialized_deals_json:
-                    await redis_client.set(
+                    await redis_client.setex(
                         cache_key,
-                        serialized_deals_json,
-                        expire=3600  # Cache for 1 hour
+                        3600,  # Cache for 1 hour
+                        serialized_deals_json
                     )
                     logger.info(f"Cached {len(serialized_deals)} deals for key {cache_key}")
                 else:
@@ -758,7 +808,7 @@ async def search_products(
                             # Use safe_json_dumps to handle circular references
                             serialized_products = safe_json_dumps(products)
                             if serialized_products:
-                                await redis_client.set(cache_key, serialized_products, ex=cache_ttl)
+                                await redis_client.setex(cache_key, cache_ttl, serialized_products)
                                 logger.info(f"Cached {market_type} search results with TTL {cache_ttl}s")
                             else:
                                 logger.warning(f"Could not serialize {market_type} products for caching")

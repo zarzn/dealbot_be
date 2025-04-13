@@ -3,6 +3,7 @@
 import logging
 from typing import Any, Dict, List, Optional, Union
 import asyncio
+import re
 
 from core.integrations.oxylabs.market_base import OxylabsMarketBaseService, OxylabsResult
 from core.integrations.oxylabs.utils import extract_price, detect_currency
@@ -304,6 +305,29 @@ class GoogleShoppingOxylabsService(OxylabsMarketBaseService):
                 "variants": raw_data.get("variants", []),
                 "category": raw_data.get("category", None),
             }
+            
+            # Extract original price for discounted items - check multiple possible field names
+            for orig_price_field in ['price_strikethrough', 'was_price', 'list_price', 'original_price', 'msrp', 'strike_price']:
+                if orig_price_field in raw_data and raw_data[orig_price_field]:
+                    try:
+                        if isinstance(raw_data[orig_price_field], (int, float)):
+                            product_data["original_price"] = float(raw_data[orig_price_field])
+                        elif isinstance(raw_data[orig_price_field], str):
+                            # Try to extract numeric price from string
+                            cleaned_price = re.sub(r'[^\d.]', '', raw_data[orig_price_field])
+                            if cleaned_price:
+                                product_data["original_price"] = float(cleaned_price)
+                        # Only use original price if it's higher than current price
+                        if "original_price" in product_data and "price" in product_data:
+                            if product_data["original_price"] <= product_data["price"]:
+                                logger.debug(f"Original price {product_data['original_price']} is not higher than current price {product_data['price']}, ignoring")
+                                del product_data["original_price"]
+                            else:
+                                logger.debug(f"Found original price {product_data['original_price']} for item {product_data.get('item_id', 'unknown')}")
+                                break
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Failed to parse original price from {orig_price_field}: {raw_data[orig_price_field]}, error: {e}")
+                        continue
             
             # Add any additional fields that might be present
             for key, value in raw_data.items():

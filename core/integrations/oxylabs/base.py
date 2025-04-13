@@ -207,8 +207,8 @@ class OxylabsBaseService:
                 
                 if redis_client:
                     try:
-                        # Use safe_get to prevent recursion issues
-                        cached_data = await redis_client.safe_get(f"oxylabs:{cache_key}")
+                        # Use get instead of safe_get to prevent missing method issues
+                        cached_data = await redis_client.get(f"oxylabs:{cache_key}")
                         if cached_data:
                             try:
                                 # Simple type check to avoid recursion issues
@@ -280,11 +280,11 @@ class OxylabsBaseService:
                     try:
                         # Convert to JSON string first to avoid complex serialization issues
                         json_data = json.dumps(value, default=str)
-                        # Use safe_set to prevent recursion issues
-                        await redis_client.safe_set(
+                        # Use setex instead of safe_set to prevent missing method issues
+                        await redis_client.setex(
                             f"oxylabs:{cache_key}",
-                            json_data,
-                            ex=ttl
+                            ttl,
+                            json_data
                         )
                     except Exception as e:
                         # Log error but continue since we already have in-memory cache

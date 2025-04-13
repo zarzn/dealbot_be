@@ -14,7 +14,7 @@ import uuid
 import hashlib
 
 from core.models.deal import Deal, DealStatus
-from core.models.enums import MarketType
+from core.models.enums import MarketType, MarketCategory
 from core.exceptions import InvalidDealDataError
 from core.utils.validation import Validator
 
@@ -108,6 +108,46 @@ async def _create_deal_from_scraped_data(self, deal_data: Dict[str, Any]) -> Opt
             except (ValueError, TypeError, InvalidOperation):
                 logger.warning(f"Could not convert price to Decimal: {price}, skipping")
                 return None
+                
+        # Validate and convert category against MarketCategory enum
+        category = deal_data.get('category', 'OTHER')
+        if category:
+            try:
+                # Try to match the category directly with the enum values
+                valid_category = False
+                normalized_category = str(category).upper()
+                
+                # Check for exact matches first
+                for cat_enum in MarketCategory:
+                    # Use uppercase for both sides of the comparison
+                    if cat_enum.value.upper() == normalized_category:
+                        valid_category = True
+                        category = cat_enum.value
+                        logger.info(f"Found exact category match: {category}")
+                        break
+                
+                # If no exact match, try to find a close match
+                if not valid_category:
+                    for cat_enum in MarketCategory:
+                        # Use uppercase for both sides when checking containment
+                        if normalized_category in cat_enum.value.upper() or cat_enum.value.upper() in normalized_category:
+                            valid_category = True
+                            category = cat_enum.value
+                            logger.info(f"Found partial category match: {normalized_category} -> {category}")
+                            break
+                
+                # If still no match, default to OTHER
+                if not valid_category:
+                    category = "OTHER"
+                    logger.info(f"No matching category found for '{normalized_category}', defaulting to OTHER")
+            except Exception as e:
+                logger.warning(f"Error validating category '{category}': {str(e)}, defaulting to OTHER")
+                category = "OTHER"
+        else:
+            category = "OTHER"
+            
+        # Update the category in deal_data
+        deal_data['category'] = category
                 
         # Extract market ID based on source
         market_id = None
@@ -224,7 +264,7 @@ async def _create_deal_from_scraped_data(self, deal_data: Dict[str, Any]) -> Opt
             'currency': deal_data.get('currency', 'USD'),
             'source': source,
             'image_url': deal_data.get('image_url', ''),
-            'category': deal_data.get('category', 'other'),
+            'category': category,  # Use the validated category
             'seller_info': deal_data.get('seller_info', {}),
             'availability': deal_data.get('availability', {}),
             'found_at': datetime.now(),
@@ -236,6 +276,10 @@ async def _create_deal_from_scraped_data(self, deal_data: Dict[str, Any]) -> Opt
             }
         }
         
+        # Store AI analysis data in deal_metadata if available
+        if deal_data.get('ai_analysis'):
+            create_data['deal_metadata']['ai_analysis'] = deal_data.get('ai_analysis')
+        
         # Validate the data before creating the deal
         validated_data = await self.validate_deal_data(create_data)
         
@@ -246,7 +290,7 @@ async def _create_deal_from_scraped_data(self, deal_data: Dict[str, Any]) -> Opt
             
         # Create the deal
         deal = await self._repository.create(validated_data)
-        logger.info(f"Successfully created deal: {deal.title[:30]}... from scraped data")
+        logger.info(f"Successfully created deal: {deal.title[:30]}... from scraped data with category: {deal.category}")
         return deal
         
     except Exception as e:

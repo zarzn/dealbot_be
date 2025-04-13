@@ -2,7 +2,7 @@
 
 from typing import List, Dict, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, WebSocket, status
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, WebSocket, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime, timedelta
 import logging
@@ -65,13 +65,44 @@ async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time notifications."""
     await handle_websocket(websocket)
 
+@router.options("/websocket-token")
+async def websocket_token_options(request: Request):
+    """Handle OPTIONS requests for the WebSocket token endpoint.
+    
+    This ensures CORS preflight requests are properly handled.
+    """
+    logger.info("OPTIONS request received for websocket-token endpoint")
+    from fastapi.responses import JSONResponse
+    
+    # Get the origin from the request, defaulting to localhost:3000
+    origin = request.headers.get("origin", "http://localhost:3000")
+    logger.info(f"Handling OPTIONS request from origin: {origin}")
+    
+    # Create a response with proper CORS headers
+    headers = {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+        "Access-Control-Allow-Headers": "Content-Type, X-Amz-Date, Authorization, X-Api-Key, X-Amz-Security-Token, X-Requested-With, Accept, Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Max-Age": "600"  # 10 minutes
+    }
+    
+    return JSONResponse(content={"detail": "OK"}, headers=headers, status_code=200)
+
 @router.get("/websocket-token")
-async def get_websocket_token(current_user: User = Depends(get_current_user)):
+async def get_websocket_token(request: Request, current_user: User = Depends(get_current_user)):
     """Generate a token for WebSocket authentication.
     
     Returns:
         Dict with token that can be used for WebSocket authentication
     """
+    from fastapi.responses import JSONResponse
+    from fastapi import Request
+    
+    # Get the origin from the request, defaulting to localhost:3000
+    origin = request.headers.get("origin", "http://localhost:3000")
+    logger.info(f"Handling websocket-token request from origin: {origin}")
+    
     # Enhanced test mode detection - check both environment variable and settings
     is_test_mode = (
         os.environ.get("TESTING", "").lower() in ("true", "1", "yes") or 
@@ -90,32 +121,46 @@ async def get_websocket_token(current_user: User = Depends(get_current_user)):
     except Exception:
         has_mock_user = True
     
+    # Common CORS headers for all responses
+    headers = {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+        "Access-Control-Allow-Headers": "Content-Type, X-Amz-Date, Authorization, X-Api-Key, X-Amz-Security-Token, X-Requested-With, Accept, Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+        "Access-Control-Allow-Credentials": "true"
+    }
+    
     # In test mode or with mock user, always return a test token without even trying JWT operations
     if is_test_mode or has_mock_user:
         token_type = "test" if is_test_mode else "mock_user"
         logger.info(f"Using test token for WebSocket authentication in {token_type} environment")
-        return {"token": f"test_websocket_token_{token_type}"}
+        return JSONResponse(content={"token": f"test_websocket_token_{token_type}"}, headers=headers)
         
     try:
         # Create a short-lived token specifically for WebSocket connections
         token_data = {"sub": user_id, "type": "websocket"}
+        logger.info(f"Generating WebSocket token for user: {user_id}")
         token = await create_access_token(
             data=token_data,
             expires_delta=timedelta(minutes=60)  # 1 hour expiration for WebSocket tokens
         )
-        return {"token": token}
+        return JSONResponse(content={"token": token}, headers=headers)
     except Exception as e:
         logger.error(f"Failed to generate WebSocket token: {str(e)}\n{traceback.format_exc()}")
         
         # Always return a fallback token in test mode or with mock users
         if is_test_mode or has_mock_user:
             logger.warning("Using fallback test token due to error in test environment")
-            return {"token": "test_websocket_token_fallback"}
+            return JSONResponse(content={"token": "test_websocket_token_fallback"}, headers=headers)
         
-        # Production environment - raise an HTTP exception
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to generate WebSocket token: {str(e)}"
+        # Production environment - raise an HTTP exception with more details
+        error_msg = f"Failed to generate WebSocket token: {str(e)}"
+        logger.error(f"WebSocket token error details: {error_msg}")
+        
+        # Create error response with CORS headers to avoid CORS errors on error responses
+        return JSONResponse(
+            content={"detail": error_msg}, 
+            status_code=500,
+            headers=headers
         )
 
 @router.get(
