@@ -217,38 +217,94 @@ class OxylabsMarketBaseService(OxylabsBaseService):
         """
         try:
             # Try with primary source
-            logger.debug(f"{self.market_name} {operation_name} - Using source: {params.get('source')}")
+            current_source = params.get('source')
+            logger.debug(f"{self.market_name} {operation_name} - Using source: {current_source}")
             
             result = await self.scrape_url(params, cache_ttl=cache_ttl)
             
-            # If failed and we have a fallback, try it
-            if not result.success and self.fallback_source:
+            # Add the source to the result object for easier source tracking
+            if not hasattr(result, 'source') or result.source is None:
+                result.source = current_source
+                logger.debug(f"Added source attribute: {current_source} to result")
+            
+            # Check for success with actual data
+            has_data = False
+            if result.success and isinstance(result.results, list):
+                has_data = len(result.results) > 0
+                
+            # If failed or no data and we have a fallback, try it
+            if (not result.success or not has_data) and self.fallback_source and self.fallback_source != current_source:
                 logger.warning(
-                    f"{self.market_name} {operation_name} - Primary source failed, "
+                    f"{self.market_name} {operation_name} - Primary source failed or returned no data, "
                     f"trying fallback source: {self.fallback_source}"
                 )
-                params["source"] = self.fallback_source
-                result = await self.scrape_url(params, cache_ttl=cache_ttl)
                 
+                # Make a copy of params to avoid modifying the original
+                fallback_params = params.copy()
+                fallback_params["source"] = self.fallback_source
+                
+                # Try the fallback source
+                fallback_result = await self.scrape_url(fallback_params, cache_ttl=cache_ttl)
+                
+                # Add the fallback source to the result object
+                if not hasattr(fallback_result, 'source') or fallback_result.source is None:
+                    fallback_result.source = self.fallback_source
+                    logger.debug(f"Added fallback source attribute: {self.fallback_source} to result")
+                
+                # Check if fallback was successful with data
+                fallback_has_data = False
+                if fallback_result.success and isinstance(fallback_result.results, list):
+                    fallback_has_data = len(fallback_result.results) > 0
+                
+                # Use fallback if it's better than the primary
+                if (fallback_result.success and not result.success) or (fallback_has_data and not has_data):
+                    logger.info(f"{self.market_name} {operation_name} - Using fallback source results")
+                    return fallback_result
+                else:
+                    logger.info(f"{self.market_name} {operation_name} - Fallback not better than primary, using primary")
+                
+            # Add warning if no data
+            if result.success and not has_data:
+                logger.warning(f"{self.market_name} {operation_name} - Successful request but no results found")
+                if not result.errors:
+                    result.errors = ["Success but no results found"]
+                    
             return result
             
         except Exception as e:
-            logger.error(f"Error in {self.market_name} {operation_name}: {str(e)}")
+            error_msg = f"Error in {self.market_name} {operation_name}: {str(e)}"
+            logger.error(error_msg)
             
             # Try fallback on exception if available
             if self.fallback_source and params.get("source") != self.fallback_source:
                 try:
                     logger.debug(f"{self.market_name} {operation_name} - Using fallback source after error: {self.fallback_source}")
-                    params["source"] = self.fallback_source
-                    return await self.scrape_url(params, cache_ttl=cache_ttl)
+                    # Make a copy of params to avoid modifying the original
+                    fallback_params = params.copy()
+                    fallback_params["source"] = self.fallback_source
+                    
+                    result = await self.scrape_url(fallback_params, cache_ttl=cache_ttl)
+                    
+                    # Add the fallback source to the result object
+                    if not hasattr(result, 'source') or result.source is None:
+                        result.source = self.fallback_source
+                        logger.debug(f"Added fallback source attribute: {self.fallback_source} to result")
+                        
+                    return result
                 except Exception as fallback_error:
                     logger.error(f"Error in {self.market_name} {operation_name} fallback: {str(fallback_error)}")
             
             # Return error result if all fails
-            return OxylabsResult(
+            error_result = OxylabsResult(
                 success=False,
                 start_url=params.get("url", ""),
                 results=[],
                 raw_results={},
-                errors=[str(e)]
-            ) 
+                status_code=500,
+                errors=[error_msg]
+            )
+            
+            # Add source to error result for consistency
+            error_result.source = params.get("source", self.fallback_source)
+            
+            return error_result 

@@ -289,7 +289,24 @@ class GoogleShoppingOxylabsService(OxylabsMarketBaseService):
                 if not currency:
                     # Default to USD if detection fails
                     currency = "USD"
-                    
+            
+            # Handle image data - check multiple possible fields
+            image_url = None
+            
+            # First check direct image_url field
+            if "image_url" in raw_data and raw_data["image_url"]:
+                image_url = raw_data["image_url"]
+            # Then check thumbnail field which is common in Google Shopping
+            elif "thumbnail" in raw_data and raw_data["thumbnail"]:
+                image_url = raw_data["thumbnail"]
+                logger.info(f"Using thumbnail as image_url: {image_url}")
+            # Also check other possible image field names
+            elif "image" in raw_data and raw_data["image"]:
+                image_url = raw_data["image"]
+            elif "images" in raw_data and raw_data["images"] and isinstance(raw_data["images"], list) and len(raw_data["images"]) > 0:
+                # If images is a list, take the first one
+                image_url = raw_data["images"][0]
+                
             # Create standardized product data structure
             product_data = {
                 "title": title,
@@ -298,7 +315,7 @@ class GoogleShoppingOxylabsService(OxylabsMarketBaseService):
                 "rating": raw_data.get("rating", None),
                 "reviews_count": raw_data.get("reviews_count", None),
                 "availability": raw_data.get("availability", None),
-                "image_url": raw_data.get("image_url", None),
+                "image_url": image_url,
                 "seller": raw_data.get("seller", None),
                 "description": raw_data.get("description", ""),
                 "item_id": raw_data.get("item_id", None),

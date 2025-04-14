@@ -244,6 +244,89 @@ class OxylabsClient:
             if market_key in self._market_failures:
                 self._market_failures[market_key] = 0
 
+    def _create_safe_copy(self, data: Any) -> Any:
+        """Create a safe copy of data by removing potential circular references.
+        
+        Args:
+            data: Data to create a safe copy of
+            
+        Returns:
+            Safe copy of data
+        """
+        # Use a stack-based approach to avoid recursion depth issues
+        if data is None:
+            return None
+            
+        # Handle primitive types directly to reduce processing
+        if isinstance(data, (str, int, float, bool, type(None))):
+            return data
+            
+        # Handle dictionary type
+        if isinstance(data, dict):
+            # Create a new dict with safe copies of values
+            result = {}
+            # Skip these keys that could cause circular references or hold non-serializable data
+            skip_keys = [
+                "_client", "_service", "_session", "client", "service", "session",
+                "connection", "connector", "_connector", "app", "_app", "request"
+            ]
+            
+            for key, value in data.items():
+                # Skip problematic keys
+                if key in skip_keys:
+                    continue
+                    
+                # Skip callable objects
+                if callable(value):
+                    continue
+                    
+                # Recursively create safe copies of values
+                try:
+                    safe_value = self._create_safe_copy(value)
+                    if safe_value is not None:  # Skip None values to reduce output size
+                        result[key] = safe_value
+                except (RecursionError, TypeError, ValueError) as e:
+                    # If error occurs, use a string representation instead
+                    result[key] = f"<Complex object: {type(value).__name__}>"
+                    logger.warning(f"Error creating safe copy of '{key}': {str(e)}")
+                    
+            return result
+            
+        # Handle list/tuple types
+        elif isinstance(data, (list, tuple)):
+            # Create a new list with safe copies of values
+            result = []
+            for item in data:
+                try:
+                    safe_item = self._create_safe_copy(item)
+                    if safe_item is not None:  # Skip None values
+                        result.append(safe_item)
+                except (RecursionError, TypeError, ValueError) as e:
+                    # If error occurs, use a string representation instead
+                    result.append(f"<Complex object: {type(item).__name__}>")
+                    logger.warning(f"Error creating safe copy of list item: {str(e)}")
+                    
+            return result
+            
+        # Handle sets
+        elif isinstance(data, set):
+            result = set()
+            for item in data:
+                try:
+                    safe_item = self._create_safe_copy(item)
+                    if safe_item is not None and isinstance(safe_item, (str, int, float, bool)):
+                        # Only add hashable types to set
+                        result.add(safe_item)
+                except (RecursionError, TypeError, ValueError):
+                    pass  # Skip problematic items in sets
+            return result
+            
+        # For other types, try to convert to string if possible
+        try:
+            return str(data)
+        except Exception:
+            return f"<Object of type {type(data).__name__}>"
+
     def _extract_price(self, price_raw: Any) -> float:
         """Extract price from various formats.
         
@@ -454,11 +537,6 @@ class OxylabsClient:
                     logger.info(f"Found {len(result.results)} products as direct list")
                     products = result.results
                 
-                # Remove limiting the number of results - the Amazon service already handles limits
-                # if len(products) > limit:
-                #     products = products[:limit]
-                #     logger.info(f"Limited Amazon products to {limit}")
-                
                 logger.info(f"Successfully extracted {len(products)} Amazon products")
             else:
                 logger.warning(f"Amazon search failed or returned no results: {result.errors}")
@@ -525,108 +603,176 @@ class OxylabsClient:
             self._record_request("amazon", success=False)
             return {"success": False, "results": [], "errors": [str(e)]}
 
-    async def search_walmart(self, query: str, **kwargs) -> Dict[str, Any]:
-        """Search for products on Walmart.
+    async def search_walmart(
+        self,
+        query: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Search for products on Walmart.
         
         Args:
             query: Search query
-            **kwargs: Additional parameters:
-                - limit: Maximum number of results (default: 10)
-                - parse: Whether to parse results (default: True)
-                - cache_ttl: Cache time-to-live in seconds (default: None)
+            **kwargs: Additional parameters for search including:
+                - limit/max_results: Maximum results to return (default: 10)
+                - region: Region or country (default: United States)
+                - sort_by: Sorting option
+                - min_price: Minimum price filter
+                - max_price: Maximum price filter
+                - parse: Whether to parse the results (default: True)
+                - cache_ttl: Cache time-to-live in seconds (None for no caching)
                 - extract_details: Whether to extract details for each product (default: False)
                 - batch_size: Number of products to process in a single batch (default: 10)
             
         Returns:
             Dictionary containing search results
         """
-        # TEMPORARILY DISABLED FOR TESTING - EASY TO RE-ENABLE
+        # TEMPORARILY DISABLED FOR TESTING
         logger.info("Walmart search temporarily disabled for testing")
         return {
-        "success": True,
-        "results": [],
-        "errors": ["Walmart search temporarily disabled for testing"]
-    }
-
+            "success": True,
+            "results": [],
+            "errors": ["Walmart search temporarily disabled for testing"]
+        }
+        
         # Original implementation (commented out)
-        # await self._apply_rate_limiting("walmart")
-        # 
-        # try:
-        #     service = self.get_service(MarketType.WALMART)
-        #     limit = kwargs.pop("limit", kwargs.pop("max_results", 10))
-        #     parse = kwargs.pop("parse", True)
-        #     cache_ttl = kwargs.pop("cache_ttl", None)
-        #     extract_details = kwargs.pop("extract_details", False)
-        #     batch_size = kwargs.pop("batch_size", 10)
-        #     
-        #     result = await service.search_products(
-        #         query=query,
-        #         limit=limit,
-        #         parse=parse,
-        #         cache_ttl=cache_ttl,
-        #         extract_details=extract_details,
-        #         batch_size=batch_size,
-        #         **kwargs
-        #     )
-        #     
-        #     self._record_request("walmart", success=result.success)
-        #     
-        #     return {
-        #         "success": result.success,
-        #         "results": result.results,
-        #         "errors": result.errors
-        #     }
-        # except Exception as e:
-        #     logger.error(f"Error in Walmart search: {str(e)}")
-        #     self._record_request("walmart", success=False)
-        #     return {"success": False, "results": [], "errors": [str(e)]}
+        """
+        await self._apply_rate_limiting("walmart")
+        
+        try:
+            service = self.get_service(MarketType.WALMART)
+            limit = kwargs.pop("limit", kwargs.pop("max_results", 10))
+            parse = kwargs.pop("parse", True)
+            cache_ttl = kwargs.pop("cache_ttl", None)
+            extract_details = kwargs.pop("extract_details", False)
+            batch_size = kwargs.pop("batch_size", 10)
+            
+            result = await service.search_products(
+                query=query,
+                limit=limit,
+                parse=parse,
+                cache_ttl=cache_ttl,
+                extract_details=extract_details,
+                batch_size=batch_size,
+                **kwargs
+            )
+            
+            self._record_request("walmart", success=result.success)
+            
+            # Create a safe copy of the result to prevent recursion issues during serialization
+            safe_result = {
+                "success": result.success,
+                "results": self._create_safe_copy(result.results),
+                "errors": result.errors.copy() if hasattr(result, 'errors') and result.errors else []
+            }
+            
+            # Add the source if available
+            if hasattr(result, 'source') and result.source:
+                safe_result["source"] = result.source
+                
+            return safe_result
+            
+        except Exception as e:
+            logger.error(f"Error in Walmart search: {str(e)}")
+            self._record_request("walmart", success=False)
+            
+            # Handle Pydantic validation errors specially
+            if "validation error" in str(e).lower():
+                logger.error(f"Validation error details: {str(e)}")
+                
+            # Return an error result in a consistent format
+            return {
+                "success": False,
+                "results": [],
+                "errors": [str(e)]
+            }
+        """
 
-    async def get_walmart_product(self, product_id: str, **kwargs) -> Dict[str, Any]:
-        """Get details of a specific product on Walmart.
+    async def get_walmart_product_details(
+        self,
+        product_id: str,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Get detailed information for a specific Walmart product.
         
         Args:
             product_id: Walmart product ID
-            **kwargs: Additional parameters:
-                - parse: Whether to parse results (default: True)
-                - cache_ttl: Cache time-to-live in seconds (default: None)
-            
+            **kwargs: Additional parameters
+                - url: Direct product URL (optional, will be constructed if not provided)
+                - region: Region code (default: US)
+                - parse: Whether to parse the results (default: True)
+                - cache_ttl: Cache time-to-live in seconds (None for no caching)
+                
         Returns:
             Dictionary containing product details
         """
-        # TEMPORARILY DISABLED FOR TESTING - EASY TO RE-ENABLE
+        # TEMPORARILY DISABLED FOR TESTING
         logger.info("Walmart product details temporarily disabled for testing")
         return {
-        "success": True,
-        "results": [],
-        "errors": ["Walmart product details temporarily disabled for testing"]
-    }
-
+            "success": True,
+            "results": {},
+            "errors": ["Walmart product details temporarily disabled for testing"]
+        }
+        
         # Original implementation (commented out)
-        # await self._apply_rate_limiting("walmart")
-        # 
-        # try:
-        #     service = self.get_service(MarketType.WALMART)
-        #     parse = kwargs.pop("parse", True)
-        #     cache_ttl = kwargs.pop("cache_ttl", None)
-        #     
-        #     result = await service.get_product_details(
-        #         product_id=product_id,
-        #         parse=parse,
-        #         cache_ttl=cache_ttl,
-        #         **kwargs
-        #     )
-        #     
-        #     self._record_request("walmart", success=result.success)
-        #     
-        #     return {
-        #         "success": result.success,
-        #         "results": result.results,
-        #         "errors": result.errors
-        #     }
-        # except Exception as e:
-        #     logger.error(f"Error getting Walmart product: {str(e)}")
-        #     self._record_request("walmart", success=False)
-        #     return {"success": False, "results": [], "errors": [str(e)]}
+        """
+        await self._apply_rate_limiting("walmart")
+        
+        try:
+            walmart_service = self.get_service(MarketType.WALMART)
+            parse = kwargs.pop("parse", True)
+            cache_ttl = kwargs.pop("cache_ttl", None)
+            
+            # Get direct URL if provided, otherwise construct it
+            url = kwargs.pop("url", None)
+            if not url and product_id:
+                # Safely construct Walmart product URL from ID
+                # Use the service's URL construction if available
+                if hasattr(walmart_service, "get_product_url") and callable(getattr(walmart_service, "get_product_url")):
+                    url = walmart_service.get_product_url(product_id)
+                else:
+                    # Fallback URL construction
+                    url = f"https://www.walmart.com/ip/{product_id}"
+            
+            if not url:
+                raise ValueError("Either product_id or url must be provided")
+            
+            # Get product details
+            result = await walmart_service.get_product_details(
+                product_id=product_id,
+                url=url,
+                parse=parse,
+                cache_ttl=cache_ttl,
+                **kwargs
+            )
+            
+            self._record_request("walmart", success=result.success)
+            
+            # Create a safe copy of the result to prevent recursion issues during serialization
+            safe_result = {
+                "success": result.success,
+                "results": self._create_safe_copy(result.results),
+                "errors": result.errors.copy() if hasattr(result, 'errors') and result.errors else []
+            }
+            
+            # Add source if available
+            if hasattr(result, 'source') and result.source:
+                safe_result["source"] = result.source
+                
+            return safe_result
+            
+        except Exception as e:
+            logger.error(f"Error getting Walmart product details: {str(e)}")
+            self._record_request("walmart", success=False)
+            
+            # Return an error result in a consistent format
+            return {
+                "success": False,
+                "results": {},
+                "errors": [str(e)]
+            }
+        """
 
     async def search_google_shopping(self, query: str, **kwargs) -> Dict[str, Any]:
         """Search for products on Google Shopping.
@@ -646,49 +792,51 @@ class OxylabsClient:
         Returns:
             Dictionary containing search results
         """
-        # TEMPORARILY DISABLED FOR TESTING - EASY TO RE-ENABLE
+        # TEMPORARILY DISABLED FOR TESTING
         logger.info("Google Shopping search temporarily disabled for testing")
         return {
-        "success": True,
-        "results": [],
-        "errors": ["Google Shopping search temporarily disabled for testing"]
-    }
-
+            "success": True,
+            "results": [],
+            "errors": ["Google Shopping search temporarily disabled for testing"]
+        }
+        
         # Original implementation (commented out)
-        # await self._apply_rate_limiting("google_shopping")
-        # 
-        # try:
-        #     service = self.get_service(MarketType.GOOGLE_SHOPPING)
-        #     limit = kwargs.pop("limit", kwargs.pop("max_results", 10))
-        #     parse = kwargs.pop("parse", True)
-        #     cache_ttl = kwargs.pop("cache_ttl", None)
-        #     extract_details = kwargs.pop("extract_details", False)
-        #     batch_size = kwargs.pop("batch_size", 10)
-        #     
-        #     # Log the query for debugging
-        #     logger.debug(f"Google Shopping search - Query: '{query}'")
-        #     
-        #     result = await service.search_products(
-        #         query=query,
-        #         limit=limit,
-        #         parse=parse,
-        #         cache_ttl=cache_ttl,
-        #         extract_details=extract_details,
-        #         batch_size=batch_size,
-        #         **kwargs
-        #     )
-        #     
-        #     self._record_request("google_shopping", success=result.success)
-        #     
-        #     return {
-        #         "success": result.success,
-        #         "results": result.results,
-        #         "errors": result.errors
-        #     }
-        # except Exception as e:
-        #     logger.error(f"Error in Google Shopping search: {str(e)}")
-        #     self._record_request("google_shopping", success=False)
-        #     return {"success": False, "results": [], "errors": [str(e)]}
+        """
+        await self._apply_rate_limiting("google_shopping")
+        
+        try:
+            service = self.get_service(MarketType.GOOGLE_SHOPPING)
+            limit = kwargs.pop("limit", kwargs.pop("max_results", 10))
+            parse = kwargs.pop("parse", True)
+            cache_ttl = kwargs.pop("cache_ttl", None)
+            extract_details = kwargs.pop("extract_details", False)
+            batch_size = kwargs.pop("batch_size", 10)
+            
+            # Log the query for debugging
+            logger.debug(f"Google Shopping search - Query: '{query}'")
+            
+            result = await service.search_products(
+                query=query,
+                limit=limit,
+                parse=parse,
+                cache_ttl=cache_ttl,
+                extract_details=extract_details,
+                batch_size=batch_size,
+                **kwargs
+            )
+            
+            self._record_request("google_shopping", success=result.success)
+            
+            return {
+                "success": result.success,
+                "results": result.results,
+                "errors": result.errors
+            }
+        except Exception as e:
+            logger.error(f"Error in Google Shopping search: {str(e)}")
+            self._record_request("google_shopping", success=False)
+            return {"success": False, "results": [], "errors": [str(e)]}
+        """
 
     async def get_google_shopping_product(self, product_id: str, **kwargs) -> Dict[str, Any]:
         """Get details of a specific product on Google Shopping.
@@ -702,145 +850,208 @@ class OxylabsClient:
         Returns:
             Dictionary containing product details
         """
-        # TEMPORARILY DISABLED FOR TESTING - EASY TO RE-ENABLE
+        # TEMPORARILY DISABLED FOR TESTING
         logger.info("Google Shopping product details temporarily disabled for testing")
         return {
-        "success": True,
-        "results": [],
-        "errors": ["Google Shopping product details temporarily disabled for testing"]
-    }
-
+            "success": True,
+            "results": {},
+            "errors": ["Google Shopping product details temporarily disabled for testing"]
+        }
+        
         # Original implementation (commented out)
-        # await self._apply_rate_limiting("google_shopping")
-        # 
-        # try:
-        #     service = self.get_service(MarketType.GOOGLE_SHOPPING)
-        #     parse = kwargs.pop("parse", True)
-        #     cache_ttl = kwargs.pop("cache_ttl", None)
-        #     
-        #     result = await service.get_product_details(
-        #         product_id=product_id,
-        #         parse=parse,
-        #         cache_ttl=cache_ttl,
-        #         **kwargs
-        #     )
-        #     
-        #     self._record_request("google_shopping", success=result.success)
-        #     
-        #     return {
-        #         "success": result.success,
-        #         "results": result.results,
-        #         "errors": result.errors
-        #     }
-        # except Exception as e:
-        #     logger.error(f"Error getting Google Shopping product: {str(e)}")
-        #     self._record_request("google_shopping", success=False)
-        #     return {"success": False, "results": [], "errors": [str(e)]}
+        """
+        await self._apply_rate_limiting("google_shopping")
+        
+        try:
+            service = self.get_service(MarketType.GOOGLE_SHOPPING)
+            parse = kwargs.pop("parse", True)
+            cache_ttl = kwargs.pop("cache_ttl", None)
+            
+            result = await service.get_product_details(
+                product_id=product_id,
+                parse=parse,
+                cache_ttl=cache_ttl,
+                **kwargs
+            )
+            
+            self._record_request("google_shopping", success=result.success)
+            
+            return {
+                "success": result.success,
+                "results": result.results,
+                "errors": result.errors
+            }
+        except Exception as e:
+            logger.error(f"Error getting Google Shopping product: {str(e)}")
+            self._record_request("google_shopping", success=False)
+            return {"success": False, "results": [], "errors": [str(e)]}
+        """
 
     async def search_ebay(self, query: str, **kwargs) -> Dict[str, Any]:
         """Search for products on eBay.
         
         Args:
-            query: Search query
-            **kwargs: Additional parameters:
-                - limit: Maximum number of results (default: 10)
-                - parse: Whether to parse results (default: True)
-                - geo_location: Geographical location (default: "United States")
-                - cache_ttl: Cache time-to-live in seconds (default: None)
-                - extract_details: Whether to extract details for each product (default: False)
-                - batch_size: Number of products to process in a single batch (default: 10)
-            
+            query: Search query string
+            **kwargs: Additional parameters
+                - page: Page number (default: 1)
+                - limit: Number of results per page (default: 25)
+                - region: Region code (default: US)
+                - sort_by: Sort order (default: None)
+                - min_price: Minimum price (default: None)
+                - max_price: Maximum price (default: None)
+                - parse: Whether to parse the results (default: True)
+                - cache_ttl: Cache time-to-live in seconds (None for no caching)
+                
         Returns:
             Dictionary containing search results
         """
-        # TEMPORARILY DISABLED FOR TESTING - EASY TO RE-ENABLE
+        # TEMPORARILY DISABLED FOR TESTING
         logger.info("eBay search temporarily disabled for testing")
         return {
-        "success": True,
-        "results": [],
-        "errors": ["eBay search temporarily disabled for testing"]
-    }
-
+            "success": True,
+            "results": [],
+            "errors": ["eBay search temporarily disabled for testing"]
+        }
+        
         # Original implementation (commented out)
-        # await self._apply_rate_limiting("ebay")
-        # 
-        # try:
-        #     service = self.get_service(MarketType.EBAY)
-        #     limit = kwargs.pop("limit", kwargs.pop("max_results", 10))
-        #     parse = kwargs.pop("parse", True)
-        #     cache_ttl = kwargs.pop("cache_ttl", None)
-        #     extract_details = kwargs.pop("extract_details", False)
-        #     batch_size = kwargs.pop("batch_size", 10)
-        #     
-        #     result = await service.search_products(
-        #         query=query,
-        #         limit=limit,
-        #         parse=parse,
-        #         cache_ttl=cache_ttl,
-        #         extract_details=extract_details,
-        #         batch_size=batch_size,
-        #         **kwargs
-        #     )
-        #     
-        #     self._record_request("ebay", success=result.success)
-        #     
-        #     return {
-        #         "success": result.success,
-        #         "results": result.results,
-        #         "errors": result.errors
-        #     }
-        # except Exception as e:
-        #     logger.error(f"Error in eBay search: {str(e)}")
-        #     self._record_request("ebay", success=False)
-        #     return {"success": False, "results": [], "errors": [str(e)]}
+        """
+        await self._apply_rate_limiting("ebay")
+        
+        try:
+            service = self.get_service(MarketType.EBAY)
+            parse = kwargs.pop("parse", True)
+            cache_ttl = kwargs.pop("cache_ttl", None)
+            
+            # Execute search
+            result = await service.search(
+                query=query,
+                parse=parse,
+                cache_ttl=cache_ttl,
+                **kwargs
+            )
+            
+            self._record_request("ebay", success=result.success)
+            
+            # Process and return results
+            if result.success and parse:
+                # Create a safe copy of the results to avoid serialization issues
+                processed_results = []
+                
+                for item in result.results.get("organic", []):
+                    try:
+                        safe_item = self._create_safe_copy(item)
+                        if safe_item is not None:  # Skip None values
+                            processed_results.append(safe_item)
+                    except (RecursionError, TypeError) as e:
+                        logger.warning(f"Error processing eBay result: {str(e)}")
+                
+                # Create a safe copy of the full result
+                return {
+                    "success": result.success,
+                    "results": processed_results,
+                    "total": len(processed_results),
+                    "errors": result.errors.copy() if hasattr(result, 'errors') and result.errors else []
+                }
+            
+            # Return the raw result
+            return {
+                "success": result.success,
+                "results": result.results,
+                "errors": result.errors
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in eBay search: {str(e)}")
+            self._record_request("ebay", success=False)
+            
+            # Return error response
+            return {
+                "success": False,
+                "results": [],
+                "errors": [str(e)]
+            }
+        """
 
     async def get_ebay_product(self, product_id: str, **kwargs) -> Dict[str, Any]:
         """Get details of a specific product on eBay.
         
         Args:
             product_id: eBay product ID
-            **kwargs: Additional parameters:
-                - parse: Whether to parse results (default: True)
-                - geo_location: Geographical location (default: "United States")
-                - cache_ttl: Cache time-to-live in seconds (default: None)
-            
+            **kwargs: Additional parameters
+                - url: Direct product URL (optional, will be constructed if not provided)
+                - region: Region code (default: US)
+                - parse: Whether to parse the results (default: True)
+                - cache_ttl: Cache time-to-live in seconds (None for no caching)
+                
         Returns:
             Dictionary containing product details
         """
-        # TEMPORARILY DISABLED FOR TESTING - EASY TO RE-ENABLE
+        # TEMPORARILY DISABLED FOR TESTING
         logger.info("eBay product details temporarily disabled for testing")
         return {
-        "success": True,
-        "results": [],
-        "errors": ["eBay product details temporarily disabled for testing"]
-    }
-
+            "success": True,
+            "results": {},
+            "errors": ["eBay product details temporarily disabled for testing"]
+        }
+        
         # Original implementation (commented out)
-        # await self._apply_rate_limiting("ebay")
-        # 
-        # try:
-        #     service = self.get_service(MarketType.EBAY)
-        #     parse = kwargs.pop("parse", True)
-        #     cache_ttl = kwargs.pop("cache_ttl", None)
-        #     
-        #     result = await service.get_product_details(
-        #         product_id=product_id,
-        #         parse=parse,
-        #         cache_ttl=cache_ttl,
-        #         **kwargs
-        #     )
-        #     
-        #     self._record_request("ebay", success=result.success)
-        #     
-        #     return {
-        #         "success": result.success,
-        #         "results": result.results,
-        #         "errors": result.errors
-        #     }
-        # except Exception as e:
-        #     logger.error(f"Error getting eBay product: {str(e)}")
-        #     self._record_request("ebay", success=False)
-        #     return {"success": False, "results": [], "errors": [str(e)]}
+        """
+        await self._apply_rate_limiting("ebay")
+        
+        try:
+            service = self.get_service(MarketType.EBAY)
+            parse = kwargs.pop("parse", True)
+            cache_ttl = kwargs.pop("cache_ttl", None)
+            
+            # Get direct URL if provided, otherwise construct it
+            url = kwargs.pop("url", None)
+            if not url and product_id:
+                # Safely construct eBay product URL from ID
+                # Use the service's URL construction if available
+                if hasattr(service, "get_product_url") and callable(getattr(service, "get_product_url")):
+                    url = service.get_product_url(product_id)
+                else:
+                    # Fallback URL construction
+                    url = f"https://www.ebay.com/itm/{product_id}"
+            
+            if not url:
+                raise ValueError("Either product_id or url must be provided")
+            
+            # Get product details
+            result = await service.get_product_details(
+                product_id=product_id,
+                url=url,
+                parse=parse,
+                cache_ttl=cache_ttl,
+                **kwargs
+            )
+            
+            self._record_request("ebay", success=result.success)
+            
+            # Create a safe copy of the result to prevent recursion issues during serialization
+            safe_result = {
+                "success": result.success,
+                "results": self._create_safe_copy(result.results),
+                "errors": result.errors.copy() if hasattr(result, 'errors') and result.errors else []
+            }
+            
+            # Add source if available
+            if hasattr(result, 'source') and result.source:
+                safe_result["source"] = result.source
+                
+            return safe_result
+            
+        except Exception as e:
+            logger.error(f"Error getting eBay product details: {str(e)}")
+            self._record_request("ebay", success=False)
+            
+            # Return an error result in a consistent format
+            return {
+                "success": False,
+                "results": {},
+                "errors": [str(e)]
+            }
+        """
 
     async def close(self):
         """Close all services and release resources."""

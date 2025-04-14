@@ -494,13 +494,27 @@ def post_process_products(
     if brands is None:
         brands = extract_brands_from_query(query)
     
+    # Pre-process products to fix common issues before filtering
+    processed_products = []
+    for product in products:
+        # Make a copy to avoid modifying the original
+        processed_product = dict(product)
+        
+        # Handle image URLs: if image_url is missing but thumbnail is present, use thumbnail
+        if (not processed_product.get('image_url') and 'thumbnail' in processed_product 
+                and processed_product['thumbnail']):
+            processed_product['image_url'] = processed_product['thumbnail']
+            logger.debug(f"Using thumbnail as image_url for product: {processed_product.get('title', 'Unknown')[:30]}")
+        
+        processed_products.append(processed_product)
+    
     # Step 1: Apply price filtering
-    filtered_products = filter_products_by_price(products, min_price, max_price)
+    filtered_products = filter_products_by_price(processed_products, min_price, max_price)
     
     if not filtered_products:
         logger.warning("No products remained after price filtering")
         # If price filtering removed all products, be more lenient
-        return products
+        return processed_products
     
     # Step 2: Calculate relevance scores
     for product in filtered_products:

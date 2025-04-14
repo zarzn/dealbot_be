@@ -34,13 +34,14 @@ class OxylabsRequestException(Exception):
 
 
 class OxylabsResult(BaseModel):
-    """Model for Oxylabs scraping result."""
+    """Structure for storing oxylabs scraping result."""
     success: bool
     start_url: str
-    results: List[Dict[str, Any]]
-    raw_results: Dict[str, Any]
-    errors: List[str] = []
-    status_code: Optional[int] = None
+    results: Optional[List[Dict[str, Any]]] = []
+    raw_results: Optional[Union[List[Dict[str, Any]], Dict[str, Any]]] = []  # Allow both list and dict types
+    errors: Optional[List[Union[Dict[str, Any], str]]] = []  # Allow both dict and string error messages
+    status_code: int = 200
+    source: Optional[str] = None  # Added source field to track which source was used
 
 
 class OxylabsBaseService:
@@ -164,136 +165,142 @@ class OxylabsBaseService:
             self._redis_client = None
             return None
 
-    async def _get_from_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
-        """Get data from cache (Redis or in-memory fallback).
+    async def _get_from_cache(self, key: str) -> Optional[Dict[str, Any]]:
+        """Get data from Redis cache.
         
         Args:
-            cache_key: Cache key to retrieve
+            key: Cache key
             
         Returns:
-            Cached data if found, None otherwise
+            Cached data or None if not found/expired
         """
-        # Check for recursion
-        if self._cache_operation_in_progress:
-            self._recursion_detected = True
-            logger.warning("Recursion detected in cache operations, temporarily disabling Redis caching")
-            return None
-
-        # Try in-memory cache first for better performance and to avoid Redis issues
-        if cache_key in self._in_memory_cache:
-            entry = self._in_memory_cache[cache_key]
-            # Check if entry is still valid
-            if entry['expires'] > time.time():
-                return entry['data']
-            else:
-                # Clean up expired entry
-                del self._in_memory_cache[cache_key]
-        
-        # If recursion was detected previously, skip Redis cache operations
-        if self._recursion_detected:
-            return None
-            
-        # Mark cache operation in progress to detect recursion
-        self._cache_operation_in_progress = True
-        
         try:
-            # Try Redis as a fallback if in-memory cache doesn't have the data
-            try:
-                # Only initialize Redis client if not already done
-                if self._redis_client is None:
-                    redis_client = await self._init_redis_client()
-                else:
-                    redis_client = self._redis_client
+            # Try to get data from Redis
+            redis = await self._get_redis()
+            if not redis:
+                logger.debug("Redis client unavailable for cache retrieval")
+                return None
                 
-                if redis_client:
-                    try:
-                        # Use get instead of safe_get to prevent missing method issues
-                        cached_data = await redis_client.get(f"oxylabs:{cache_key}")
-                        if cached_data:
-                            try:
-                                # Simple type check to avoid recursion issues
-                                if isinstance(cached_data, (str, bytes)):
-                                    data = json.loads(cached_data)
-                                    # Store in memory cache for faster retrieval next time
-                                    self._in_memory_cache[cache_key] = {
-                                        'data': data,
-                                        'expires': time.time() + 3600  # Default 1 hour TTL
-                                    }
-                                    return data
-                            except json.JSONDecodeError:
-                                logger.warning(f"Invalid JSON in Redis cache for key: {cache_key}")
-                    except Exception as e:
-                        # Log error but continue with fallback to avoid breaking the flow
-                        logger.warning(f"Error retrieving from Redis cache: {e}")
-            except Exception as e:
-                logger.warning(f"Unexpected error in _get_from_cache: {e}")
+            cached_data = await redis.get(key)
             
+            if cached_data:
+                logger.debug(f"Cache hit for key: {key[:20]}...")
+                try:
+                    # Parse JSON data
+                    data = json.loads(cached_data)
+                    
+                    # Ensure source field is preserved (for market sources)
+                    if isinstance(data, dict) and "source" not in data and hasattr(self, "search_source"):
+                        # Add source information from the service that's retrieving it
+                        data["source"] = getattr(self, "search_source", None)
+                        
+                    return data
+                    
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Error decoding cached JSON data: {e}")
+                    return None
+                
+            logger.debug(f"Cache miss for key: {key[:20]}...")
             return None
-        finally:
-            # Reset cache operation flag
-            self._cache_operation_in_progress = False
+            
+        except Exception as e:
+            logger.error(f"Error retrieving data from cache: {e}")
+            return None
 
-    async def _store_in_cache(self, cache_key: str, value: Dict[str, Any], ttl: int = 3600):
-        """Store data in cache (Redis or in-memory fallback).
+    async def _store_in_cache(self, key: str, data: Union[Dict, OxylabsResult], ttl: int = 3600) -> None:
+        """Store data in Redis cache.
         
         Args:
-            cache_key: Cache key for storing
-            value: Data to store
-            ttl: Time-to-live in seconds (default: 1 hour)
+            key: Cache key
+            data: Data to store (either a dict or OxylabsResult object)
+            ttl: Time-to-live in seconds
         """
-        if not value:
-            return
-        
-        # Check for recursion
-        if self._cache_operation_in_progress:
-            self._recursion_detected = True
-            logger.warning("Recursion detected in cache operations, temporarily disabling Redis caching")
-            return
-            
-        # Store in in-memory cache first - this is always reliable
-        self._in_memory_cache[cache_key] = {
-            'data': value,
-            'expires': time.time() + ttl
-        }
-        
-        # Clean up expired entries occasionally
-        if len(self._in_memory_cache) > 100 and random.random() < 0.1:  # 10% chance when cache is large
-            self._clean_in_memory_cache()
-            
-        # If recursion was detected previously, skip Redis cache operations
-        if self._recursion_detected:
-            return
-            
-        # Mark cache operation in progress to detect recursion
-        self._cache_operation_in_progress = True
-        
         try:
-            # Also try to store in Redis if available
-            try:
-                # Only initialize Redis client if not already done
-                if self._redis_client is None:
-                    redis_client = await self._init_redis_client()
-                else:
-                    redis_client = self._redis_client
+            # Get Redis client
+            redis = await self._get_redis()
+            if not redis:
+                logger.warning("Redis client unavailable for caching")
+                return
                 
-                if redis_client:
+            # Check for circular references or recursion in progress
+            if getattr(self, "_cache_operation_in_progress", False):
+                logger.warning("Recursion detected in caching operation, skipping")
+                return
+                
+            # Set recursion flag to prevent nested cache operations
+            self._cache_operation_in_progress = True
+                
+            try:
+                # Create a safe copy of the data to prevent recursion errors during serialization
+                data_dict = None
+                
+                # If data is an OxylabsResult, convert to a safe dict
+                if isinstance(data, OxylabsResult):
                     try:
-                        # Convert to JSON string first to avoid complex serialization issues
-                        json_data = json.dumps(value, default=str)
-                        # Use setex instead of safe_set to prevent missing method issues
-                        await redis_client.setex(
-                            f"oxylabs:{cache_key}",
-                            ttl,
-                            json_data
-                        )
+                        # Use its dict method which is safe
+                        result_dict = data.dict()
+                        
+                        # Specially handle raw_results to prevent recursion
+                        if "raw_results" in result_dict:
+                            if isinstance(result_dict["raw_results"], dict) and len(result_dict["raw_results"]) > 20:
+                                # For large dictionaries, only keep a few key items
+                                result_dict["raw_results"] = {
+                                    k: v for k, v in list(result_dict["raw_results"].items())[:20]
+                                }
+                            elif isinstance(result_dict["raw_results"], list) and len(result_dict["raw_results"]) > 20:
+                                # For large lists, truncate
+                                result_dict["raw_results"] = result_dict["raw_results"][:20]
+                        
+                        # Then create a safe copy to ensure no nested objects cause issues
+                        data_dict = self._create_safe_copy(result_dict)
                     except Exception as e:
-                        # Log error but continue since we already have in-memory cache
-                        logger.warning(f"Error storing in Redis cache: {e}")
-            except Exception as e:
-                logger.warning(f"Unexpected error in _store_in_cache: {e}")
-        finally:
-            # Reset cache operation flag
-            self._cache_operation_in_progress = False
+                        logger.error(f"Failed to convert OxylabsResult to dict: {e}")
+                        # Fallback: manually create dict with essential fields
+                        data_dict = {
+                            "success": data.success,
+                            "start_url": data.start_url,
+                            "results": self._create_safe_copy(data.results),
+                            # Omit raw_results to avoid recursion issues
+                            "errors": self._create_safe_copy(data.errors),
+                            "status_code": data.status_code,
+                            "source": getattr(data, "source", None)
+                        }
+                else:
+                    # For dict data, create a safe copy
+                    data_dict = self._create_safe_copy(data)
+                
+                # Validate we have data to cache
+                if not data_dict:
+                    logger.warning("No valid data to cache")
+                    return
+                    
+                # Serialize to JSON
+                try:
+                    json_data = json.dumps(data_dict)
+                except (TypeError, ValueError) as e:
+                    logger.error(f"Failed to JSON serialize data for caching: {e}")
+                    # Try a more aggressive approach to make it serializable
+                    try:
+                        # Convert the entire structure to strings
+                        simplified_data = json.dumps(str(data_dict))
+                        logger.warning("Stored simplified string representation of data in cache")
+                        await redis.set(key, simplified_data, ex=ttl)
+                        return
+                    except Exception:
+                        logger.error("Failed to serialize even with simplified approach")
+                        return
+                
+                # Store in Redis with TTL
+                await redis.set(key, json_data, ex=ttl)
+                logger.debug(f"Stored data in cache with key: {key[:20]}...")
+                
+            finally:
+                # Reset recursion flag when done
+                self._cache_operation_in_progress = False
+                
+        except Exception as e:
+            logger.error(f"Error storing data in cache: {e}")
+            # Don't raise the exception - caching failures shouldn't break the main flow
 
     def _clean_in_memory_cache(self):
         """Clean up expired entries from in-memory cache."""
@@ -306,32 +313,32 @@ class OxylabsBaseService:
         for key in keys_to_delete:
             del self._in_memory_cache[key]
 
-    def _generate_cache_key(self, params: Dict[str, Any]) -> str:
-        """Generate a cache key from request parameters.
+    def _generate_cache_key(self, params: Dict[str, Any], operation: str = "scrape") -> str:
+        """Generate a unique cache key based on request parameters.
         
         Args:
             params: Request parameters
+            operation: Operation type (e.g., 'scrape', 'search')
             
         Returns:
-            Cache key string
+            Cache key
         """
-        # Create a simplified params copy to avoid serialization issues
-        simplified_params = {}
-        for k, v in params.items():
-            # Skip complex objects that could cause recursion
-            if isinstance(v, (str, int, float, bool)) or v is None:
-                simplified_params[k] = v
-            elif isinstance(v, list) and all(isinstance(x, (str, int, float, bool)) or x is None for x in v):
-                simplified_params[k] = v
-            else:
-                # For complex objects, just use their type name
-                simplified_params[k] = f"<{type(v).__name__}>"
-                
-        # Create a sorted, stable representation of the params
-        param_str = json.dumps(simplified_params, sort_keys=True)
+        # Create a stable, deterministic cache key based on params
+        # Filter out non-deterministic keys like timestamps
+        filtered_params = {k: v for k, v in sorted(params.items()) 
+                          if k not in ["_timestamp", "timestamp", "cache_key"]}
         
-        # Create a hash to use as the cache key
-        return hashlib.md5(param_str.encode('utf-8')).hexdigest()
+        # Compute cache key prefix
+        prefix = f"oxylabs:{self.__class__.__name__}:{operation}"
+        
+        # Generate param hash for the cache key
+        param_str = json.dumps(filtered_params, sort_keys=True)
+        param_hash = hashlib.md5(param_str.encode()).hexdigest()
+        
+        # Combine prefix and hash for final cache key
+        cache_key = f"{prefix}:{param_hash}"
+        
+        return cache_key
 
     async def scrape_url(self, params: Dict[str, Any], cache_ttl: Optional[int] = None) -> OxylabsResult:
         """Scrape a URL using Oxylabs API.
@@ -351,13 +358,17 @@ class OxylabsBaseService:
             cached_data = await self._get_from_cache(cache_key)
             if cached_data:
                 logger.debug(f"Cache hit for key: {cache_key[:20]}...")
-                return OxylabsResult(
+                
+                # Create new result with cached data, ensuring proper field types
+                result = OxylabsResult(
                     success=cached_data.get("success", True),
                     start_url=cached_data.get("start_url", ""),
                     results=cached_data.get("results", []),
-                    raw_results=cached_data,
-                    errors=cached_data.get("errors", [])
+                    raw_results=cached_data.get("raw_results", {}),  # Use raw_results field from cache
+                    errors=cached_data.get("errors", []),
+                    source=cached_data.get("source")
                 )
+                return result
         
         # Prepare API endpoint
         url = f"{self.base_url}/v1/queries"
@@ -365,6 +376,7 @@ class OxylabsBaseService:
         # Record start time for metrics
         start_time = time.time()
         success = False
+        status_code = None
         
         try:
             # Get or create an HTTP session
@@ -391,6 +403,17 @@ class OxylabsBaseService:
                     data = await response.json()
                 except Exception:
                     data = await response.text()
+                    logger.warning(f"Could not parse response as JSON, using text: {data[:200]}...")
+                    # Return error result for non-JSON response
+                    return OxylabsResult(
+                        success=False,
+                        start_url=params.get("url", ""),
+                        results=[],
+                        raw_results={},
+                        errors=[f"Non-JSON response: {data[:200]}..."],
+                        status_code=status_code,
+                        source=params.get("source")
+                    )
                 
                 # Log response info (DEBUG for success, INFO for errors)
                 if status_code == 200:
@@ -409,43 +432,90 @@ class OxylabsBaseService:
                         results=[],
                         raw_results={},
                         errors=[error_msg],
-                        status_code=status_code
+                        status_code=status_code,
+                        source=params.get("source")
                     )
                 
                 # Process successful response
                 results = []
                 
                 # Extract results based on response structure
-                if isinstance(data, dict):
-                    if "results" in data:
-                        for result in data["results"]:
-                            if "content" in result:
-                                if result["content"]:
-                                    results.append(result["content"])
-                            elif "result" in result:
-                                if result["result"]:
-                                    results.append(result["result"])
-                    elif "content" in data:
-                        results = [data["content"]]
-                elif isinstance(data, list):
-                    results = data
-                
-                # Mark success
-                success = True
-                
-                # Cache the results if TTL is provided
-                if cache_ttl is not None and cache_ttl > 0:
-                    await self._store_in_cache(cache_key, data, cache_ttl)
-                
-                # Return structured result
-                return OxylabsResult(
-                    success=True,
-                    start_url=params.get("url", ""),
-                    results=results,
-                    raw_results=data,
-                    errors=[],
-                    status_code=status_code
-                )
+                try:
+                    if isinstance(data, dict):
+                        # Handle universal scraper format (most common format)
+                        if "results" in data and isinstance(data["results"], list):
+                            for result in data["results"]:
+                                if "content" in result:
+                                    # Universal format often has a nested structure
+                                    content = result.get("content", {})
+                                    
+                                    # Check if content has nested "results" (common in searches)
+                                    if isinstance(content, dict) and "results" in content:
+                                        if isinstance(content["results"], list):
+                                            # For direct list of results
+                                            results.extend(content["results"])
+                                        elif isinstance(content["results"], dict):
+                                            # For search results with categories (paid/organic)
+                                            for category, items in content["results"].items():
+                                                if isinstance(items, list):
+                                                    results.extend(items)
+                                    else:
+                                        # For product details, the content itself might be the result
+                                        if content:  # Only add if not empty
+                                            results.append(content)
+                        # Simplified format where content is directly in the response
+                        elif "content" in data:
+                            if isinstance(data["content"], dict):
+                                results = [data["content"]]
+                            elif isinstance(data["content"], list):
+                                results = data["content"]
+                        else:
+                            # Fallback: treat the entire response as the result
+                            results = [data]
+                    elif isinstance(data, list):
+                        # For list responses, use directly
+                        results = data
+                    
+                    # Ensure we have results
+                    if not results:
+                        logger.warning("No results extracted from Oxylabs response")
+                        if isinstance(data, dict):
+                            # Log top-level keys for debugging
+                            logger.debug(f"Response data keys: {list(data.keys())}")
+                    
+                    # Mark success
+                    success = True
+                    
+                    # Create result object
+                    result = OxylabsResult(
+                        success=True,
+                        start_url=params.get("url", ""),
+                        results=results,
+                        raw_results=data,  # Store the complete original response
+                        errors=[],
+                        status_code=status_code,
+                        source=params.get("source")
+                    )
+                    
+                    # Cache the results if TTL is provided
+                    if cache_ttl is not None and cache_ttl > 0:
+                        await self._store_in_cache(cache_key, result, cache_ttl)
+                    
+                    return result
+                    
+                except Exception as e:
+                    # Handle extraction errors
+                    error_msg = f"Error processing Oxylabs response: {str(e)}"
+                    logger.error(error_msg, exc_info=True)
+                    return OxylabsResult(
+                        success=False,
+                        start_url=params.get("url", ""),
+                        results=[],
+                        raw_results=data,  # Still store the raw data for debugging
+                        errors=[error_msg],
+                        status_code=status_code,
+                        source=params.get("source")
+                    )
                 
         except asyncio.TimeoutError:
             elapsed = time.time() - start_time
@@ -456,7 +526,9 @@ class OxylabsBaseService:
                 start_url=params.get("url", ""),
                 results=[],
                 raw_results={},
-                errors=[error_msg]
+                errors=[error_msg],
+                status_code=status_code,
+                source=params.get("source")
             )
             
         except Exception as e:
@@ -468,7 +540,9 @@ class OxylabsBaseService:
                 start_url=params.get("url", ""),
                 results=[],
                 raw_results={},
-                errors=[error_msg]
+                errors=[error_msg],
+                status_code=status_code,
+                source=params.get("source")
             )
             
         finally:
@@ -501,6 +575,7 @@ class OxylabsBaseService:
             retries = self.max_retries
             
         last_error = None
+        status_code = None
         
         for attempt in range(retries + 1):
             try:
@@ -516,6 +591,8 @@ class OxylabsBaseService:
                     
                 # It's a server error, so we'll retry
                 last_error = result.errors[0] if result.errors else "Unknown server error"
+                if result.status_code:
+                    status_code = result.status_code
                     
             except Exception as e:
                 logger.error(f"Exception during Oxylabs API request (attempt {attempt+1}/{retries+1}): {e}")
@@ -536,7 +613,9 @@ class OxylabsBaseService:
             start_url=payload.get("url", "") or f"{payload.get('domain', '')}/{payload.get('query', '')}",
             results=[],
             raw_results={},
-            errors=[f"All retry attempts failed: {last_error}"]
+            errors=[f"All retry attempts failed: {last_error}"],
+            status_code=status_code,
+            source=payload.get("source")
         )
 
     async def _make_request(
@@ -592,7 +671,8 @@ class OxylabsBaseService:
                         results=[],
                         raw_results={},
                         errors=["No content returned (HTTP 204)"],
-                        status_code=status_code
+                        status_code=status_code,
+                        source=payload.get("source")
                     )
                 
                 # Handle other non-200 responses
@@ -616,7 +696,8 @@ class OxylabsBaseService:
                         results=[],
                         raw_results={},
                         errors=[f"HTTP error {status_code}: {error_detail}"],
-                        status_code=status_code
+                        status_code=status_code,
+                        source=payload.get("source")
                     )
                 
                 try:
@@ -632,7 +713,8 @@ class OxylabsBaseService:
                             results=[],
                             raw_results=response_data,
                             errors=["No results found"],
-                            status_code=status_code
+                            status_code=status_code,
+                            source=payload.get("source")
                         )
                     
                     # For parsed responses, extract content
@@ -670,7 +752,8 @@ class OxylabsBaseService:
                         start_url=payload.get("url", "") or f"{payload.get('domain', '')}/{payload.get('query', '')}",
                         results=extracted_results,
                         raw_results=response_data,
-                        status_code=status_code
+                        status_code=status_code,
+                        source=payload.get("source")
                     )
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse Oxylabs API response: {e}")
@@ -687,7 +770,8 @@ class OxylabsBaseService:
                         results=[],
                         raw_results={"raw_text": response_text},
                         errors=[f"Failed to parse API response: {e}"],
-                        status_code=status_code
+                        status_code=status_code,
+                        source=payload.get("source")
                     )
         except Exception as e:
             logger.error(f"Exception during Oxylabs API request: {e}")
@@ -703,7 +787,9 @@ class OxylabsBaseService:
                 start_url=payload.get("url", "") or f"{payload.get('domain', '')}/{payload.get('query', '')}",
                 results=[],
                 raw_results={},
-                errors=[f"Request exception: {str(e)}"]
+                errors=[f"Request exception: {str(e)}"],
+                status_code=status_code,
+                source=payload.get("source")
             )
 
     async def _record_metrics(
@@ -725,3 +811,148 @@ class OxylabsBaseService:
             error: Error message if any
         """
         # This can be implemented by users of this class if needed 
+
+    def _create_safe_copy(self, obj):
+        """Create a safe copy of an object that can be serialized to JSON without recursion errors.
+        
+        Args:
+            obj: The object to copy
+            
+        Returns:
+            A safe copy of the object
+        """
+        # Use a stack-based approach to avoid recursion depth issues
+        if obj is None:
+            return None
+            
+        # Handle primitive types directly to reduce processing
+        if isinstance(obj, (str, int, float, bool, type(None))):
+            return obj
+            
+        # Handle dictionary type
+        if isinstance(obj, dict):
+            # Create a new dict with safe copies of values
+            result = {}
+            # Skip these keys that could cause circular references or hold non-serializable data
+            skip_keys = [
+                "_client", "_service", "_session", "client", "service", "session",
+                "connection", "connector", "_connector", "app", "_app", "request",
+                "__pydantic_self__", "raw_results"  # Add raw_results to skip_keys to avoid recursion
+            ]
+            
+            # Limit dictionary size to prevent deep nesting
+            if len(obj) > 50:
+                logger.warning(f"Large dictionary with {len(obj)} items found, truncating to 50 items")
+                obj_items = list(obj.items())[:50]
+            else:
+                obj_items = obj.items()
+                
+            for key, value in obj_items:
+                # Skip problematic keys
+                if key in skip_keys:
+                    continue
+                    
+                # Skip callable objects
+                if callable(value):
+                    continue
+                
+                # Skip extremely large string values
+                if isinstance(value, str) and len(value) > 10000:
+                    result[key] = f"<Large string: {len(value)} characters>"
+                    continue
+                
+                # Skip deeply nested lists/dicts to prevent recursion
+                if isinstance(value, (list, dict)) and id(value) == id(obj):
+                    result[key] = "<Self-reference detected>"
+                    continue
+                    
+                # Recursively create safe copies of values
+                try:
+                    safe_value = self._create_safe_copy(value)
+                    if safe_value is not None:  # Skip None values to reduce output size
+                        result[key] = safe_value
+                except (RecursionError, TypeError, ValueError) as e:
+                    # If error occurs, use a string representation instead
+                    result[key] = f"<Complex object: {type(value).__name__}>"
+                    logger.warning(f"Error creating safe copy of '{key}': {str(e)}")
+                    
+            return result
+            
+        # Handle list/tuple types
+        elif isinstance(obj, (list, tuple)):
+            # Create a new list with safe copies of values
+            result = []
+            
+            # Limit list size to prevent deep nesting
+            if len(obj) > 50:
+                logger.warning(f"Large list/tuple with {len(obj)} items found, truncating to 50 items")
+                obj_items = list(obj)[:50]
+            else:
+                obj_items = obj
+                
+            for item in obj_items:
+                # Skip self-references
+                if item is obj:
+                    result.append("<Self-reference detected>")
+                    continue
+                    
+                try:
+                    safe_item = self._create_safe_copy(item)
+                    if safe_item is not None:  # Skip None values
+                        result.append(safe_item)
+                except (RecursionError, TypeError, ValueError) as e:
+                    # If error occurs, use a string representation instead
+                    result.append(f"<Complex object: {type(item).__name__}>")
+                    logger.warning(f"Error creating safe copy of list item: {str(e)}")
+                    
+            return result
+            
+        # Handle Pydantic models and objects with dict method
+        elif hasattr(obj, "dict") and callable(getattr(obj, "dict")):
+            try:
+                # Convert to dict and create safe copy
+                obj_dict = obj.dict()
+                # Remove raw_results if present to avoid recursion
+                if "raw_results" in obj_dict:
+                    obj_dict["raw_results"] = "<Large data structure omitted>"
+                return self._create_safe_copy(obj_dict)
+            except Exception as e:
+                logger.warning(f"Failed to convert object to dict: {e}")
+                # Fall back to string representation
+                return str(obj)
+                
+        # Handle objects with __dict__ (but no dict method)
+        elif hasattr(obj, "__dict__"):
+            try:
+                # Filter out special attributes and methods
+                attrs = {k: v for k, v in obj.__dict__.items() 
+                        if not k.startswith('_') and not callable(v)}
+                return self._create_safe_copy(attrs)
+            except Exception as e:
+                logger.warning(f"Failed to copy object attributes: {e}")
+                return str(obj)
+                
+        # For other types, try to convert to string if possible
+        try:
+            return str(obj)
+        except Exception:
+            return f"<Object of type {type(obj).__name__}>"
+
+    async def _get_redis(self):
+        """Get a Redis client.
+        
+        Returns:
+            Redis client or None if Redis is not available
+        """
+        try:
+            # Import here to avoid circular imports
+            from core.services.redis import get_redis_service
+            
+            # Get Redis service
+            redis_service = await get_redis_service()
+            return redis_service.client
+            
+        except Exception as e:
+            logger.error(f"Failed to get Redis client: {e}")
+            return None
+        
